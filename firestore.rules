@@ -1,0 +1,917 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Safety Net (Default-Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Primitives
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isSignedIn() { return request.auth != null; }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email == 'sternomolo2@gmail.com' && request.auth.token.email_verified == true)
+      );
+    }
+
+    function isBoundedString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isOptionalString(data, key, maxLen) {
+      return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    function isStringList(val, minSize, maxSize) {
+      return val is list && val.size() >= minSize && val.size() <= maxSize && (val.size() == 0 || val[0] is string);
+    }
+
+    // Organization membership helpers (used in get/write rules; never in allow list)
+    function orgExists(orgId) {
+      return exists(/databases/$(database)/documents/organizations/$(orgId));
+    }
+
+    function orgData(orgId) {
+      return get(/databases/$(database)/documents/organizations/$(orgId)).data;
+    }
+
+    function isOrgOwner(orgId) {
+      return isSignedIn() && orgExists(orgId) && orgData(orgId).ownerUid == request.auth.uid;
+    }
+
+    function isOrgMember(orgId) {
+      return isSignedIn() && orgExists(orgId) &&
+        (orgData(orgId).ownerUid == request.auth.uid || request.auth.uid in orgData(orgId).memberUids);
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidUserProfile(data) {
+      return isBoundedString(data.userId, 1, 128) &&
+             isBoundedString(data.fullName, 1, 100) &&
+             isBoundedString(data.email, 3, 150) &&
+             isOptionalString(data, 'phoneNumber', 30) &&
+             isOptionalString(data, 'idNumber', 40) &&
+             isOptionalString(data, 'emergencyContactName', 100) &&
+             isOptionalString(data, 'emergencyContactPhone', 30) &&
+             isOptionalString(data, 'activeOrgId', 128) &&
+             isStringList(data.roles, 1, 5) &&
+             data.roles.hasOnly(['LANDLORD', 'PROPERTY_MANAGER', 'TENANT', 'MAINTENANCE_STAFF', 'ADMIN']) &&
+             data.activeRole in ['LANDLORD', 'PROPERTY_MANAGER', 'TENANT', 'MAINTENANCE_STAFF', 'ADMIN'] &&
+             data.notifyRentDue is bool &&
+             data.notifyMaintenance is bool &&
+             data.notifyAnnouncements is bool &&
+             data.suspended is bool &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidOrganization(data) {
+      return isBoundedString(data.name, 2, 120) &&
+             isBoundedString(data.ownerUid, 1, 128) &&
+             isBoundedString(data.country, 2, 60) &&
+             isBoundedString(data.currency, 3, 6) &&
+             data.defaultDueDay is int && data.defaultDueDay >= 1 && data.defaultDueDay <= 28 &&
+             isStringList(data.memberUids, 1, 25) &&
+             data.suspended is bool &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidProperty(data) {
+      return isBoundedString(data.orgId, 1, 128) &&
+             isBoundedString(data.ownerUid, 1, 128) &&
+             isStringList(data.managerUids, 0, 15) &&
+             isStringList(data.authorizedUids, 1, 20) &&
+             data.ownerUid in data.authorizedUids &&
+             isBoundedString(data.name, 2, 120) &&
+             data.category in ['APARTMENTS', 'BEDSITTERS', 'RESIDENTIAL_HOUSES', 'COMMERCIAL_BUILDINGS', 'SHOPS', 'OFFICES', 'MIXED_USE'] &&
+             isBoundedString(data.city, 2, 60) &&
+             isOptionalString(data, 'county', 60) &&
+             isBoundedString(data.neighborhood, 1, 80) &&
+             isBoundedString(data.addressLine, 1, 160) &&
+             isBoundedString(data.description, 0, 1000) &&
+             isOptionalString(data, 'waterMeterNumber', 60) &&
+             isOptionalString(data, 'electricityMeterNumber', 60) &&
+             isOptionalString(data, 'notes', 1000) &&
+             isStringList(data.imageRefs, 0, 6) &&
+             data.archived is bool &&
+             data.hasPublishedUnits is bool &&
+             data.totalUnitsCount is int && data.totalUnitsCount >= 0 && data.totalUnitsCount <= 10000 &&
+             data.occupiedUnitsCount is int && data.occupiedUnitsCount >= 0 && data.occupiedUnitsCount <= 10000 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidUnit(data) {
+      return isBoundedString(data.propertyId, 1, 128) &&
+             isBoundedString(data.propertyName, 1, 120) &&
+             isBoundedString(data.propertyCity, 1, 60) &&
+             isBoundedString(data.propertyCategory, 1, 40) &&
+             isBoundedString(data.orgId, 1, 128) &&
+             isBoundedString(data.ownerUid, 1, 128) &&
+             isStringList(data.managerUids, 0, 15) &&
+             isStringList(data.authorizedUids, 1, 20) &&
+             data.ownerUid in data.authorizedUids &&
+             isBoundedString(data.unitNumber, 1, 40) &&
+             data.unitType in ['BEDSITTER', 'SINGLE_ROOM', 'ONE_BEDROOM', 'TWO_BEDROOM', 'THREE_BEDROOM', 'COMMERCIAL', 'SHOP', 'OFFICE'] &&
+             data.rentCents is int && data.rentCents > 0 && data.rentCents <= 1000000000 &&
+             data.depositCents is int && data.depositCents >= 0 && data.depositCents <= 1000000000 &&
+             data.status in ['AVAILABLE', 'RESERVED', 'OCCUPIED', 'UNDER_MAINTENANCE'] &&
+             isStringList(data.amenities, 0, 15) &&
+             isBoundedString(data.description, 0, 1000) &&
+             isStringList(data.imageRefs, 0, 6) &&
+             data.published is bool &&
+             isOptionalString(data, 'currentTenantUid', 128) &&
+             isOptionalString(data, 'currentLeaseId', 128) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidApplication(data) {
+      return isBoundedString(data.unitId, 1, 128) &&
+             isBoundedString(data.unitNumber, 1, 40) &&
+             isBoundedString(data.propertyId, 1, 128) &&
+             isBoundedString(data.propertyName, 1, 120) &&
+             isBoundedString(data.orgId, 1, 128) &&
+             isBoundedString(data.ownerUid, 1, 128) &&
+             isStringList(data.managerUids, 0, 15) &&
+             isStringList(data.authorizedUids, 1, 20) &&
+             isBoundedString(data.applicantUid, 1, 128) &&
+             isBoundedString(data.applicantName, 1, 100) &&
+             isBoundedString(data.applicantPhone, 3, 30) &&
+             isOptionalString(data, 'applicantEmail', 150) &&
+             isOptionalString(data, 'occupation', 100) &&
+             isBoundedString(data.desiredMoveInDate, 1, 40) &&
+             isOptionalString(data, 'notes', 800) &&
+             isOptionalString(data, 'reviewerNotes', 800) &&
+             data.status in ['SUBMITTED', 'UNDER_REVIEW', 'APPROVED', 'REJECTED', 'WITHDRAWN'] &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidLease(data) {
+      return isBoundedString(data.orgId, 1, 128) &&
+             isBoundedString(data.propertyId, 1, 128) &&
+             isBoundedString(data.propertyName, 1, 120) &&
+             isBoundedString(data.unitId, 1, 128) &&
+             isBoundedString(data.unitNumber, 1, 40) &&
+             isBoundedString(data.ownerUid, 1, 128) &&
+             isStringList(data.managerUids, 0, 15) &&
+             isStringList(data.authorizedUids, 1, 20) &&
+             data.ownerUid in data.authorizedUids &&
+             isBoundedString(data.tenantUid, 1, 128) &&
+             isBoundedString(data.tenantName, 1, 100) &&
+             isBoundedString(data.tenantPhone, 3, 30) &&
+             data.rentCents is int && data.rentCents > 0 && data.rentCents <= 1000000000 &&
+             data.depositCents is int && data.depositCents >= 0 && data.depositCents <= 1000000000 &&
+             data.startDateEpochMs is int && data.startDateEpochMs > 0 &&
+             data.endDateEpochMs is int && data.endDateEpochMs >= data.startDateEpochMs &&
+             data.dueDayOfMonth is int && data.dueDayOfMonth >= 1 && data.dueDayOfMonth <= 28 &&
+             data.status in ['ACTIVE', 'EXPIRED', 'TERMINATED', 'RENEWED'] &&
+             data.creditBalanceCents is int && data.creditBalanceCents >= 0 && data.creditBalanceCents <= 1000000000 &&
+             isBoundedString(data.termsSummary, 0, 1500) &&
+             isOptionalString(data, 'terminationNotice', 800) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidInvoice(data) {
+      return isBoundedString(data.invoiceNumber, 3, 50) &&
+             isBoundedString(data.leaseId, 1, 128) &&
+             isBoundedString(data.orgId, 1, 128) &&
+             isBoundedString(data.propertyId, 1, 128) &&
+             isBoundedString(data.propertyName, 1, 120) &&
+             isBoundedString(data.unitId, 1, 128) &&
+             isBoundedString(data.unitNumber, 1, 40) &&
+             isBoundedString(data.ownerUid, 1, 128) &&
+             isStringList(data.managerUids, 0, 15) &&
+             isStringList(data.authorizedUids, 1, 20) &&
+             isBoundedString(data.tenantUid, 1, 128) &&
+             isBoundedString(data.tenantName, 1, 100) &&
+             data.billingPeriod is string && data.billingPeriod.matches('^[0-9]{4}-[0-9]{2}$') &&
+             data.rentCents is int && data.rentCents >= 0 && data.rentCents <= 1000000000 &&
+             data.extraChargesCents is int && data.extraChargesCents >= 0 && data.extraChargesCents <= 1000000000 &&
+             isOptionalString(data, 'extraChargesNote', 300) &&
+             data.previousBalanceCents is int && data.previousBalanceCents >= 0 && data.previousBalanceCents <= 1000000000 &&
+             data.totalDueCents is int && data.totalDueCents >= 0 && data.totalDueCents <= 2000000000 &&
+             data.paidCents is int && data.paidCents >= 0 && data.paidCents <= 2000000000 &&
+             data.outstandingCents is int && data.outstandingCents >= 0 && data.outstandingCents <= 2000000000 &&
+             data.dueDateEpochMs is int && data.dueDateEpochMs > 0 &&
+             data.status in ['UNPAID', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED'] &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidPayment(data) {
+      return isBoundedString(data.referenceCode, 3, 60) &&
+             isBoundedString(data.leaseId, 1, 128) &&
+             isOptionalString(data, 'invoiceId', 128) &&
+             isBoundedString(data.orgId, 1, 128) &&
+             isBoundedString(data.propertyId, 1, 128) &&
+             isBoundedString(data.propertyName, 1, 120) &&
+             isBoundedString(data.unitId, 1, 128) &&
+             isBoundedString(data.unitNumber, 1, 40) &&
+             isBoundedString(data.ownerUid, 1, 128) &&
+             isStringList(data.managerUids, 0, 15) &&
+             isStringList(data.authorizedUids, 1, 20) &&
+             isBoundedString(data.tenantUid, 1, 128) &&
+             isBoundedString(data.tenantName, 1, 100) &&
+             data.amountCents is int && data.amountCents > 0 && data.amountCents <= 1000000000 &&
+             data.method in ['MPESA', 'BANK_TRANSFER', 'CASH'] &&
+             data.simulatedCheckout is bool &&
+             data.paymentDateEpochMs is int && data.paymentDateEpochMs > 0 &&
+             data.status in ['PENDING_VERIFICATION', 'VERIFIED', 'REJECTED', 'REVERSED'] &&
+             isBoundedString(data.recordedByUid, 1, 128) &&
+             isOptionalString(data, 'verifiedByUid', 128) &&
+             isOptionalString(data, 'verificationNotes', 400) &&
+             isOptionalString(data, 'reversalReason', 400) &&
+             isOptionalString(data, 'allocationsSummary', 600) &&
+             isOptionalString(data, 'receiptNumber', 60) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidExpense(data) {
+      return isBoundedString(data.orgId, 1, 128) &&
+             isBoundedString(data.propertyId, 1, 128) &&
+             isBoundedString(data.propertyName, 1, 120) &&
+             isOptionalString(data, 'unitId', 128) &&
+             isBoundedString(data.ownerUid, 1, 128) &&
+             isStringList(data.managerUids, 0, 15) &&
+             isStringList(data.authorizedUids, 1, 20) &&
+             data.category in ['MAINTENANCE', 'REPAIRS', 'SECURITY', 'CLEANING', 'UTILITIES', 'MANAGEMENT_FEES', 'INSURANCE', 'OTHER'] &&
+             isBoundedString(data.title, 2, 120) &&
+             isBoundedString(data.description, 0, 600) &&
+             data.amountCents is int && data.amountCents > 0 && data.amountCents <= 1000000000 &&
+             data.expenseDateEpochMs is int && data.expenseDateEpochMs > 0 &&
+             isOptionalString(data, 'documentRef', 300) &&
+             isBoundedString(data.recordedByUid, 1, 128) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidMaintenance(data) {
+      return isBoundedString(data.orgId, 1, 128) &&
+             isBoundedString(data.propertyId, 1, 128) &&
+             isBoundedString(data.propertyName, 1, 120) &&
+             isBoundedString(data.unitId, 1, 128) &&
+             isBoundedString(data.unitNumber, 1, 40) &&
+             isBoundedString(data.ownerUid, 1, 128) &&
+             isStringList(data.managerUids, 0, 15) &&
+             isStringList(data.authorizedUids, 1, 20) &&
+             isBoundedString(data.tenantUid, 1, 128) &&
+             isBoundedString(data.tenantName, 1, 100) &&
+             isOptionalString(data, 'assignedStaffUid', 128) &&
+             isOptionalString(data, 'assignedStaffName', 100) &&
+             isBoundedString(data.title, 2, 140) &&
+             isBoundedString(data.description, 2, 1000) &&
+             data.category in ['PLUMBING', 'ELECTRICAL', 'WATER_SUPPLY', 'DOORS_WINDOWS', 'ROOF_LEAK', 'GENERAL_REPAIR'] &&
+             data.priority in ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] &&
+             data.status in ['SUBMITTED', 'UNDER_REVIEW', 'ASSIGNED', 'IN_PROGRESS', 'COMPLETED', 'REJECTED'] &&
+             data.repairCostCents is int && data.repairCostCents >= 0 && data.repairCostCents <= 1000000000 &&
+             isStringList(data.imageRefs, 0, 4) &&
+             isOptionalString(data, 'latestUpdateNote', 500) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidConversation(data) {
+      return isBoundedString(data.orgId, 1, 128) &&
+             isBoundedString(data.propertyId, 1, 128) &&
+             isBoundedString(data.propertyName, 1, 120) &&
+             isOptionalString(data, 'unitNumber', 40) &&
+             isStringList(data.participantUids, 1, 10) &&
+             isBoundedString(data.subject, 1, 140) &&
+             isBoundedString(data.lastMessagePreview, 0, 300) &&
+             isBoundedString(data.lastSenderUid, 1, 128) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidMessage(data) {
+      return isBoundedString(data.convId, 1, 128) &&
+             isStringList(data.participantUids, 1, 10) &&
+             isBoundedString(data.senderUid, 1, 128) &&
+             isBoundedString(data.senderName, 1, 100) &&
+             isBoundedString(data.body, 1, 1500) &&
+             isStringList(data.readByUids, 1, 10) &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidAnnouncement(data) {
+      return isBoundedString(data.orgId, 1, 128) &&
+             isBoundedString(data.propertyId, 1, 128) &&
+             isBoundedString(data.propertyName, 1, 120) &&
+             isBoundedString(data.ownerUid, 1, 128) &&
+             isStringList(data.authorizedUids, 1, 20) &&
+             isStringList(data.targetUids, 0, 50) &&
+             isBoundedString(data.title, 2, 140) &&
+             isBoundedString(data.body, 2, 1500) &&
+             isBoundedString(data.authorUid, 1, 128) &&
+             isBoundedString(data.authorName, 1, 100) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidNotification(data) {
+      return isBoundedString(data.recipientUid, 1, 128) &&
+             isBoundedString(data.senderUid, 1, 128) &&
+             isBoundedString(data.orgId, 1, 128) &&
+             data.type in ['INVOICE', 'PAYMENT', 'MAINTENANCE', 'LEASE', 'APPLICATION', 'ANNOUNCEMENT', 'MESSAGE'] &&
+             isBoundedString(data.title, 1, 140) &&
+             isBoundedString(data.body, 1, 500) &&
+             isOptionalString(data, 'relatedEntityId', 128) &&
+             data.read is bool &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidAuditLog(data) {
+      return isBoundedString(data.orgId, 1, 128) &&
+             isBoundedString(data.actorUid, 1, 128) &&
+             isBoundedString(data.actorName, 1, 100) &&
+             isBoundedString(data.action, 2, 80) &&
+             isBoundedString(data.entityType, 2, 50) &&
+             isBoundedString(data.entityId, 1, 128) &&
+             isBoundedString(data.details, 1, 500) &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidReportedIssue(data) {
+      return isBoundedString(data.reporterUid, 1, 128) &&
+             isBoundedString(data.reporterName, 1, 100) &&
+             isBoundedString(data.orgId, 1, 128) &&
+             isBoundedString(data.category, 2, 60) &&
+             isBoundedString(data.title, 2, 140) &&
+             isBoundedString(data.description, 2, 1000) &&
+             data.status in ['OPEN', 'INVESTIGATING', 'RESOLVED'] &&
+             isOptionalString(data, 'adminNotes', 800) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    // 4. Collection Rules
+    match /admins/{userId} {
+      allow get, list: if isSignedIn() && isAdmin();
+      allow create, update, delete: if isAdmin() && isValidId(userId);
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().suspended == false &&
+                       (isAdmin() || (!('ADMIN' in incoming().roles) && incoming().activeRole != 'ADMIN')) &&
+                       incoming().keys().hasAll(['userId', 'fullName', 'email', 'roles', 'activeRole', 'notifyRentDue', 'notifyMaintenance', 'notifyAnnouncements', 'suspended', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'fullName', 'email', 'phoneNumber', 'idNumber', 'emergencyContactName', 'emergencyContactPhone', 'roles', 'activeRole', 'activeOrgId', 'notifyRentDue', 'notifyMaintenance', 'notifyAnnouncements', 'suspended', 'createdAt', 'updatedAt']);
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       isValidUserProfile(incoming()) &&
+                       (
+                         isAdmin() ||
+                         (
+                           request.auth.uid == userId &&
+                           incoming().userId == existing().userId &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().suspended == existing().suspended &&
+                           !('ADMIN' in incoming().roles) &&
+                           incoming().activeRole != 'ADMIN' &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'phoneNumber', 'idNumber', 'emergencyContactName', 'emergencyContactPhone', 'roles', 'activeRole', 'activeOrgId', 'notifyRentDue', 'notifyMaintenance', 'notifyAnnouncements', 'updatedAt'])
+                         )
+                       );
+      allow delete: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+    }
+
+    match /organizations/{orgId} {
+      allow get: if isSignedIn() && isValidId(orgId) && (request.auth.uid == existing().ownerUid || request.auth.uid in existing().memberUids || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid == existing().ownerUid || request.auth.uid in existing().memberUids || isAdmin());
+      allow create: if isSignedIn() &&
+                       isValidId(orgId) &&
+                       isValidOrganization(incoming()) &&
+                       incoming().ownerUid == request.auth.uid &&
+                       request.auth.uid in incoming().memberUids &&
+                       incoming().suspended == false &&
+                       incoming().keys().hasAll(['name', 'ownerUid', 'country', 'currency', 'defaultDueDay', 'memberUids', 'suspended', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['name', 'ownerUid', 'country', 'currency', 'defaultDueDay', 'memberUids', 'suspended', 'createdAt', 'updatedAt']);
+      allow update: if isSignedIn() &&
+                       isValidId(orgId) &&
+                       isValidOrganization(incoming()) &&
+                       (
+                         isAdmin() ||
+                         (
+                           existing().ownerUid == request.auth.uid &&
+                           incoming().ownerUid == existing().ownerUid &&
+                           existing().ownerUid in incoming().memberUids &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().suspended == existing().suspended &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['name', 'country', 'currency', 'defaultDueDay', 'memberUids', 'updatedAt'])
+                         )
+                       );
+      allow delete: if isAdmin() && isValidId(orgId);
+    }
+
+    match /properties/{propertyId} {
+      allow get: if isValidId(propertyId) && (
+        (existing().hasPublishedUnits == true && existing().archived == false) ||
+        (isSignedIn() && (
+          isAdmin() ||
+          (request.auth.uid in existing().authorizedUids && isOrgMember(existing().orgId))
+        ))
+      );
+      allow list: if (existing().hasPublishedUnits == true && existing().archived == false) ||
+                     (isSignedIn() && (request.auth.uid in existing().authorizedUids || isAdmin()));
+      allow create: if isSignedIn() &&
+                       isValidId(propertyId) &&
+                       isValidProperty(incoming()) &&
+                       incoming().ownerUid == request.auth.uid &&
+                       request.auth.uid in incoming().authorizedUids &&
+                       incoming().keys().hasAll(['orgId', 'ownerUid', 'managerUids', 'authorizedUids', 'name', 'category', 'city', 'neighborhood', 'addressLine', 'description', 'imageRefs', 'archived', 'hasPublishedUnits', 'totalUnitsCount', 'occupiedUnitsCount', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['orgId', 'ownerUid', 'managerUids', 'authorizedUids', 'name', 'category', 'city', 'county', 'neighborhood', 'addressLine', 'description', 'waterMeterNumber', 'electricityMeterNumber', 'notes', 'imageRefs', 'archived', 'hasPublishedUnits', 'totalUnitsCount', 'occupiedUnitsCount', 'createdAt', 'updatedAt']) &&
+                       isOrgOwner(incoming().orgId);
+      allow update: if isSignedIn() &&
+                       isValidId(propertyId) &&
+                       isValidProperty(incoming()) &&
+                       (
+                         isAdmin() ||
+                         (
+                           existing().ownerUid == request.auth.uid &&
+                           isOrgOwner(existing().orgId) &&
+                           incoming().orgId == existing().orgId &&
+                           incoming().ownerUid == existing().ownerUid &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'city', 'county', 'neighborhood', 'addressLine', 'description', 'waterMeterNumber', 'electricityMeterNumber', 'notes', 'imageRefs', 'managerUids', 'authorizedUids', 'archived', 'hasPublishedUnits', 'totalUnitsCount', 'occupiedUnitsCount', 'updatedAt'])
+                         ) ||
+                         (
+                           request.auth.uid in existing().authorizedUids &&
+                           isOrgMember(existing().orgId) &&
+                           incoming().orgId == existing().orgId &&
+                           incoming().ownerUid == existing().ownerUid &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['hasPublishedUnits', 'totalUnitsCount', 'occupiedUnitsCount', 'updatedAt'])
+                         )
+                       );
+      allow delete: if isSignedIn() && isValidId(propertyId) && (
+        isAdmin() ||
+        (existing().ownerUid == request.auth.uid && isOrgOwner(existing().orgId))
+      );
+    }
+
+    match /units/{unitId} {
+      allow get: if isValidId(unitId) && (
+        existing().published == true ||
+        (isSignedIn() && (
+          isAdmin() ||
+          existing().currentTenantUid == request.auth.uid ||
+          (request.auth.uid in existing().authorizedUids && isOrgMember(existing().orgId))
+        ))
+      );
+      allow list: if existing().published == true ||
+                     (isSignedIn() && (request.auth.uid in existing().authorizedUids || existing().currentTenantUid == request.auth.uid || isAdmin()));
+      allow create: if isSignedIn() &&
+                       isValidId(unitId) &&
+                       isValidUnit(incoming()) &&
+                       request.auth.uid in incoming().authorizedUids &&
+                       incoming().keys().hasAll(['propertyId', 'propertyName', 'propertyCity', 'propertyCategory', 'orgId', 'ownerUid', 'managerUids', 'authorizedUids', 'unitNumber', 'unitType', 'rentCents', 'depositCents', 'status', 'amenities', 'description', 'imageRefs', 'published', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['propertyId', 'propertyName', 'propertyCity', 'propertyCategory', 'orgId', 'ownerUid', 'managerUids', 'authorizedUids', 'unitNumber', 'unitType', 'rentCents', 'depositCents', 'status', 'amenities', 'description', 'imageRefs', 'published', 'currentTenantUid', 'currentLeaseId', 'createdAt', 'updatedAt']) &&
+                       exists(/databases/$(database)/documents/properties/$(incoming().propertyId)) &&
+                       get(/databases/$(database)/documents/properties/$(incoming().propertyId)).data.orgId == incoming().orgId &&
+                       get(/databases/$(database)/documents/properties/$(incoming().propertyId)).data.ownerUid == incoming().ownerUid &&
+                       request.auth.uid in get(/databases/$(database)/documents/properties/$(incoming().propertyId)).data.authorizedUids &&
+                       isOrgMember(incoming().orgId);
+      allow update: if isSignedIn() &&
+                       isValidId(unitId) &&
+                       isValidUnit(incoming()) &&
+                       (
+                         isAdmin() ||
+                         (
+                           request.auth.uid in existing().authorizedUids &&
+                           isOrgMember(existing().orgId) &&
+                           incoming().propertyId == existing().propertyId &&
+                           incoming().orgId == existing().orgId &&
+                           incoming().ownerUid == existing().ownerUid &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['unitNumber', 'unitType', 'rentCents', 'depositCents', 'status', 'amenities', 'description', 'imageRefs', 'published', 'currentTenantUid', 'currentLeaseId', 'managerUids', 'authorizedUids', 'propertyName', 'propertyCity', 'propertyCategory', 'updatedAt'])
+                         )
+                       );
+      allow delete: if isSignedIn() && isValidId(unitId) && (
+        isAdmin() ||
+        (existing().ownerUid == request.auth.uid && isOrgOwner(existing().orgId) && existing().status != 'OCCUPIED')
+      );
+    }
+
+    match /applications/{appId} {
+      allow get: if isSignedIn() && isValidId(appId) && (
+        isAdmin() ||
+        existing().applicantUid == request.auth.uid ||
+        (request.auth.uid in existing().authorizedUids && isOrgMember(existing().orgId))
+      );
+      allow list: if isSignedIn() && (existing().applicantUid == request.auth.uid || request.auth.uid in existing().authorizedUids || isAdmin());
+      allow create: if isSignedIn() &&
+                       isValidId(appId) &&
+                       isValidApplication(incoming()) &&
+                       incoming().applicantUid == request.auth.uid &&
+                       incoming().status == 'SUBMITTED' &&
+                       incoming().keys().hasAll(['unitId', 'unitNumber', 'propertyId', 'propertyName', 'orgId', 'ownerUid', 'managerUids', 'authorizedUids', 'applicantUid', 'applicantName', 'applicantPhone', 'desiredMoveInDate', 'status', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['unitId', 'unitNumber', 'propertyId', 'propertyName', 'orgId', 'ownerUid', 'managerUids', 'authorizedUids', 'applicantUid', 'applicantName', 'applicantPhone', 'applicantEmail', 'occupation', 'desiredMoveInDate', 'notes', 'reviewerNotes', 'status', 'createdAt', 'updatedAt']) &&
+                       exists(/databases/$(database)/documents/units/$(incoming().unitId)) &&
+                       get(/databases/$(database)/documents/units/$(incoming().unitId)).data.orgId == incoming().orgId &&
+                       get(/databases/$(database)/documents/units/$(incoming().unitId)).data.propertyId == incoming().propertyId &&
+                       get(/databases/$(database)/documents/units/$(incoming().unitId)).data.ownerUid == incoming().ownerUid &&
+                       incoming().authorizedUids == get(/databases/$(database)/documents/units/$(incoming().unitId)).data.authorizedUids;
+      allow update: if isSignedIn() &&
+                       isValidId(appId) &&
+                       isValidApplication(incoming()) &&
+                       (
+                         isAdmin() ||
+                         (
+                           existing().applicantUid == request.auth.uid &&
+                           existing().status in ['SUBMITTED', 'UNDER_REVIEW'] &&
+                           incoming().status == 'WITHDRAWN' &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+                         ) ||
+                         (
+                           request.auth.uid in existing().authorizedUids &&
+                           isOrgMember(existing().orgId) &&
+                           existing().status in ['SUBMITTED', 'UNDER_REVIEW'] &&
+                           incoming().status in ['UNDER_REVIEW', 'APPROVED', 'REJECTED'] &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewerNotes', 'updatedAt'])
+                         )
+                       );
+      allow delete: if isAdmin() && isValidId(appId);
+    }
+
+    match /leases/{leaseId} {
+      allow get: if isSignedIn() && isValidId(leaseId) && (
+        isAdmin() ||
+        existing().tenantUid == request.auth.uid ||
+        (request.auth.uid in existing().authorizedUids && isOrgMember(existing().orgId))
+      );
+      allow list: if isSignedIn() && (existing().tenantUid == request.auth.uid || request.auth.uid in existing().authorizedUids || isAdmin());
+      allow create: if isSignedIn() &&
+                       isValidId(leaseId) &&
+                       isValidLease(incoming()) &&
+                       request.auth.uid in incoming().authorizedUids &&
+                       incoming().keys().hasAll(['orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'tenantPhone', 'rentCents', 'depositCents', 'startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'tenantPhone', 'rentCents', 'depositCents', 'startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'terminationNotice', 'createdAt', 'updatedAt']) &&
+                       exists(/databases/$(database)/documents/units/$(incoming().unitId)) &&
+                       get(/databases/$(database)/documents/units/$(incoming().unitId)).data.orgId == incoming().orgId &&
+                       get(/databases/$(database)/documents/units/$(incoming().unitId)).data.propertyId == incoming().propertyId &&
+                       get(/databases/$(database)/documents/units/$(incoming().unitId)).data.ownerUid == incoming().ownerUid &&
+                       request.auth.uid in get(/databases/$(database)/documents/units/$(incoming().unitId)).data.authorizedUids &&
+                       isOrgMember(incoming().orgId);
+      allow update: if isSignedIn() &&
+                       isValidId(leaseId) &&
+                       isValidLease(incoming()) &&
+                       (
+                         isAdmin() ||
+                         (
+                           request.auth.uid in existing().authorizedUids &&
+                           isOrgMember(existing().orgId) &&
+                           incoming().orgId == existing().orgId &&
+                           incoming().propertyId == existing().propertyId &&
+                           incoming().unitId == existing().unitId &&
+                           incoming().ownerUid == existing().ownerUid &&
+                           incoming().tenantUid == existing().tenantUid &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['rentCents', 'depositCents', 'startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'terminationNotice', 'managerUids', 'authorizedUids', 'updatedAt'])
+                         )
+                       );
+      allow delete: if isAdmin() && isValidId(leaseId);
+    }
+
+    match /invoices/{invoiceId} {
+      allow get: if isSignedIn() && isValidId(invoiceId) && (
+        isAdmin() ||
+        existing().tenantUid == request.auth.uid ||
+        (request.auth.uid in existing().authorizedUids && isOrgMember(existing().orgId))
+      );
+      allow list: if isSignedIn() && (existing().tenantUid == request.auth.uid || request.auth.uid in existing().authorizedUids || isAdmin());
+      allow create: if isSignedIn() &&
+                       isValidId(invoiceId) &&
+                       isValidInvoice(incoming()) &&
+                       request.auth.uid in incoming().authorizedUids &&
+                       incoming().keys().hasAll(['invoiceNumber', 'leaseId', 'orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'billingPeriod', 'rentCents', 'extraChargesCents', 'previousBalanceCents', 'totalDueCents', 'paidCents', 'outstandingCents', 'dueDateEpochMs', 'status', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['invoiceNumber', 'leaseId', 'orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'billingPeriod', 'rentCents', 'extraChargesCents', 'extraChargesNote', 'previousBalanceCents', 'totalDueCents', 'paidCents', 'outstandingCents', 'dueDateEpochMs', 'status', 'createdAt', 'updatedAt']) &&
+                       exists(/databases/$(database)/documents/leases/$(incoming().leaseId)) &&
+                       get(/databases/$(database)/documents/leases/$(incoming().leaseId)).data.orgId == incoming().orgId &&
+                       get(/databases/$(database)/documents/leases/$(incoming().leaseId)).data.propertyId == incoming().propertyId &&
+                       get(/databases/$(database)/documents/leases/$(incoming().leaseId)).data.unitId == incoming().unitId &&
+                       get(/databases/$(database)/documents/leases/$(incoming().leaseId)).data.ownerUid == incoming().ownerUid &&
+                       get(/databases/$(database)/documents/leases/$(incoming().leaseId)).data.tenantUid == incoming().tenantUid &&
+                       request.auth.uid in get(/databases/$(database)/documents/leases/$(incoming().leaseId)).data.authorizedUids &&
+                       isOrgMember(incoming().orgId);
+      allow update: if isSignedIn() &&
+                       isValidId(invoiceId) &&
+                       isValidInvoice(incoming()) &&
+                       (
+                         isAdmin() ||
+                         (
+                           request.auth.uid in existing().authorizedUids &&
+                           isOrgMember(existing().orgId) &&
+                           existing().status != 'CANCELLED' &&
+                           incoming().leaseId == existing().leaseId &&
+                           incoming().orgId == existing().orgId &&
+                           incoming().tenantUid == existing().tenantUid &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['paidCents', 'outstandingCents', 'status', 'extraChargesCents', 'extraChargesNote', 'totalDueCents', 'updatedAt'])
+                         )
+                       );
+      allow delete: if isAdmin() && isValidId(invoiceId);
+    }
+
+    match /payments/{paymentId} {
+      allow get: if isSignedIn() && isValidId(paymentId) && (
+        isAdmin() ||
+        existing().tenantUid == request.auth.uid ||
+        (request.auth.uid in existing().authorizedUids && isOrgMember(existing().orgId))
+      );
+      allow list: if isSignedIn() && (existing().tenantUid == request.auth.uid || request.auth.uid in existing().authorizedUids || isAdmin());
+      allow create: if isSignedIn() &&
+                       isValidId(paymentId) &&
+                       isValidPayment(incoming()) &&
+                       incoming().recordedByUid == request.auth.uid &&
+                       incoming().keys().hasAll(['referenceCode', 'leaseId', 'orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'amountCents', 'method', 'simulatedCheckout', 'paymentDateEpochMs', 'status', 'recordedByUid', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['referenceCode', 'leaseId', 'invoiceId', 'orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'amountCents', 'method', 'simulatedCheckout', 'paymentDateEpochMs', 'status', 'recordedByUid', 'verifiedByUid', 'verificationNotes', 'reversalReason', 'allocationsSummary', 'receiptNumber', 'createdAt', 'updatedAt']) &&
+                       exists(/databases/$(database)/documents/leases/$(incoming().leaseId)) &&
+                       get(/databases/$(database)/documents/leases/$(incoming().leaseId)).data.orgId == incoming().orgId &&
+                       get(/databases/$(database)/documents/leases/$(incoming().leaseId)).data.propertyId == incoming().propertyId &&
+                       get(/databases/$(database)/documents/leases/$(incoming().leaseId)).data.unitId == incoming().unitId &&
+                       get(/databases/$(database)/documents/leases/$(incoming().leaseId)).data.ownerUid == incoming().ownerUid &&
+                       get(/databases/$(database)/documents/leases/$(incoming().leaseId)).data.tenantUid == incoming().tenantUid &&
+                       incoming().authorizedUids == get(/databases/$(database)/documents/leases/$(incoming().leaseId)).data.authorizedUids &&
+                       (
+                         (incoming().tenantUid == request.auth.uid && incoming().status == 'PENDING_VERIFICATION') ||
+                         (request.auth.uid in incoming().authorizedUids && isOrgMember(incoming().orgId) && incoming().status in ['PENDING_VERIFICATION', 'VERIFIED'])
+                       );
+      allow update: if isSignedIn() &&
+                       isValidId(paymentId) &&
+                       isValidPayment(incoming()) &&
+                       (
+                         isAdmin() ||
+                         (
+                           request.auth.uid in existing().authorizedUids &&
+                           isOrgMember(existing().orgId) &&
+                           existing().status != 'REVERSED' &&
+                           incoming().leaseId == existing().leaseId &&
+                           incoming().tenantUid == existing().tenantUid &&
+                           incoming().amountCents == existing().amountCents &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['status', 'verifiedByUid', 'verificationNotes', 'reversalReason', 'allocationsSummary', 'receiptNumber', 'updatedAt'])
+                         )
+                       );
+      allow delete: if isAdmin() && isValidId(paymentId);
+    }
+
+    match /expenses/{expenseId} {
+      allow get: if isSignedIn() && isValidId(expenseId) && (
+        isAdmin() ||
+        (request.auth.uid in existing().authorizedUids && isOrgMember(existing().orgId))
+      );
+      allow list: if isSignedIn() && (request.auth.uid in existing().authorizedUids || isAdmin());
+      allow create: if isSignedIn() &&
+                       isValidId(expenseId) &&
+                       isValidExpense(incoming()) &&
+                       incoming().recordedByUid == request.auth.uid &&
+                       request.auth.uid in incoming().authorizedUids &&
+                       incoming().keys().hasAll(['orgId', 'propertyId', 'propertyName', 'ownerUid', 'managerUids', 'authorizedUids', 'category', 'title', 'description', 'amountCents', 'expenseDateEpochMs', 'recordedByUid', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['orgId', 'propertyId', 'propertyName', 'unitId', 'ownerUid', 'managerUids', 'authorizedUids', 'category', 'title', 'description', 'amountCents', 'expenseDateEpochMs', 'documentRef', 'recordedByUid', 'createdAt', 'updatedAt']) &&
+                       exists(/databases/$(database)/documents/properties/$(incoming().propertyId)) &&
+                       get(/databases/$(database)/documents/properties/$(incoming().propertyId)).data.orgId == incoming().orgId &&
+                       get(/databases/$(database)/documents/properties/$(incoming().propertyId)).data.ownerUid == incoming().ownerUid &&
+                       request.auth.uid in get(/databases/$(database)/documents/properties/$(incoming().propertyId)).data.authorizedUids &&
+                       isOrgMember(incoming().orgId);
+      allow update: if isSignedIn() &&
+                       isValidId(expenseId) &&
+                       isValidExpense(incoming()) &&
+                       (
+                         isAdmin() ||
+                         (
+                           request.auth.uid in existing().authorizedUids &&
+                           isOrgMember(existing().orgId) &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['category', 'title', 'description', 'amountCents', 'expenseDateEpochMs', 'documentRef', 'updatedAt'])
+                         )
+                       );
+      allow delete: if isSignedIn() && isValidId(expenseId) && (
+        isAdmin() ||
+        (request.auth.uid in existing().authorizedUids && isOrgMember(existing().orgId))
+      );
+    }
+
+    match /maintenance_requests/{requestId} {
+      allow get: if isSignedIn() && isValidId(requestId) && (
+        isAdmin() ||
+        existing().tenantUid == request.auth.uid ||
+        existing().assignedStaffUid == request.auth.uid ||
+        (request.auth.uid in existing().authorizedUids && isOrgMember(existing().orgId))
+      );
+      allow list: if isSignedIn() && (existing().tenantUid == request.auth.uid || existing().assignedStaffUid == request.auth.uid || request.auth.uid in existing().authorizedUids || isAdmin());
+      allow create: if isSignedIn() &&
+                       isValidId(requestId) &&
+                       isValidMaintenance(incoming()) &&
+                       incoming().status == 'SUBMITTED' &&
+                       incoming().keys().hasAll(['orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'title', 'description', 'category', 'priority', 'status', 'repairCostCents', 'imageRefs', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'assignedStaffUid', 'assignedStaffName', 'title', 'description', 'category', 'priority', 'status', 'repairCostCents', 'imageRefs', 'latestUpdateNote', 'createdAt', 'updatedAt']) &&
+                       exists(/databases/$(database)/documents/units/$(incoming().unitId)) &&
+                       get(/databases/$(database)/documents/units/$(incoming().unitId)).data.orgId == incoming().orgId &&
+                       get(/databases/$(database)/documents/units/$(incoming().unitId)).data.propertyId == incoming().propertyId &&
+                       get(/databases/$(database)/documents/units/$(incoming().unitId)).data.ownerUid == incoming().ownerUid &&
+                       incoming().authorizedUids == get(/databases/$(database)/documents/units/$(incoming().unitId)).data.authorizedUids &&
+                       (
+                         incoming().tenantUid == request.auth.uid ||
+                         (request.auth.uid in incoming().authorizedUids && isOrgMember(incoming().orgId))
+                       );
+      allow update: if isSignedIn() &&
+                       isValidId(requestId) &&
+                       isValidMaintenance(incoming()) &&
+                       (
+                         isAdmin() ||
+                         (
+                           existing().tenantUid == request.auth.uid &&
+                           !(existing().status in ['COMPLETED', 'REJECTED']) &&
+                           incoming().status == existing().status &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['description', 'imageRefs', 'latestUpdateNote', 'updatedAt'])
+                         ) ||
+                         (
+                           existing().assignedStaffUid == request.auth.uid &&
+                           !(existing().status in ['COMPLETED', 'REJECTED']) &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['status', 'repairCostCents', 'latestUpdateNote', 'updatedAt'])
+                         ) ||
+                         (
+                           request.auth.uid in existing().authorizedUids &&
+                           isOrgMember(existing().orgId) &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['assignedStaffUid', 'assignedStaffName', 'status', 'repairCostCents', 'latestUpdateNote', 'updatedAt'])
+                         )
+                       );
+      allow delete: if isAdmin() && isValidId(requestId);
+    }
+
+    match /conversations/{convId} {
+      allow get: if isSignedIn() && isValidId(convId) && (request.auth.uid in existing().participantUids || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid in existing().participantUids || isAdmin());
+      allow create: if isSignedIn() &&
+                       isValidId(convId) &&
+                       isValidConversation(incoming()) &&
+                       request.auth.uid in incoming().participantUids &&
+                       incoming().lastSenderUid == request.auth.uid &&
+                       incoming().keys().hasAll(['orgId', 'propertyId', 'propertyName', 'participantUids', 'subject', 'lastMessagePreview', 'lastSenderUid', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['orgId', 'propertyId', 'propertyName', 'unitNumber', 'participantUids', 'subject', 'lastMessagePreview', 'lastSenderUid', 'createdAt', 'updatedAt']) &&
+                       exists(/databases/$(database)/documents/properties/$(incoming().propertyId)) &&
+                       get(/databases/$(database)/documents/properties/$(incoming().propertyId)).data.orgId == incoming().orgId;
+      allow update: if isSignedIn() &&
+                       isValidId(convId) &&
+                       isValidConversation(incoming()) &&
+                       (
+                         isAdmin() ||
+                         (
+                           request.auth.uid in existing().participantUids &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['lastMessagePreview', 'lastSenderUid', 'updatedAt'])
+                         )
+                       );
+      allow delete: if isAdmin() && isValidId(convId);
+
+      match /messages/{msgId} {
+        allow get: if isSignedIn() && isValidId(msgId) && (request.auth.uid in existing().participantUids || isAdmin());
+        allow list: if isSignedIn() && (request.auth.uid in existing().participantUids || isAdmin());
+        allow create: if isSignedIn() &&
+                         isValidId(msgId) &&
+                         isValidMessage(incoming()) &&
+                         incoming().convId == convId &&
+                         incoming().senderUid == request.auth.uid &&
+                         request.auth.uid in incoming().participantUids &&
+                         incoming().keys().hasAll(['convId', 'participantUids', 'senderUid', 'senderName', 'body', 'readByUids', 'createdAt']) &&
+                         incoming().keys().hasOnly(['convId', 'participantUids', 'senderUid', 'senderName', 'body', 'readByUids', 'createdAt']) &&
+                         exists(/databases/$(database)/documents/conversations/$(convId)) &&
+                         request.auth.uid in get(/databases/$(database)/documents/conversations/$(convId)).data.participantUids;
+        allow update: if isSignedIn() &&
+                         isValidId(msgId) &&
+                         isValidMessage(incoming()) &&
+                         (
+                           isAdmin() ||
+                           (
+                             request.auth.uid in existing().participantUids &&
+                             incoming().createdAt == existing().createdAt &&
+                             incoming().body == existing().body &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['readByUids'])
+                           )
+                         );
+        allow delete: if isAdmin() && isValidId(msgId);
+      }
+    }
+
+    match /announcements/{annId} {
+      allow get: if isSignedIn() && isValidId(annId) && (
+        isAdmin() ||
+        request.auth.uid in existing().targetUids ||
+        (request.auth.uid in existing().authorizedUids && isOrgMember(existing().orgId))
+      );
+      allow list: if isSignedIn() && (request.auth.uid in existing().authorizedUids || request.auth.uid in existing().targetUids || isAdmin());
+      allow create: if isSignedIn() &&
+                       isValidId(annId) &&
+                       isValidAnnouncement(incoming()) &&
+                       incoming().authorUid == request.auth.uid &&
+                       request.auth.uid in incoming().authorizedUids &&
+                       incoming().keys().hasAll(['orgId', 'propertyId', 'propertyName', 'ownerUid', 'authorizedUids', 'targetUids', 'title', 'body', 'authorUid', 'authorName', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['orgId', 'propertyId', 'propertyName', 'ownerUid', 'authorizedUids', 'targetUids', 'title', 'body', 'authorUid', 'authorName', 'createdAt', 'updatedAt']) &&
+                       exists(/databases/$(database)/documents/properties/$(incoming().propertyId)) &&
+                       get(/databases/$(database)/documents/properties/$(incoming().propertyId)).data.orgId == incoming().orgId &&
+                       get(/databases/$(database)/documents/properties/$(incoming().propertyId)).data.ownerUid == incoming().ownerUid &&
+                       request.auth.uid in get(/databases/$(database)/documents/properties/$(incoming().propertyId)).data.authorizedUids &&
+                       isOrgMember(incoming().orgId);
+      allow update: if isSignedIn() &&
+                       isValidId(annId) &&
+                       isValidAnnouncement(incoming()) &&
+                       (
+                         isAdmin() ||
+                         (
+                           request.auth.uid in existing().authorizedUids &&
+                           isOrgMember(existing().orgId) &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['title', 'body', 'targetUids', 'updatedAt'])
+                         )
+                       );
+      allow delete: if isSignedIn() && isValidId(annId) && (
+        isAdmin() ||
+        (request.auth.uid in existing().authorizedUids && isOrgMember(existing().orgId))
+      );
+    }
+
+    match /notifications/{notifId} {
+      allow get: if isSignedIn() && isValidId(notifId) && (existing().recipientUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().recipientUid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() &&
+                       isValidId(notifId) &&
+                       isValidNotification(incoming()) &&
+                       incoming().senderUid == request.auth.uid &&
+                       incoming().read == false &&
+                       incoming().keys().hasAll(['recipientUid', 'senderUid', 'orgId', 'type', 'title', 'body', 'read', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['recipientUid', 'senderUid', 'orgId', 'type', 'title', 'body', 'relatedEntityId', 'read', 'createdAt', 'updatedAt']);
+      allow update: if isSignedIn() &&
+                       isValidId(notifId) &&
+                       isValidNotification(incoming()) &&
+                       (
+                         isAdmin() ||
+                         (
+                           existing().recipientUid == request.auth.uid &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['read', 'updatedAt'])
+                         )
+                       );
+      allow delete: if isSignedIn() && isValidId(notifId) && (existing().recipientUid == request.auth.uid || isAdmin());
+    }
+
+    match /audit_logs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && (existing().actorUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().actorUid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() &&
+                       isValidId(logId) &&
+                       isValidAuditLog(incoming()) &&
+                       incoming().actorUid == request.auth.uid &&
+                       isOrgMember(incoming().orgId) &&
+                       incoming().keys().hasAll(['orgId', 'actorUid', 'actorName', 'action', 'entityType', 'entityId', 'details', 'createdAt']) &&
+                       incoming().keys().hasOnly(['orgId', 'actorUid', 'actorName', 'action', 'entityType', 'entityId', 'details', 'createdAt']);
+      allow update, delete: if false;
+    }
+
+    match /reported_issues/{issueId} {
+      allow get: if isSignedIn() && isValidId(issueId) && (existing().reporterUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().reporterUid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() &&
+                       isValidId(issueId) &&
+                       isValidReportedIssue(incoming()) &&
+                       incoming().reporterUid == request.auth.uid &&
+                       incoming().status == 'OPEN' &&
+                       incoming().keys().hasAll(['reporterUid', 'reporterName', 'orgId', 'category', 'title', 'description', 'status', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['reporterUid', 'reporterName', 'orgId', 'category', 'title', 'description', 'status', 'adminNotes', 'createdAt', 'updatedAt']);
+      allow update: if isAdmin() &&
+                       isValidId(issueId) &&
+                       isValidReportedIssue(incoming()) &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['status', 'adminNotes', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(issueId);
+    }
+  }
+}

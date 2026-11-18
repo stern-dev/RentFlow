@@ -1,0 +1,6 @@
+{
+  "name": "RentFlow",
+  "description": "Unified property rental management and tenant experience platform for landlords, property managers, tenants, maintenance staff, and administrators.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

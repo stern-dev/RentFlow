@@ -1,0 +1,451 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private authenticated user profile with Kenyan rental contact details, role memberships, and notification preferences.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "fullName": { "type": "string" },
+        "email": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "idNumber": { "type": "string" },
+        "emergencyContactName": { "type": "string" },
+        "emergencyContactPhone": { "type": "string" },
+        "roles": { "type": "array" },
+        "activeRole": { "type": "string", "enum": ["LANDLORD", "PROPERTY_MANAGER", "TENANT", "MAINTENANCE_STAFF", "ADMIN"] },
+        "activeOrgId": { "type": "string" },
+        "notifyRentDue": { "type": "boolean" },
+        "notifyMaintenance": { "type": "boolean" },
+        "notifyAnnouncements": { "type": "boolean" },
+        "suspended": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "fullName", "email", "roles", "activeRole", "notifyRentDue", "notifyMaintenance", "notifyAnnouncements", "suspended", "createdAt", "updatedAt"]
+    },
+    "Organization": {
+      "title": "Organization",
+      "description": "Property management organization isolating properties, finances, and staff.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "country": { "type": "string" },
+        "currency": { "type": "string" },
+        "defaultDueDay": { "type": "integer" },
+        "memberUids": { "type": "array" },
+        "suspended": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "ownerUid", "country", "currency", "defaultDueDay", "memberUids", "suspended", "createdAt", "updatedAt"]
+    },
+    "Property": {
+      "title": "Property",
+      "description": "Rental property owned by a landlord and optionally managed by assigned property managers.",
+      "type": "object",
+      "properties": {
+        "orgId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "managerUids": { "type": "array" },
+        "authorizedUids": { "type": "array" },
+        "name": { "type": "string" },
+        "category": { "type": "string", "enum": ["APARTMENTS", "BEDSITTERS", "RESIDENTIAL_HOUSES", "COMMERCIAL_BUILDINGS", "SHOPS", "OFFICES", "MIXED_USE"] },
+        "city": { "type": "string" },
+        "county": { "type": "string" },
+        "neighborhood": { "type": "string" },
+        "addressLine": { "type": "string" },
+        "description": { "type": "string" },
+        "waterMeterNumber": { "type": "string" },
+        "electricityMeterNumber": { "type": "string" },
+        "notes": { "type": "string" },
+        "imageRefs": { "type": "array" },
+        "archived": { "type": "boolean" },
+        "hasPublishedUnits": { "type": "boolean" },
+        "totalUnitsCount": { "type": "integer" },
+        "occupiedUnitsCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orgId", "ownerUid", "managerUids", "authorizedUids", "name", "category", "city", "neighborhood", "addressLine", "description", "imageRefs", "archived", "hasPublishedUnits", "totalUnitsCount", "occupiedUnitsCount", "createdAt", "updatedAt"]
+    },
+    "RentalUnit": {
+      "title": "RentalUnit",
+      "description": "Individual rentable unit belonging to a property.",
+      "type": "object",
+      "properties": {
+        "propertyId": { "type": "string" },
+        "propertyName": { "type": "string" },
+        "propertyCity": { "type": "string" },
+        "propertyCategory": { "type": "string" },
+        "orgId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "managerUids": { "type": "array" },
+        "authorizedUids": { "type": "array" },
+        "unitNumber": { "type": "string" },
+        "unitType": { "type": "string", "enum": ["BEDSITTER", "SINGLE_ROOM", "ONE_BEDROOM", "TWO_BEDROOM", "THREE_BEDROOM", "COMMERCIAL", "SHOP", "OFFICE"] },
+        "rentCents": { "type": "integer" },
+        "depositCents": { "type": "integer" },
+        "status": { "type": "string", "enum": ["AVAILABLE", "RESERVED", "OCCUPIED", "UNDER_MAINTENANCE"] },
+        "amenities": { "type": "array" },
+        "description": { "type": "string" },
+        "imageRefs": { "type": "array" },
+        "published": { "type": "boolean" },
+        "currentTenantUid": { "type": "string" },
+        "currentLeaseId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["propertyId", "propertyName", "propertyCity", "propertyCategory", "orgId", "ownerUid", "managerUids", "authorizedUids", "unitNumber", "unitType", "rentCents", "depositCents", "status", "amenities", "description", "imageRefs", "published", "createdAt", "updatedAt"]
+    },
+    "RentalApplication": {
+      "title": "RentalApplication",
+      "description": "Rental application submitted by an authenticated applicant for an available unit.",
+      "type": "object",
+      "properties": {
+        "unitId": { "type": "string" },
+        "unitNumber": { "type": "string" },
+        "propertyId": { "type": "string" },
+        "propertyName": { "type": "string" },
+        "orgId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "managerUids": { "type": "array" },
+        "authorizedUids": { "type": "array" },
+        "applicantUid": { "type": "string" },
+        "applicantName": { "type": "string" },
+        "applicantPhone": { "type": "string" },
+        "applicantEmail": { "type": "string" },
+        "occupation": { "type": "string" },
+        "desiredMoveInDate": { "type": "string" },
+        "notes": { "type": "string" },
+        "reviewerNotes": { "type": "string" },
+        "status": { "type": "string", "enum": ["SUBMITTED", "UNDER_REVIEW", "APPROVED", "REJECTED", "WITHDRAWN"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["unitId", "unitNumber", "propertyId", "propertyName", "orgId", "ownerUid", "managerUids", "authorizedUids", "applicantUid", "applicantName", "applicantPhone", "desiredMoveInDate", "status", "createdAt", "updatedAt"]
+    },
+    "Lease": {
+      "title": "Lease",
+      "description": "Tenancy agreement connecting a tenant to a rental unit with billing rules and account credit.",
+      "type": "object",
+      "properties": {
+        "orgId": { "type": "string" },
+        "propertyId": { "type": "string" },
+        "propertyName": { "type": "string" },
+        "unitId": { "type": "string" },
+        "unitNumber": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "managerUids": { "type": "array" },
+        "authorizedUids": { "type": "array" },
+        "tenantUid": { "type": "string" },
+        "tenantName": { "type": "string" },
+        "tenantPhone": { "type": "string" },
+        "rentCents": { "type": "integer" },
+        "depositCents": { "type": "integer" },
+        "startDateEpochMs": { "type": "integer" },
+        "endDateEpochMs": { "type": "integer" },
+        "dueDayOfMonth": { "type": "integer" },
+        "status": { "type": "string", "enum": ["ACTIVE", "EXPIRED", "TERMINATED", "RENEWED"] },
+        "creditBalanceCents": { "type": "integer" },
+        "termsSummary": { "type": "string" },
+        "terminationNotice": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orgId", "propertyId", "propertyName", "unitId", "unitNumber", "ownerUid", "managerUids", "authorizedUids", "tenantUid", "tenantName", "tenantPhone", "rentCents", "depositCents", "startDateEpochMs", "endDateEpochMs", "dueDayOfMonth", "status", "creditBalanceCents", "termsSummary", "createdAt", "updatedAt"]
+    },
+    "Invoice": {
+      "title": "Invoice",
+      "description": "Monthly rent invoice keyed deterministically by leaseId_YYYY-MM to prevent duplicates.",
+      "type": "object",
+      "properties": {
+        "invoiceNumber": { "type": "string" },
+        "leaseId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "propertyId": { "type": "string" },
+        "propertyName": { "type": "string" },
+        "unitId": { "type": "string" },
+        "unitNumber": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "managerUids": { "type": "array" },
+        "authorizedUids": { "type": "array" },
+        "tenantUid": { "type": "string" },
+        "tenantName": { "type": "string" },
+        "billingPeriod": { "type": "string" },
+        "rentCents": { "type": "integer" },
+        "extraChargesCents": { "type": "integer" },
+        "extraChargesNote": { "type": "string" },
+        "previousBalanceCents": { "type": "integer" },
+        "totalDueCents": { "type": "integer" },
+        "paidCents": { "type": "integer" },
+        "outstandingCents": { "type": "integer" },
+        "dueDateEpochMs": { "type": "integer" },
+        "status": { "type": "string", "enum": ["UNPAID", "PARTIALLY_PAID", "PAID", "OVERDUE", "CANCELLED"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["invoiceNumber", "leaseId", "orgId", "propertyId", "propertyName", "unitId", "unitNumber", "ownerUid", "managerUids", "authorizedUids", "tenantUid", "tenantName", "billingPeriod", "rentCents", "extraChargesCents", "previousBalanceCents", "totalDueCents", "paidCents", "outstandingCents", "dueDateEpochMs", "status", "createdAt", "updatedAt"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Tenant rent payment entry supporting manual M-Pesa/bank/cash references, simulated STK checkout, verification, allocation, and audited reversals.",
+      "type": "object",
+      "properties": {
+        "referenceCode": { "type": "string" },
+        "leaseId": { "type": "string" },
+        "invoiceId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "propertyId": { "type": "string" },
+        "propertyName": { "type": "string" },
+        "unitId": { "type": "string" },
+        "unitNumber": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "managerUids": { "type": "array" },
+        "authorizedUids": { "type": "array" },
+        "tenantUid": { "type": "string" },
+        "tenantName": { "type": "string" },
+        "amountCents": { "type": "integer" },
+        "method": { "type": "string", "enum": ["MPESA", "BANK_TRANSFER", "CASH"] },
+        "simulatedCheckout": { "type": "boolean" },
+        "paymentDateEpochMs": { "type": "integer" },
+        "status": { "type": "string", "enum": ["PENDING_VERIFICATION", "VERIFIED", "REJECTED", "REVERSED"] },
+        "recordedByUid": { "type": "string" },
+        "verifiedByUid": { "type": "string" },
+        "verificationNotes": { "type": "string" },
+        "reversalReason": { "type": "string" },
+        "allocationsSummary": { "type": "string" },
+        "receiptNumber": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["referenceCode", "leaseId", "orgId", "propertyId", "propertyName", "unitId", "unitNumber", "ownerUid", "managerUids", "authorizedUids", "tenantUid", "tenantName", "amountCents", "method", "simulatedCheckout", "paymentDateEpochMs", "status", "recordedByUid", "createdAt", "updatedAt"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Landlord/property manager operational expense cleanly separated from tenant payments.",
+      "type": "object",
+      "properties": {
+        "orgId": { "type": "string" },
+        "propertyId": { "type": "string" },
+        "propertyName": { "type": "string" },
+        "unitId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "managerUids": { "type": "array" },
+        "authorizedUids": { "type": "array" },
+        "category": { "type": "string", "enum": ["MAINTENANCE", "REPAIRS", "SECURITY", "CLEANING", "UTILITIES", "MANAGEMENT_FEES", "INSURANCE", "OTHER"] },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "amountCents": { "type": "integer" },
+        "expenseDateEpochMs": { "type": "integer" },
+        "documentRef": { "type": "string" },
+        "recordedByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orgId", "propertyId", "propertyName", "ownerUid", "managerUids", "authorizedUids", "category", "title", "description", "amountCents", "expenseDateEpochMs", "recordedByUid", "createdAt", "updatedAt"]
+    },
+    "MaintenanceRequest": {
+      "title": "MaintenanceRequest",
+      "description": "Tenant-reported maintenance issue tracked through assignment, repair, cost logging, and completion.",
+      "type": "object",
+      "properties": {
+        "orgId": { "type": "string" },
+        "propertyId": { "type": "string" },
+        "propertyName": { "type": "string" },
+        "unitId": { "type": "string" },
+        "unitNumber": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "managerUids": { "type": "array" },
+        "authorizedUids": { "type": "array" },
+        "tenantUid": { "type": "string" },
+        "tenantName": { "type": "string" },
+        "assignedStaffUid": { "type": "string" },
+        "assignedStaffName": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string", "enum": ["PLUMBING", "ELECTRICAL", "WATER_SUPPLY", "DOORS_WINDOWS", "ROOF_LEAK", "GENERAL_REPAIR"] },
+        "priority": { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "URGENT"] },
+        "status": { "type": "string", "enum": ["SUBMITTED", "UNDER_REVIEW", "ASSIGNED", "IN_PROGRESS", "COMPLETED", "REJECTED"] },
+        "repairCostCents": { "type": "integer" },
+        "imageRefs": { "type": "array" },
+        "latestUpdateNote": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orgId", "propertyId", "propertyName", "unitId", "unitNumber", "ownerUid", "managerUids", "authorizedUids", "tenantUid", "tenantName", "title", "description", "category", "priority", "status", "repairCostCents", "imageRefs", "createdAt", "updatedAt"]
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "Authorized messaging thread connecting landlord, manager, and tenant within a property relationship.",
+      "type": "object",
+      "properties": {
+        "orgId": { "type": "string" },
+        "propertyId": { "type": "string" },
+        "propertyName": { "type": "string" },
+        "unitNumber": { "type": "string" },
+        "participantUids": { "type": "array" },
+        "subject": { "type": "string" },
+        "lastMessagePreview": { "type": "string" },
+        "lastSenderUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orgId", "propertyId", "propertyName", "participantUids", "subject", "lastMessagePreview", "lastSenderUid", "createdAt", "updatedAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Single message inside an authorized conversation.",
+      "type": "object",
+      "properties": {
+        "convId": { "type": "string" },
+        "participantUids": { "type": "array" },
+        "senderUid": { "type": "string" },
+        "senderName": { "type": "string" },
+        "body": { "type": "string" },
+        "readByUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["convId", "participantUids", "senderUid", "senderName", "body", "readByUids", "createdAt"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Property-wide announcement from landlord or property manager to active property tenants.",
+      "type": "object",
+      "properties": {
+        "orgId": { "type": "string" },
+        "propertyId": { "type": "string" },
+        "propertyName": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "authorizedUids": { "type": "array" },
+        "targetUids": { "type": "array" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "authorUid": { "type": "string" },
+        "authorName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orgId", "propertyId", "propertyName", "ownerUid", "authorizedUids", "targetUids", "title", "body", "authorUid", "authorName", "createdAt", "updatedAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "In-app notification item scoped to a specific recipient user.",
+      "type": "object",
+      "properties": {
+        "recipientUid": { "type": "string" },
+        "senderUid": { "type": "string" },
+        "orgId": { "type": "string" },
+        "type": { "type": "string", "enum": ["INVOICE", "PAYMENT", "MAINTENANCE", "LEASE", "APPLICATION", "ANNOUNCEMENT", "MESSAGE"] },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "relatedEntityId": { "type": "string" },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["recipientUid", "senderUid", "orgId", "type", "title", "body", "read", "createdAt", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable financial and operational audit trail entry.",
+      "type": "object",
+      "properties": {
+        "orgId": { "type": "string" },
+        "actorUid": { "type": "string" },
+        "actorName": { "type": "string" },
+        "action": { "type": "string" },
+        "entityType": { "type": "string" },
+        "entityId": { "type": "string" },
+        "details": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orgId", "actorUid", "actorName", "action", "entityType", "entityId", "details", "createdAt"]
+    },
+    "ReportedIssue": {
+      "title": "ReportedIssue",
+      "description": "Platform support or abuse report reviewed by platform administrators.",
+      "type": "object",
+      "properties": {
+        "reporterUid": { "type": "string" },
+        "reporterName": { "type": "string" },
+        "orgId": { "type": "string" },
+        "category": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "type": "string", "enum": ["OPEN", "INVESTIGATING", "RESOLVED"] },
+        "adminNotes": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["reporterUid", "reporterName", "orgId", "category", "title", "description", "status", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profiles isolated by UID."
+    },
+    "/organizations/{orgId}": {
+      "schema": { "$ref": "#/entities/Organization" },
+      "description": "Organizations isolating property portfolios and staff."
+    },
+    "/properties/{propertyId}": {
+      "schema": { "$ref": "#/entities/Property" },
+      "description": "Rental properties with optional public discovery flag when units are published."
+    },
+    "/units/{unitId}": {
+      "schema": { "$ref": "#/entities/RentalUnit" },
+      "description": "Rental units belonging to properties."
+    },
+    "/applications/{appId}": {
+      "schema": { "$ref": "#/entities/RentalApplication" },
+      "description": "Prospective tenant rental applications."
+    },
+    "/leases/{leaseId}": {
+      "schema": { "$ref": "#/entities/Lease" },
+      "description": "Active and historical tenancy agreements."
+    },
+    "/invoices/{invoiceId}": {
+      "schema": { "$ref": "#/entities/Invoice" },
+      "description": "Monthly rent invoices keyed by leaseId_YYYY-MM."
+    },
+    "/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/Payment" },
+      "description": "Centralized payment ledger with verification and reversal states."
+    },
+    "/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/Expense" },
+      "description": "Landlord and manager property expenses."
+    },
+    "/maintenance_requests/{requestId}": {
+      "schema": { "$ref": "#/entities/MaintenanceRequest" },
+      "description": "Tenant maintenance tickets and staff repair logs."
+    },
+    "/conversations/{convId}": {
+      "schema": { "$ref": "#/entities/Conversation" },
+      "description": "Authorized messaging threads."
+    },
+    "/conversations/{convId}/messages/{msgId}": {
+      "schema": { "$ref": "#/entities/Message" },
+      "description": "Messages within an authorized conversation."
+    },
+    "/announcements/{annId}": {
+      "schema": { "$ref": "#/entities/Announcement" },
+      "description": "Property announcements for tenants."
+    },
+    "/notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "In-app notifications scoped to recipientUid."
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Immutable operational and financial audit log."
+    },
+    "/reported_issues/{issueId}": {
+      "schema": { "$ref": "#/entities/ReportedIssue" },
+      "description": "Platform support/issue reports for administrators."
+    }
+  }
+}

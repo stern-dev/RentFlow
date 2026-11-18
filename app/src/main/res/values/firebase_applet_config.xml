@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<resources>
+    <string name="firestore_database_id" translatable="false">ai-studio-android-rentflow-b762b2c7-f1c1-460e-ab53-2e6f5d351fc8</string>
+    <string name="recaptcha_site_key" translatable="false">6LdFmyQuAAAAAE-rFMcsZ-uzjyENa9ZddspXVcoF</string>
+</resources>
