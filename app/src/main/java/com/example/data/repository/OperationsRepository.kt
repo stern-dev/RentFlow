@@ -18,7 +18,9 @@ import com.example.domain.model.MaintenanceRequest
 import com.example.domain.model.MaintenanceStatus
 import com.example.domain.model.NotificationType
 import com.example.domain.model.Property
+import com.example.domain.model.RentalUnit
 import com.example.domain.model.ReportedIssue
+import com.example.ui.media.MaintenancePhotoProcessor
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
@@ -44,7 +46,7 @@ class OperationsRepository(
 
     private fun requireUserId(): String =
         auth.currentUser?.uid
-            ?: throw IllegalStateException("User must be signed in with Google.")
+            ?: throw IllegalStateException("User must be signed in before performing this action.")
 
     fun observeMaintenanceForLandlord(userId: String): Flow<List<MaintenanceRequest>> {
         val cleanUid = userId.trim()
@@ -156,50 +158,203 @@ class OperationsRepository(
         category: MaintenanceCategory,
         priority: MaintenancePriority,
         imageRefs: List<String>
+    ): Result<String> = submitMaintenanceRequestForUnit(
+        unitId = lease.unitId,
+        lease = lease,
+        title = title,
+        description = description,
+        category = category,
+        priority = priority,
+        imageRefs = imageRefs,
+        submitterName = lease.tenantName
+    )
+
+    suspend fun submitMaintenanceRequestForUnit(
+        unitId: String,
+        lease: Lease? = null,
+        title: String,
+        description: String,
+        category: MaintenanceCategory,
+        priority: MaintenancePriority,
+        imageRefs: List<String>,
+        submitterName: String = ""
     ): Result<String> {
         val docRef = db.collection("maintenance_requests").document()
         return try {
             val uid = requireUserId()
-            require(title.trim().length in 2..140) { "Title must be 2-140 characters" }
-            require(description.trim().length in 2..1000) { "Description must be 2-1000 characters" }
+            val cleanUnitId = unitId.trim()
+            require(cleanUnitId.isNotBlank()) { "Select a linked rental unit before submitting." }
+            val cleanTitle = title.trim()
+            val cleanDesc = description.trim()
+            require(cleanTitle.length in 2..140) { "Title must be 2–140 characters" }
+            require(cleanDesc.length in 2..1000) { "Description must be 2–1000 characters" }
+            val validatedImages = MaintenancePhotoProcessor.validateImageRefsPayload(imageRefs).getOrThrow()
+
+            val unitSnap = db.collection("units").document(cleanUnitId).get().await()
+            if (!unitSnap.exists()) {
+                return Result.failure(
+                    IllegalStateException("Linked Firestore rental unit ($cleanUnitId) was not found.")
+                )
+            }
+            val unit = unitSnap.toObject(RentalUnit::class.java)
+                ?: return Result.failure(IllegalStateException("Unable to read rental unit metadata."))
+            val resolvedUnitId = unit.id.ifBlank { cleanUnitId }
+
+            val isAuthorizedManager = uid in unit.authorizedUids
+            val isLinkedTenant = (lease != null && lease.unitId == resolvedUnitId && lease.tenantUid == uid) ||
+                unit.currentTenantUid == uid
+            require(isAuthorizedManager || isLinkedTenant) {
+                "You do not have permission to log maintenance for Unit ${unit.unitNumber}."
+            }
+
+            val resolvedTenantUid: String
+            val resolvedTenantName: String
+            if (isLinkedTenant && !isAuthorizedManager) {
+                resolvedTenantUid = uid
+                resolvedTenantName = lease?.tenantName?.takeIf { it.isNotBlank() }
+                    ?: submitterName.trim().ifBlank { "Tenant" }.take(100)
+            } else if (!unit.currentTenantUid.isNullOrBlank()) {
+                resolvedTenantUid = unit.currentTenantUid!!
+                resolvedTenantName = lease?.tenantName?.takeIf { it.isNotBlank() }
+                    ?: "Unit ${unit.unitNumber} Tenant".take(100)
+            } else {
+                resolvedTenantUid = uid
+                resolvedTenantName = "${submitterName.trim().ifBlank { "Management" }} (Unit Check)".take(100)
+            }
+
             val req = MaintenanceRequest(
-                orgId = lease.orgId,
-                propertyId = lease.propertyId,
-                propertyName = lease.propertyName,
-                unitId = lease.unitId,
-                unitNumber = lease.unitNumber,
-                ownerUid = lease.ownerUid,
-                managerUids = lease.managerUids,
-                authorizedUids = lease.authorizedUids,
-                tenantUid = lease.tenantUid,
-                tenantName = lease.tenantName,
-                title = title.trim(),
-                description = description.trim(),
+                orgId = unit.orgId,
+                propertyId = unit.propertyId,
+                propertyName = unit.propertyName,
+                unitId = resolvedUnitId,
+                unitNumber = unit.unitNumber,
+                ownerUid = unit.ownerUid,
+                managerUids = unit.managerUids,
+                authorizedUids = unit.authorizedUids,
+                tenantUid = resolvedTenantUid,
+                tenantName = resolvedTenantName,
+                title = cleanTitle,
+                description = cleanDesc,
                 category = category.name,
                 priority = priority.name,
                 status = MaintenanceStatus.SUBMITTED.name,
                 repairCostCents = 0L,
-                imageRefs = imageRefs.take(4)
+                imageRefs = validatedImages
             )
             docRef.set(req.toCreateMap()).await()
 
-            db.collection("notifications").document().set(
-                AppNotification(
-                    recipientUid = lease.ownerUid,
-                    senderUid = uid,
-                    orgId = lease.orgId,
-                    type = NotificationType.MAINTENANCE.name,
-                    title = "New Maintenance Ticket (${priority.label})",
-                    body = "${lease.propertyName} • Unit ${lease.unitNumber}: ${title.trim()}",
-                    relatedEntityId = docRef.id,
-                    read = false
-                ).toCreateMap()
-            ).await()
+            val recipientUids = if (uid == unit.ownerUid && resolvedTenantUid != uid) {
+                listOf(resolvedTenantUid)
+            } else {
+                unit.authorizedUids.filter { it.isNotBlank() && it != uid }.distinct().take(10)
+            }
+            if (recipientUids.isNotEmpty()) {
+                val notifTitle = "New Maintenance Ticket (${priority.label})".take(140)
+                val notifBody = "${unit.propertyName} • Unit ${unit.unitNumber}: $cleanTitle".take(500)
+                val batch = db.batch()
+                recipientUids.forEach { recipientUid ->
+                    val notifRef = db.collection("notifications").document()
+                    batch.set(
+                        notifRef,
+                        AppNotification(
+                            recipientUid = recipientUid,
+                            senderUid = uid,
+                            orgId = unit.orgId,
+                            type = NotificationType.MAINTENANCE.name,
+                            title = notifTitle,
+                            body = notifBody,
+                            relatedEntityId = docRef.id,
+                            read = false
+                        ).toCreateMap()
+                    )
+                }
+                batch.commit().await()
+            }
             Result.success(docRef.id)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.CREATE, docRef.path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun appendTenantMaintenanceUpdate(
+        request: MaintenanceRequest,
+        appendedNote: String,
+        updatedImageRefs: List<String>,
+        actorName: String
+    ): Result<Unit> {
+        val path = "maintenance_requests/${request.id}"
+        return try {
+            val uid = requireUserId()
+            require(request.id.isNotBlank()) { "Maintenance ticket ID is missing." }
+            require(request.tenantUid == uid) { "Only the ticket's tenant can submit follow-up updates." }
+            require(request.statusEnum() !in listOf(MaintenanceStatus.COMPLETED, MaintenanceStatus.REJECTED)) {
+                "Closed tickets cannot be updated."
+            }
+
+            val cleanNote = appendedNote.trim()
+            val validatedImages = MaintenancePhotoProcessor.validateImageRefsPayload(updatedImageRefs).getOrThrow()
+            val photosChanged = validatedImages != request.imageRefs
+            require(cleanNote.isNotBlank() || photosChanged) {
+                "Add a follow-up note or attach new photos to update this ticket."
+            }
+
+            val updatedDescription = if (cleanNote.isNotBlank()) {
+                val addition = "\n\n[Follow-up]: $cleanNote"
+                val combined = request.description.trim() + addition
+                if (combined.length <= 1000) combined else combined.take(1000)
+            } else {
+                request.description.trim().take(1000)
+            }
+            require(updatedDescription.length in 2..1000) { "Description must be 2–1000 characters." }
+
+            val summaryNote = if (cleanNote.isNotBlank()) {
+                "Tenant follow-up (${actorName.trim().ifBlank { "Tenant" }}): $cleanNote".take(500)
+            } else {
+                "Tenant attached updated photo evidence (${validatedImages.size} photo(s))."
+            }
+
+            val updates = mapOf<String, Any>(
+                "description" to updatedDescription,
+                "imageRefs" to validatedImages,
+                "latestUpdateNote" to summaryNote,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            db.collection("maintenance_requests").document(request.id).update(updates).await()
+
+            val managerRecipients = request.authorizedUids
+                .filter { it.isNotBlank() && it != uid }
+                .distinct()
+                .take(10)
+            if (managerRecipients.isNotEmpty()) {
+                val followUpTitle = "Tenant Follow-up: ${request.title}".take(140)
+                val followUpBody = summaryNote.take(500)
+                val batch = db.batch()
+                managerRecipients.forEach { recipientUid ->
+                    val notifRef = db.collection("notifications").document()
+                    batch.set(
+                        notifRef,
+                        AppNotification(
+                            recipientUid = recipientUid,
+                            senderUid = uid,
+                            orgId = request.orgId,
+                            type = NotificationType.MAINTENANCE.name,
+                            title = followUpTitle,
+                            body = followUpBody,
+                            relatedEntityId = request.id,
+                            read = false
+                        ).toCreateMap()
+                    )
+                }
+                batch.commit().await()
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
             Result.failure(e)
         }
     }
@@ -246,19 +401,53 @@ class OperationsRepository(
                 db.collection("expenses").document().set(exp.toCreateMap()).await()
             }
 
-            if (uid != request.tenantUid) {
-                db.collection("notifications").document().set(
+            val batch = db.batch()
+            var hasNotifs = false
+
+            if (request.tenantUid.isNotBlank() && uid != request.tenantUid) {
+                val noteSuffix = if (updateNote.isNotBlank()) " — ${updateNote.trim()}" else ""
+                val tenantTitle = "Maintenance Status: ${newStatus.label}".take(140)
+                val tenantBody = "${request.propertyName} • Unit ${request.unitNumber} (${request.title}) is now ${newStatus.label}$noteSuffix".take(500)
+                batch.set(
+                    db.collection("notifications").document(),
                     AppNotification(
                         recipientUid = request.tenantUid,
                         senderUid = uid,
                         orgId = request.orgId,
                         type = NotificationType.MAINTENANCE.name,
-                        title = "Maintenance Update: ${newStatus.label}",
-                        body = "${request.title}: ${updateNote.ifBlank { "Status changed to ${newStatus.label}" }}",
+                        title = tenantTitle,
+                        body = tenantBody,
                         relatedEntityId = request.id,
                         read = false
                     ).toCreateMap()
-                ).await()
+                )
+                hasNotifs = true
+            }
+
+            val newStaffUid = assignedStaffUid?.trim()?.takeIf { it.isNotBlank() }
+            if (newStaffUid != null &&
+                newStaffUid != uid &&
+                newStaffUid != request.tenantUid &&
+                newStaffUid != request.assignedStaffUid
+            ) {
+                batch.set(
+                    db.collection("notifications").document(),
+                    AppNotification(
+                        recipientUid = newStaffUid,
+                        senderUid = uid,
+                        orgId = request.orgId,
+                        type = NotificationType.MAINTENANCE.name,
+                        title = "New Maintenance Assignment".take(140),
+                        body = "${request.propertyName} • Unit ${request.unitNumber}: ${request.title} (${newStatus.label})".take(500),
+                        relatedEntityId = request.id,
+                        read = false
+                    ).toCreateMap()
+                )
+                hasNotifs = true
+            }
+
+            if (hasNotifs) {
+                batch.commit().await()
             }
             Result.success(Unit)
         } catch (e: CancellationException) {

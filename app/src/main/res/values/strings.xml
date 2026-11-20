@@ -1,3 +1,9 @@
 <resources>
     <string name="app_name">RentFlow</string>
+    <string name="fcm_maintenance_channel_id" translatable="false">rentflow_maintenance</string>
+    <string name="fcm_maintenance_channel_name">Maintenance Updates</string>
+    <string name="fcm_general_channel_id" translatable="false">rentflow_general</string>
+    <string name="fcm_general_channel_name">RentFlow Alerts</string>
+    <string name="fcm_rent_channel_id" translatable="false">rentflow_rent</string>
+    <string name="fcm_rent_channel_name">Rent Due &amp; Overdue Reminders</string>
 </resources>

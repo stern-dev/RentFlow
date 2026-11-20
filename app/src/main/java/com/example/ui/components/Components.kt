@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.content.Context
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -33,11 +34,17 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,6 +57,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -73,6 +81,12 @@ import com.example.ui.theme.StatusSuccessBg
 import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.StatusWarningBg
 import com.example.ui.theme.TabularMoneyStyle
+import com.google.firebase.Firebase
+import com.google.firebase.auth.EmailAuthProvider
+import com.google.firebase.auth.GoogleAuthProvider
+import com.google.firebase.auth.auth
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 enum class PillTone {
     SUCCESS, WARNING, ERROR, INFO, NEUTRAL
@@ -710,6 +724,203 @@ fun ConfirmationDialog(
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
+fun CriticalActionConfirmationDialog(
+    title: String,
+    impactSummary: String,
+    confirmButtonText: String,
+    requiredPhrase: String? = null,
+    reasonLabel: String? = null,
+    requireReasonMinLen: Int = 0,
+    isRecentlyAuthenticated: Boolean,
+    onReauthenticate: suspend (android.content.Context) -> Result<Unit>,
+    onDismiss: () -> Unit,
+    onConfirm: (reason: String) -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var reason by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+    var phraseInput by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+    var passwordInput by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+    var isVerifying by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var errorMessage by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
+
+    val isPasswordOnlyUser = remember(isRecentlyAuthenticated) {
+        runCatching {
+            val user = Firebase.auth.currentUser ?: return@runCatching false
+            val providers = user.providerData.map { it.providerId }
+            EmailAuthProvider.PROVIDER_ID in providers && GoogleAuthProvider.PROVIDER_ID !in providers
+        }.getOrDefault(false)
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!isVerifying) onDismiss() },
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Surface(
+                    color = StatusErrorBg,
+                    shape = MaterialTheme.shapes.small,
+                    border = BorderStroke(1.dp, StatusError.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = impactSummary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StatusError,
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
+
+                if (!isRecentlyAuthenticated) {
+                    Surface(
+                        color = StatusWarningBg,
+                        shape = MaterialTheme.shapes.small,
+                        border = BorderStroke(1.dp, StatusWarning.copy(alpha = 0.35f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = if (isPasswordOnlyUser) {
+                                "Security verification required: enter your account password before this action completes."
+                            } else {
+                                "Security verification required: you will be prompted to confirm your Google account before this action completes."
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = StatusWarning,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+
+                    if (isPasswordOnlyUser) {
+                        OutlinedTextField(
+                            value = passwordInput,
+                            onValueChange = { passwordInput = it; errorMessage = null },
+                            label = { Text("Account Password") },
+                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                            singleLine = true,
+                            enabled = !isVerifying,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("critical_action_password_input")
+                        )
+                    }
+                }
+
+                if (!errorMessage.isNullOrBlank()) {
+                    ErrorBannerCard(errorMessage!!)
+                }
+
+                if (!reasonLabel.isNullOrBlank()) {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = reason,
+                        onValueChange = { reason = it; errorMessage = null },
+                        label = { Text(reasonLabel) },
+                        maxLines = 3,
+                        enabled = !isVerifying,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("critical_action_reason_input")
+                    )
+                }
+
+                if (!requiredPhrase.isNullOrBlank()) {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = phraseInput,
+                        onValueChange = { phraseInput = it; errorMessage = null },
+                        label = { Text("Type $requiredPhrase to confirm") },
+                        singleLine = true,
+                        enabled = !isVerifying,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("critical_action_phrase_input")
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val trimmedReason = reason.trim()
+                    if (!reasonLabel.isNullOrBlank() && requireReasonMinLen > 0 && trimmedReason.length < requireReasonMinLen) {
+                        errorMessage = "Enter at least $requireReasonMinLen characters for the audit reason."
+                        return@Button
+                    }
+                    if (!requiredPhrase.isNullOrBlank() && !phraseInput.trim().equals(requiredPhrase, ignoreCase = true)) {
+                        errorMessage = "Type $requiredPhrase exactly to continue."
+                        return@Button
+                    }
+                    if (isRecentlyAuthenticated) {
+                        onConfirm(trimmedReason)
+                    } else if (isPasswordOnlyUser) {
+                        if (passwordInput.isBlank()) {
+                            errorMessage = "Enter your account password to verify this action."
+                            return@Button
+                        }
+                        isVerifying = true
+                        errorMessage = null
+                        scope.launch {
+                            val authRes = runCatching {
+                                val user = Firebase.auth.currentUser
+                                    ?: throw IllegalStateException("Session expired. Sign in again.")
+                                val email = user.email?.trim().orEmpty()
+                                user.reauthenticate(EmailAuthProvider.getCredential(email, passwordInput)).await()
+                            }
+                            isVerifying = false
+                            authRes.fold(
+                                onSuccess = { onConfirm(trimmedReason) },
+                                onFailure = {
+                                    errorMessage = it.localizedMessage ?: "Password verification failed. Action cancelled."
+                                }
+                            )
+                        }
+                    } else {
+                        isVerifying = true
+                        errorMessage = null
+                        scope.launch {
+                            val authRes = onReauthenticate(context)
+                            isVerifying = false
+                            authRes.fold(
+                                onSuccess = { onConfirm(trimmedReason) },
+                                onFailure = {
+                                    errorMessage = it.localizedMessage ?: "Account verification failed. Action cancelled."
+                                }
+                            )
+                        }
+                    }
+                },
+                enabled = !isVerifying,
+                colors = ButtonDefaults.buttonColors(containerColor = StatusError),
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("critical_action_confirm_button")
+            ) {
+                if (isVerifying) {
+                    CircularProgressIndicator(
+                        color = Color.White,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Verifying...")
+                } else {
+                    Text(if (isRecentlyAuthenticated) confirmButtonText else "Verify & $confirmButtonText")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                enabled = !isVerifying,
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("critical_action_cancel_button")
+            ) {
                 Text("Cancel")
             }
         }

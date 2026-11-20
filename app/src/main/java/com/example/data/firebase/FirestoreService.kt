@@ -9,6 +9,7 @@ import com.example.domain.model.UnitStatus
 import com.example.domain.model.UnitType
 import com.example.domain.model.User
 import com.example.domain.model.UserRole
+import com.example.domain.validation.PropertyUnitSchemas
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
@@ -193,34 +194,18 @@ class FirestoreService(
         val docRef = db.collection("properties").document()
         return try {
             val uid = requireUserId()
-            val cleanOrgId = property.orgId.trim()
-            require(cleanOrgId.isNotBlank()) { "An existing organization ID is required before adding a property." }
-            require(property.name.trim().length in 2..120) { "Property name must be 2 to 120 characters" }
-            require(property.city.trim().length in 2..60) { "City is required" }
-            require(property.county.trim().length <= 60) { "County must be 60 characters or fewer" }
-
             val authorized = (property.authorizedUids + uid + property.managerUids)
+                .map { it.trim() }
                 .filter { it.isNotBlank() }
                 .distinct()
-                .take(20)
 
-            val sanitized = property.copy(
-                orgId = cleanOrgId,
+            val candidate = property.copy(
                 ownerUid = uid,
-                managerUids = property.managerUids.distinct().take(15),
-                authorizedUids = authorized,
-                name = property.name.trim().take(120),
-                city = property.city.trim().take(60),
-                county = property.county.trim().take(60),
-                neighborhood = property.neighborhood.trim().take(80).ifBlank { property.city.trim().take(60) },
-                addressLine = property.addressLine.trim().take(160).ifBlank { property.city.trim().take(60) },
-                description = property.description.trim().take(1000),
-                waterMeterNumber = property.waterMeterNumber?.trim()?.take(60)?.takeIf { it.isNotBlank() },
-                electricityMeterNumber = property.electricityMeterNumber?.trim()?.take(60)?.takeIf { it.isNotBlank() },
-                notes = property.notes?.trim()?.take(1000)?.takeIf { it.isNotBlank() },
-                imageRefs = property.imageRefs.take(6)
+                managerUids = property.managerUids.map { it.trim() }.filter { it.isNotBlank() }.distinct(),
+                authorizedUids = authorized
             )
-            docRef.set(sanitized.toCreateMap()).await()
+            val validated = PropertyUnitSchemas.propertyCreateSchema.parseOrThrow(candidate)
+            docRef.set(validated.toCreateMap()).await()
             Result.success(docRef.id)
         } catch (e: CancellationException) {
             throw e
@@ -316,31 +301,49 @@ class FirestoreService(
         imageRefs: List<String> = emptyList(),
         archived: Boolean = false
     ): Result<Unit> {
-        val path = "properties/$propertyId"
+        val cleanId = propertyId.trim()
+        val path = "properties/$cleanId"
         return try {
-            requireUserId()
-            require(propertyId.isNotBlank()) { "Property ID must not be blank" }
-            require(name.trim().length in 2..120) { "Property name must be 2 to 120 characters" }
-            require(city.trim().length in 2..60) { "City is required" }
-            require(county.trim().length <= 60) { "County must be 60 characters or fewer" }
+            val uid = requireUserId()
+            val validated = PropertyUnitSchemas.propertyUpdateSchema.parseOrThrow(
+                PropertyUnitSchemas.PropertyUpdateInput(
+                    propertyId = cleanId,
+                    name = name,
+                    category = category.name,
+                    city = city,
+                    county = county,
+                    neighborhood = neighborhood,
+                    addressLine = addressLine,
+                    description = description,
+                    waterMeterNumber = waterMeterNumber,
+                    electricityMeterNumber = electricityMeterNumber,
+                    notes = notes,
+                    imageRefs = imageRefs,
+                    archived = archived
+                )
+            )
+            val existingSnap = db.collection("properties").document(validated.propertyId).get().await()
+            if (existingSnap.exists() && existingSnap.getString("ownerUid") != uid) {
+                return Result.failure(SecurityException("Only the property owner can edit property details."))
+            }
 
             val updates = mutableMapOf<String, Any>(
-                "name" to name.trim().take(120),
-                "category" to category.name,
-                "city" to city.trim().take(60),
-                "neighborhood" to neighborhood.trim().take(80).ifBlank { city.trim().take(60) },
-                "addressLine" to addressLine.trim().take(160).ifBlank { city.trim().take(60) },
-                "description" to description.trim().take(1000),
-                "imageRefs" to imageRefs.take(6),
-                "archived" to archived,
+                "name" to validated.name,
+                "category" to validated.category,
+                "city" to validated.city,
+                "neighborhood" to validated.neighborhood,
+                "addressLine" to validated.addressLine,
+                "description" to validated.description,
+                "imageRefs" to validated.imageRefs,
+                "archived" to validated.archived,
                 "updatedAt" to FieldValue.serverTimestamp()
             )
-            updates["county"] = county.trim().take(60).takeIf { it.isNotBlank() } ?: FieldValue.delete()
-            updates["waterMeterNumber"] = waterMeterNumber?.trim()?.take(60)?.takeIf { it.isNotBlank() } ?: FieldValue.delete()
-            updates["electricityMeterNumber"] = electricityMeterNumber?.trim()?.take(60)?.takeIf { it.isNotBlank() } ?: FieldValue.delete()
-            updates["notes"] = notes?.trim()?.take(1000)?.takeIf { it.isNotBlank() } ?: FieldValue.delete()
+            updates["county"] = validated.county.takeIf { it.isNotBlank() } ?: FieldValue.delete()
+            updates["waterMeterNumber"] = validated.waterMeterNumber ?: FieldValue.delete()
+            updates["electricityMeterNumber"] = validated.electricityMeterNumber ?: FieldValue.delete()
+            updates["notes"] = validated.notes ?: FieldValue.delete()
 
-            db.collection("properties").document(propertyId).update(updates).await()
+            db.collection("properties").document(validated.propertyId).update(updates).await()
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -404,36 +407,24 @@ class FirestoreService(
                 "Signed-in user is not authorized to add units to this property."
             }
 
-            val cleanUnitNumber = unit.unitNumber.trim()
-            require(cleanUnitNumber.length in 1..40) { "Unit number must be 1 to 40 characters" }
-            require(unit.rentCents in 1L..1_000_000_000L) { "Monthly rent must be between 1 and 1,000,000,000 cents" }
-            require(unit.depositCents in 0L..1_000_000_000L) { "Deposit must be non-negative" }
-
             val authorized = (parentProperty.authorizedUids + parentProperty.ownerUid + parentProperty.managerUids)
+                .map { it.trim() }
                 .filter { it.isNotBlank() }
                 .distinct()
-                .take(20)
-            val resolvedStatus = unit.statusEnum()
-            val sanitized = unit.copy(
+            val candidate = unit.copy(
                 propertyId = cleanPropertyId,
-                propertyName = parentProperty.name.trim().take(120).ifBlank { "Property" },
-                propertyCity = parentProperty.city.trim().take(60).ifBlank { "Nairobi" },
+                propertyName = parentProperty.name.trim().ifBlank { "Property" },
+                propertyCity = parentProperty.city.trim().ifBlank { "Nairobi" },
                 propertyCategory = parentProperty.categoryEnum().name,
                 orgId = parentProperty.orgId.trim(),
                 ownerUid = parentProperty.ownerUid.trim(),
-                managerUids = parentProperty.managerUids.distinct().take(15),
+                managerUids = parentProperty.managerUids.distinct(),
                 authorizedUids = authorized,
-                unitNumber = cleanUnitNumber.take(40),
                 unitType = unit.unitTypeEnum().name,
-                rentCents = unit.rentCents,
-                depositCents = unit.depositCents,
-                status = resolvedStatus.name,
-                amenities = unit.amenities.map { it.trim() }.filter { it.isNotBlank() }.distinct().take(15),
-                description = unit.description.trim().take(1000),
-                imageRefs = unit.imageRefs.take(6),
-                published = unit.published && resolvedStatus == UnitStatus.AVAILABLE
+                status = unit.statusEnum().name
             )
-            docRef.set(sanitized.toCreateMap()).await()
+            val validated = PropertyUnitSchemas.unitCreateSchema.parseOrThrow(candidate)
+            docRef.set(validated.toCreateMap()).await()
             recomputePropertyUnitStats(cleanPropertyId, uid)
             Result.success(docRef.id)
         } catch (e: CancellationException) {
@@ -564,36 +555,53 @@ class FirestoreService(
         val path = "units/$cleanUnitId"
         return try {
             val uid = requireUserId()
-            require(cleanPropertyId.isNotBlank()) { "Parent property ID is required" }
-            require(cleanUnitId.isNotBlank()) { "Unit ID is required" }
-            val cleanUnitNumber = unitNumber.trim()
-            require(cleanUnitNumber.length in 1..40) { "Unit number must be 1 to 40 characters" }
-            require(rentCents in 1L..1_000_000_000L) { "Monthly rent must be positive" }
-            require(depositCents in 0L..1_000_000_000L) { "Deposit must be non-negative" }
-
-            val existingSnap = db.collection("units").document(cleanUnitId).get().await()
-            if (!existingSnap.exists()) {
-                return Result.failure(NoSuchElementException("Rental unit '$cleanUnitId' not found."))
-            }
-            if (existingSnap.getString("propertyId") != cleanPropertyId) {
-                return Result.failure(SecurityException("Unit does not belong to property '$cleanPropertyId'."))
-            }
-
-            db.collection("units").document(cleanUnitId).update(
-                mapOf(
-                    "unitNumber" to cleanUnitNumber.take(40),
-                    "unitType" to unitType.name,
-                    "rentCents" to rentCents,
-                    "depositCents" to depositCents,
-                    "status" to status.name,
-                    "amenities" to amenities.map { it.trim() }.filter { it.isNotBlank() }.distinct().take(15),
-                    "description" to description.trim().take(1000),
-                    "imageRefs" to imageRefs.take(6),
-                    "published" to (published && status == UnitStatus.AVAILABLE),
-                    "updatedAt" to FieldValue.serverTimestamp()
+            val validated = PropertyUnitSchemas.unitUpdateSchema.parseOrThrow(
+                PropertyUnitSchemas.RentalUnitUpdateInput(
+                    propertyId = cleanPropertyId,
+                    unitId = cleanUnitId,
+                    unitNumber = unitNumber,
+                    unitType = unitType.name,
+                    rentCents = rentCents,
+                    depositCents = depositCents,
+                    status = status.name,
+                    amenities = amenities,
+                    description = description,
+                    imageRefs = imageRefs,
+                    published = published
                 )
-            ).await()
-            recomputePropertyUnitStats(cleanPropertyId, uid)
+            )
+
+            val existingSnap = db.collection("units").document(validated.unitId).get().await()
+            if (!existingSnap.exists()) {
+                return Result.failure(NoSuchElementException("Rental unit '${validated.unitId}' not found."))
+            }
+            if (existingSnap.getString("propertyId") != validated.propertyId) {
+                return Result.failure(SecurityException("Unit does not belong to property '${validated.propertyId}'."))
+            }
+            val ownerUid = existingSnap.getString("ownerUid").orEmpty()
+            val existingRent = existingSnap.getLong("rentCents") ?: validated.rentCents
+            val existingDeposit = existingSnap.getLong("depositCents") ?: validated.depositCents
+            if (ownerUid != uid && (validated.rentCents != existingRent || validated.depositCents != existingDeposit)) {
+                return Result.failure(SecurityException("Only the property owner can modify unit rent or deposit."))
+            }
+
+            val updates = mutableMapOf<String, Any>(
+                "unitNumber" to validated.unitNumber,
+                "unitType" to validated.unitType,
+                "status" to validated.status,
+                "amenities" to validated.amenities,
+                "description" to validated.description,
+                "imageRefs" to validated.imageRefs,
+                "published" to validated.published,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (ownerUid == uid) {
+                updates["rentCents"] = validated.rentCents
+                updates["depositCents"] = validated.depositCents
+            }
+
+            db.collection("units").document(validated.unitId).update(updates).await()
+            recomputePropertyUnitStats(validated.propertyId, uid)
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -635,6 +643,9 @@ class FirestoreService(
                 ?: return Result.failure(NoSuchElementException("Rental unit '$cleanUnitId' not found."))
             if (existingUnit.propertyId != cleanPropertyId) {
                 return Result.failure(SecurityException("Unit does not belong to property '$cleanPropertyId'."))
+            }
+            if (existingUnit.ownerUid != uid) {
+                return Result.failure(SecurityException("Only the property owner can delete rental units."))
             }
             if (existingUnit.statusEnum() == UnitStatus.OCCUPIED || !existingUnit.currentLeaseId.isNullOrBlank()) {
                 return Result.failure(IllegalStateException("Cannot delete an occupied unit or a unit linked to an active lease."))

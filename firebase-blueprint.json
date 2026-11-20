@@ -15,6 +15,7 @@
         "roles": { "type": "array" },
         "activeRole": { "type": "string", "enum": ["LANDLORD", "PROPERTY_MANAGER", "TENANT", "MAINTENANCE_STAFF", "ADMIN"] },
         "activeOrgId": { "type": "string" },
+        "lastAcceptedInviteId": { "type": "string" },
         "notifyRentDue": { "type": "boolean" },
         "notifyMaintenance": { "type": "boolean" },
         "notifyAnnouncements": { "type": "boolean" },
@@ -36,10 +37,34 @@
         "defaultDueDay": { "type": "integer" },
         "memberUids": { "type": "array" },
         "suspended": { "type": "boolean" },
+        "verified": { "type": "boolean" },
+        "verifiedAtEpochMs": { "type": "integer" },
+        "verifiedByUid": { "type": "string" },
+        "mpesaPaybill": { "type": "string" },
+        "mpesaTill": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["name", "ownerUid", "country", "currency", "defaultDueDay", "memberUids", "suspended", "createdAt", "updatedAt"]
+    },
+    "RoleInvite": {
+      "title": "RoleInvite",
+      "description": "Organization-owner issued invitation granting a scoped role and organization membership to a verified email.",
+      "type": "object",
+      "properties": {
+        "orgId": { "type": "string" },
+        "orgName": { "type": "string" },
+        "propertyIds": { "type": "array" },
+        "inviterUid": { "type": "string" },
+        "inviterName": { "type": "string" },
+        "inviteeEmail": { "type": "string" },
+        "role": { "type": "string", "enum": ["LANDLORD", "PROPERTY_MANAGER", "TENANT", "MAINTENANCE_STAFF"] },
+        "status": { "type": "string", "enum": ["PENDING", "ACCEPTED", "DECLINED", "REVOKED"] },
+        "acceptedByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orgId", "orgName", "propertyIds", "inviterUid", "inviterName", "inviteeEmail", "role", "status", "createdAt", "updatedAt"]
     },
     "Property": {
       "title": "Property",
@@ -59,6 +84,10 @@
         "description": { "type": "string" },
         "waterMeterNumber": { "type": "string" },
         "electricityMeterNumber": { "type": "string" },
+        "mpesaPaybill": { "type": "string" },
+        "mpesaTill": { "type": "string" },
+        "mpesaAccountPrefix": { "type": "string" },
+        "landlordVerified": { "type": "boolean" },
         "notes": { "type": "string" },
         "imageRefs": { "type": "array" },
         "archived": { "type": "boolean" },
@@ -92,6 +121,10 @@
         "description": { "type": "string" },
         "imageRefs": { "type": "array" },
         "published": { "type": "boolean" },
+        "landlordVerified": { "type": "boolean" },
+        "mpesaPaybill": { "type": "string" },
+        "mpesaTill": { "type": "string" },
+        "mpesaAccountPrefix": { "type": "string" },
         "currentTenantUid": { "type": "string" },
         "currentLeaseId": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -183,6 +216,8 @@
         "outstandingCents": { "type": "integer" },
         "dueDateEpochMs": { "type": "integer" },
         "status": { "type": "string", "enum": ["UNPAID", "PARTIALLY_PAID", "PAID", "OVERDUE", "CANCELLED"] },
+        "lastReminderSentEpochMs": { "type": "integer" },
+        "reminderCount": { "type": "integer" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -380,6 +415,37 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["reporterUid", "reporterName", "orgId", "category", "title", "description", "status", "createdAt", "updatedAt"]
+    },
+    "FcmDeviceToken": {
+      "title": "FcmDeviceToken",
+      "description": "Device Firebase Cloud Messaging registration token scoped to an authenticated user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "token": { "type": "string" },
+        "platform": { "type": "string", "enum": ["ANDROID"] },
+        "notifyMaintenance": { "type": "boolean" },
+        "activeRole": { "type": "string", "enum": ["LANDLORD", "PROPERTY_MANAGER", "TENANT", "MAINTENANCE_STAFF", "ADMIN"] },
+        "appVersion": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "token", "platform", "notifyMaintenance", "activeRole", "createdAt", "updatedAt"]
+    },
+    "SavedUnit": {
+      "title": "SavedUnit",
+      "description": "Cloud-synced rental unit bookmark saved by an authenticated user for comparison and later application.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "unitId": { "type": "string" },
+        "propertyId": { "type": "string" },
+        "propertyName": { "type": "string" },
+        "unitNumber": { "type": "string" },
+        "rentCents": { "type": "integer" },
+        "savedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "unitId", "propertyId", "propertyName", "unitNumber", "rentCents", "savedAt"]
     }
   },
   "firestore": {
@@ -387,9 +453,21 @@
       "schema": { "$ref": "#/entities/UserProfile" },
       "description": "Private user profiles isolated by UID."
     },
+    "/users/{userId}/fcm_tokens/{tokenId}": {
+      "schema": { "$ref": "#/entities/FcmDeviceToken" },
+      "description": "Device FCM push registration tokens owned by the user."
+    },
+    "/users/{userId}/saved_units/{unitId}": {
+      "schema": { "$ref": "#/entities/SavedUnit" },
+      "description": "Bookmarked rental units saved by the user for comparison."
+    },
     "/organizations/{orgId}": {
       "schema": { "$ref": "#/entities/Organization" },
       "description": "Organizations isolating property portfolios and staff."
+    },
+    "/role_invites/{inviteId}": {
+      "schema": { "$ref": "#/entities/RoleInvite" },
+      "description": "Organization role invitations verified by invitee email."
     },
     "/properties/{propertyId}": {
       "schema": { "$ref": "#/entities/Property" },

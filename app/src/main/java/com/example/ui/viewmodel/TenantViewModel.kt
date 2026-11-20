@@ -16,11 +16,16 @@ import com.example.domain.model.MaintenancePriority
 import com.example.domain.model.MaintenanceRequest
 import com.example.domain.model.Payment
 import com.example.domain.model.PaymentMethod
+import com.example.domain.model.RentalUnit
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -51,10 +56,31 @@ class TenantViewModel(
         .asUiState("TenantVM", "Failed to load announcements")
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
+    val linkedLeases: StateFlow<List<Lease>> = leases
+        .map { leaseState ->
+            val list = (leaseState as? UiState.Success)?.data ?: emptyList()
+            list.sortedBy {
+                when (it.statusEnum()) {
+                    LeaseStatus.ACTIVE -> 0
+                    LeaseStatus.RENEWED -> 1
+                    else -> 2
+                }
+            }.distinctBy { it.unitId }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+
     val activeLease: StateFlow<Lease?> = leases
         .combine(MutableStateFlow(Unit)) { leaseState, _ ->
             val list = (leaseState as? UiState.Success)?.data ?: emptyList()
             list.firstOrNull { it.statusEnum() == LeaseStatus.ACTIVE } ?: list.firstOrNull()
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), null)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val activeUnit: StateFlow<RentalUnit?> = activeLease
+        .flatMapLatest { lease ->
+            val unitId = lease?.unitId.orEmpty()
+            if (unitId.isBlank()) flowOf(null) else propertyRepo.observeUnit(unitId)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), null)
 
@@ -119,17 +145,78 @@ class TenantViewModel(
         imageRefs: List<String>,
         onSuccess: () -> Unit
     ) {
+        submitMaintenanceForUnit(
+            unitId = lease.unitId,
+            lease = lease,
+            title = title,
+            description = description,
+            category = category,
+            priority = priority,
+            imageRefs = imageRefs,
+            submitterName = lease.tenantName,
+            onSuccess = onSuccess
+        )
+    }
+
+    fun submitMaintenanceForUnit(
+        unitId: String,
+        lease: Lease?,
+        title: String,
+        description: String,
+        category: MaintenanceCategory,
+        priority: MaintenancePriority,
+        imageRefs: List<String>,
+        submitterName: String,
+        onSuccess: () -> Unit
+    ) {
         viewModelScope.launch {
             _busy.value = true
-            val res = opsRepo.submitMaintenanceRequest(lease, title, description, category, priority, imageRefs)
+            val res = opsRepo.submitMaintenanceRequestForUnit(
+                unitId = unitId,
+                lease = lease,
+                title = title,
+                description = description,
+                category = category,
+                priority = priority,
+                imageRefs = imageRefs,
+                submitterName = submitterName
+            )
             _busy.value = false
             res.fold(
                 onSuccess = {
-                    _feedback.value = "Maintenance request submitted"
+                    _feedback.value = "Maintenance request submitted & linked to unit"
                     onSuccess()
                 },
                 onFailure = {
                     _feedback.value = it.localizedMessage ?: "Failed to submit ticket"
+                }
+            )
+        }
+    }
+
+    fun appendMaintenanceFollowUp(
+        request: MaintenanceRequest,
+        appendedNote: String,
+        updatedImageRefs: List<String>,
+        actorName: String,
+        onSuccess: () -> Unit
+    ) {
+        viewModelScope.launch {
+            _busy.value = true
+            val res = opsRepo.appendTenantMaintenanceUpdate(
+                request = request,
+                appendedNote = appendedNote,
+                updatedImageRefs = updatedImageRefs,
+                actorName = actorName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = "Follow-up details added to ticket"
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to update ticket"
                 }
             )
         }

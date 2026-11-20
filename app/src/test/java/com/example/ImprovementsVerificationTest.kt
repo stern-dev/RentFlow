@@ -168,9 +168,9 @@ class ImprovementsVerificationTest {
         val opsRepo = OperationsRepository(db, auth)
 
         assertTrue(finRepo.observeInvoicesForLandlord("").first().isEmpty())
-        assertTrue(finRepo.observeInvoicesForTenant("   ").first().isEmpty())
+        assertTrue(finRepo.observeMyInvoices("   ").first().isEmpty())
         assertTrue(finRepo.observePaymentsForLandlord("").first().isEmpty())
-        assertTrue(finRepo.observePaymentsForTenant("").first().isEmpty())
+        assertTrue(finRepo.observeMyPayments("").first().isEmpty())
         assertTrue(finRepo.observeExpensesForLandlord("").first().isEmpty())
 
         assertTrue(opsRepo.observeMaintenanceForLandlord("").first().isEmpty())

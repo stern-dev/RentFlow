@@ -74,7 +74,8 @@ fun LandlordDashboardScreen(
     onNavigateFinance: () -> Unit,
     onNavigateOperations: () -> Unit,
     onOpenCreateOrg: () -> Unit,
-    onOpenAddProperty: () -> Unit
+    onOpenAddProperty: () -> Unit,
+    canCreateProperty: Boolean = true
 ) {
     val context = LocalContext.current
     val summary by viewModel.portfolioSummary.collectAsStateWithLifecycle()
@@ -101,26 +102,43 @@ fun LandlordDashboardScreen(
     ) {
         if (properties.isEmpty() || units.isEmpty() || leases.isEmpty()) {
             item {
-                GuidedOnboardingCard(
-                    steps = listOf(
-                        OnboardingStepItem(
-                            title = "Create Property Organization",
-                            subtitle = if (organizations.isNotEmpty()) "${organizations.first().name} ready" else "Isolates your properties & accounting",
-                            completed = organizations.isNotEmpty(),
-                            onAction = onOpenCreateOrg
-                        ),
-                        OnboardingStepItem(
-                            title = "Register Your First Property",
-                            subtitle = "Add location, Kenyan city, category & photos",
-                            completed = properties.isNotEmpty(),
-                            onAction = onOpenAddProperty
-                        ),
+                val onboardingSteps = buildList {
+                    if (canCreateProperty) {
+                        add(
+                            OnboardingStepItem(
+                                title = "Create Property Organization",
+                                subtitle = if (organizations.isNotEmpty()) "${organizations.first().name} ready" else "Isolates your properties & accounting",
+                                completed = organizations.isNotEmpty(),
+                                onAction = onOpenCreateOrg
+                            )
+                        )
+                        add(
+                            OnboardingStepItem(
+                                title = "Register Your First Property",
+                                subtitle = "Add location, Kenyan city, category & photos",
+                                completed = properties.isNotEmpty(),
+                                onAction = onOpenAddProperty
+                            )
+                        )
+                    } else if (properties.isEmpty()) {
+                        add(
+                            OnboardingStepItem(
+                                title = "Await Property Assignment",
+                                subtitle = "Ask the property owner to assign you to managed properties",
+                                completed = false,
+                                onAction = onNavigatePortfolio
+                            )
+                        )
+                    }
+                    add(
                         OnboardingStepItem(
                             title = "Add Rental Units & Publish Vacancies",
                             subtitle = "Configure KES rent, deposit & amenities",
                             completed = units.isNotEmpty(),
                             onAction = onNavigatePortfolio
-                        ),
+                        )
+                    )
+                    add(
                         OnboardingStepItem(
                             title = "Approve Application or Assign Tenant",
                             subtitle = "Activate lease & generate monthly KES invoices",
@@ -128,7 +146,8 @@ fun LandlordDashboardScreen(
                             onAction = onNavigatePortfolio
                         )
                     )
-                )
+                }
+                GuidedOnboardingCard(steps = onboardingSteps)
             }
         }
 

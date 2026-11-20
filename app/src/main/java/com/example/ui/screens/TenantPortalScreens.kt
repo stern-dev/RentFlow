@@ -1,8 +1,5 @@
 package com.example.ui.screens
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -29,19 +26,26 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.PhoneAndroid
-import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -77,25 +81,25 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.AsyncImage
 import com.example.domain.finance.CurrencyUtils
+import com.example.domain.finance.MpesaSmsParser
+import com.example.domain.finance.RentReminderEngine
+import com.example.domain.finance.RentReminderUrgency
 import com.example.domain.finance.ReportExporter
 import com.example.domain.model.Invoice
 import com.example.domain.model.InvoiceStatus
 import com.example.domain.model.Lease
-import com.example.domain.model.MaintenanceCategory
-import com.example.domain.model.MaintenancePriority
 import com.example.domain.model.MaintenanceRequest
 import com.example.domain.model.MaintenanceStatus
 import com.example.domain.model.Payment
 import com.example.domain.model.PaymentMethod
 import com.example.domain.model.PaymentStatus
+import com.example.domain.model.RentalUnit
 import com.example.domain.model.UserProfile
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.ErrorBannerCard
@@ -128,13 +132,18 @@ fun TenantDashboardScreen(
     val context = LocalContext.current
     val activeLease by viewModel.activeLease.collectAsStateWithLifecycle()
     val accountSummary by viewModel.accountSummary.collectAsStateWithLifecycle()
+    val invoicesState by viewModel.invoices.collectAsStateWithLifecycle()
     val paymentsState by viewModel.payments.collectAsStateWithLifecycle()
     val maintenanceState by viewModel.maintenanceRequests.collectAsStateWithLifecycle()
     val announcementsState by viewModel.announcements.collectAsStateWithLifecycle()
 
+    val invoices = (invoicesState as? UiState.Success)?.data ?: emptyList()
     val payments = (paymentsState as? UiState.Success)?.data ?: emptyList()
     val tickets = (maintenanceState as? UiState.Success)?.data ?: emptyList()
     val announcements = (announcementsState as? UiState.Success)?.data ?: emptyList()
+    val dueReminders = remember(invoices) {
+        RentReminderEngine.evaluateInvoices(invoices, respectCooldown = false)
+    }
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -222,6 +231,63 @@ fun TenantDashboardScreen(
                             style = MaterialTheme.typography.labelSmall,
                             color = Color(0xFFE2E8F0)
                         )
+                    }
+                }
+            }
+        }
+
+        if (dueReminders.isNotEmpty() && activeLease != null) {
+            val topReminder = dueReminders.first()
+            val isOverdue = topReminder.urgency == RentReminderUrgency.OVERDUE
+            item {
+                Card(
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isOverdue) {
+                            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f)
+                        } else {
+                            StatusWarningBg
+                        }
+                    ),
+                    border = BorderStroke(1.dp, if (isOverdue) StatusError.copy(alpha = 0.5f) else StatusWarning.copy(alpha = 0.5f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("tenant_rent_reminder_banner")
+                ) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.NotificationsActive,
+                                contentDescription = null,
+                                tint = if (isOverdue) StatusError else StatusWarning
+                            )
+                            Text(
+                                text = topReminder.title,
+                                style = MaterialTheme.typography.titleSmall,
+                                color = if (isOverdue) StatusError else StatusWarning,
+                                modifier = Modifier.weight(1f)
+                            )
+                            StatusPill(
+                                label = topReminder.urgency.label,
+                                tone = if (isOverdue) PillTone.ERROR else PillTone.WARNING
+                            )
+                        }
+                        Text(
+                            text = topReminder.body,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Button(
+                            onClick = onNavigatePayRent,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isOverdue) StatusError else MaterialTheme.colorScheme.secondary
+                            ),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        ) {
+                            Text("Pay Now via M-Pesa")
+                        }
                     }
                 }
             }
@@ -399,6 +465,7 @@ fun TenantPaymentsScreen(
 ) {
     val context = LocalContext.current
     val activeLease by viewModel.activeLease.collectAsStateWithLifecycle()
+    val activeUnit by viewModel.activeUnit.collectAsStateWithLifecycle()
     val invoicesState by viewModel.invoices.collectAsStateWithLifecycle()
     val paymentsState by viewModel.payments.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
@@ -449,6 +516,18 @@ fun TenantPaymentsScreen(
                             Spacer(Modifier.width(4.dp))
                             Text("Statement")
                         }
+                    }
+                }
+                if (activeUnit?.mpesaPaybill != null || activeUnit?.mpesaTill != null) {
+                    item {
+                        MpesaInstructionsCard(
+                            paybill = activeUnit?.mpesaPaybill,
+                            till = activeUnit?.mpesaTill,
+                            accountReference = MpesaSmsParser.buildMpesaAccountReference(
+                                prefix = activeUnit?.mpesaAccountPrefix,
+                                unitNumber = lease.unitNumber
+                            )
+                        )
                     }
                 }
             }
@@ -660,6 +739,7 @@ fun TenantPaymentsScreen(
     if (showPayDialog && activeLease != null) {
         TenantPaymentSubmissionDialog(
             lease = activeLease!!,
+            unit = activeUnit,
             targetInvoice = paymentTargetInvoice,
             defaultPhone = currentUser.phoneNumber ?: activeLease!!.tenantPhone,
             isBusy = busy,
@@ -677,6 +757,69 @@ fun TenantPaymentsScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+fun MpesaInstructionsCard(
+    paybill: String?,
+    till: String?,
+    accountReference: String
+) {
+    val context = LocalContext.current
+    Card(
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.2f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("mpesa_instructions_card")
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("M-Pesa Rent Payment Details", style = MaterialTheme.typography.titleSmall)
+            if (!paybill.isNullOrBlank()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Paybill: $paybill • Account: $accountReference", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                    TextButton(
+                        onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cm.setPrimaryClip(ClipData.newPlainText("M-Pesa Paybill", "$paybill / $accountReference"))
+                            Toast.makeText(context, "Paybill & account copied", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = "Copy Paybill", modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Copy")
+                    }
+                }
+            }
+            if (!till.isNullOrBlank()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Buy Goods Till: $till", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                    TextButton(
+                        onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cm.setPrimaryClip(ClipData.newPlainText("M-Pesa Till", till))
+                            Toast.makeText(context, "Till number copied", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = "Copy Till", modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Copy")
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -769,8 +912,9 @@ private fun exportPaymentReceiptPdf(context: android.content.Context, pay: Payme
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-private fun TenantPaymentSubmissionDialog(
+fun TenantPaymentSubmissionDialog(
     lease: Lease,
+    unit: RentalUnit? = null,
     targetInvoice: Invoice?,
     defaultPhone: String,
     isBusy: Boolean,
@@ -780,6 +924,8 @@ private fun TenantPaymentSubmissionDialog(
     var mode by remember { mutableIntStateOf(0) } // 0 = Manual Reference, 1 = Simulated M-Pesa STK
     var method by remember { mutableStateOf(PaymentMethod.MPESA) }
     var methodExpanded by remember { mutableStateOf(false) }
+    var smsPasteText by remember { mutableStateOf("") }
+    var smsParsedStatus by remember { mutableStateOf<String?>(null) }
     var refCode by remember { mutableStateOf("") }
     var mpesaPhone by remember { mutableStateOf(defaultPhone) }
     val defaultAmount = targetInvoice?.outstandingCents?.takeIf { it > 0L } ?: lease.rentCents
@@ -809,9 +955,59 @@ private fun TenantPaymentSubmissionDialog(
                     )
                 }
 
+                if (unit?.mpesaPaybill != null || unit?.mpesaTill != null) {
+                    MpesaInstructionsCard(
+                        paybill = unit.mpesaPaybill,
+                        till = unit.mpesaTill,
+                        accountReference = MpesaSmsParser.buildMpesaAccountReference(
+                            prefix = unit.mpesaAccountPrefix,
+                            unitNumber = lease.unitNumber
+                        )
+                    )
+                }
+
                 if (!err.isNullOrBlank()) ErrorBannerCard(err!!)
 
                 if (mode == 0) {
+                    OutlinedTextField(
+                        value = smsPasteText,
+                        onValueChange = { pasted ->
+                            smsPasteText = pasted
+                            val parsed = MpesaSmsParser.parse(pasted)
+                            if (parsed != null) {
+                                refCode = parsed.transactionCode
+                                amountText = CurrencyUtils.centsToInputString(parsed.amountCents)
+                                method = PaymentMethod.MPESA
+                                smsParsedStatus = "Detected ${parsed.transactionCode} • ${CurrencyUtils.formatKes(parsed.amountCents, true)}"
+                                err = null
+                            } else {
+                                smsParsedStatus = null
+                            }
+                        },
+                        leadingIcon = { Icon(Icons.Filled.Sms, contentDescription = null) },
+                        label = { Text("Paste M-Pesa Confirmation SMS (Optional)") },
+                        maxLines = 3,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("mpesa_sms_paste_input")
+                    )
+                    if (!smsParsedStatus.isNullOrBlank()) {
+                        Surface(
+                            color = StatusInfoBg,
+                            shape = MaterialTheme.shapes.small,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = smsParsedStatus!!,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = StatusInfo,
+                                modifier = Modifier
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                                    .testTag("mpesa_sms_parsed_status")
+                            )
+                        }
+                    }
+
                     ExposedDropdownMenuBox(expanded = methodExpanded, onExpandedChange = { methodExpanded = !methodExpanded }) {
                         OutlinedTextField(
                             value = method.label,
@@ -919,16 +1115,29 @@ private fun TenantPaymentSubmissionDialog(
 
 @Composable
 fun TenantMaintenanceScreen(
-    viewModel: TenantViewModel
+    viewModel: TenantViewModel,
+    currentUser: UserProfile = UserProfile()
 ) {
     val activeLease by viewModel.activeLease.collectAsStateWithLifecycle()
+    val linkedLeases by viewModel.linkedLeases.collectAsStateWithLifecycle()
     val maintenanceState by viewModel.maintenanceRequests.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
+
+    val unitTargets = remember(linkedLeases, activeLease) {
+        val base = linkedLeases.ifEmpty { listOfNotNull(activeLease) }
+        base.filter { it.unitId.isNotBlank() }
+            .distinctBy { it.unitId }
+            .map { MaintenanceUnitTarget.fromLease(it) }
+    }
+
+    var selectedFilter by remember { mutableStateOf(MaintenanceTicketFilter.ALL) }
     var showCreateDialog by remember { mutableStateOf(false) }
+    var followUpRequest by remember { mutableStateOf<MaintenanceRequest?>(null) }
+    var lightboxState by remember { mutableStateOf<PhotoLightboxState?>(null) }
 
     Scaffold(
         floatingActionButton = {
-            if (activeLease != null) {
+            if (unitTargets.isNotEmpty()) {
                 FloatingActionButton(
                     onClick = { showCreateDialog = true },
                     containerColor = MaterialTheme.colorScheme.secondary,
@@ -945,23 +1154,93 @@ fun TenantMaintenanceScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.fillMaxSize().padding(innerPadding)
         ) {
-            item { SectionHeader("My Maintenance Requests") }
+            item {
+                SectionHeader(
+                    title = "My Maintenance Requests",
+                    actionLabel = if (unitTargets.isNotEmpty()) "New Ticket" else null,
+                    onActionClick = if (unitTargets.isNotEmpty()) { { showCreateDialog = true } } else null
+                )
+            }
             when (val st = maintenanceState) {
                 is UiState.Loading -> item { LoadingStateBox("Loading repair tickets...") }
                 is UiState.Error -> item { ErrorBannerCard(st.message) }
                 is UiState.Success -> {
+                    item {
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            items(MaintenanceTicketFilter.entries) { filter ->
+                                val count = st.data.count { filter.matches(it) }
+                                FilterChip(
+                                    selected = selectedFilter == filter,
+                                    onClick = { selectedFilter = filter },
+                                    label = { Text("${filter.label} ($count)") },
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("maintenance_filter_chip_${filter.name.lowercase()}")
+                                )
+                            }
+                        }
+                    }
+
+                    val filtered = st.data.filter { selectedFilter.matches(it) }
                     if (st.data.isEmpty()) {
                         item {
                             EmptyStateCard(
                                 title = "No Maintenance Requests",
-                                message = if (activeLease != null) "Need plumbing, electrical, or general repairs? Tap + to submit a ticket with photos." else "Link an active tenancy first to submit property maintenance requests.",
-                                ctaLabel = if (activeLease != null) "Submit Request" else null,
-                                onCtaClick = if (activeLease != null) { { showCreateDialog = true } } else null
+                                message = if (unitTargets.isNotEmpty()) {
+                                    "Need plumbing, electrical, or general repairs? Tap + to submit a ticket with photos linked to your rental unit."
+                                } else {
+                                    "Link an active tenancy first to submit property maintenance requests."
+                                },
+                                ctaLabel = if (unitTargets.isNotEmpty()) "Submit Request" else null,
+                                onCtaClick = if (unitTargets.isNotEmpty()) { { showCreateDialog = true } } else null
+                            )
+                        }
+                    } else if (filtered.isEmpty()) {
+                        item {
+                            EmptyStateCard(
+                                title = "No ${selectedFilter.label} Tickets",
+                                message = "No maintenance requests match this status filter.",
+                                ctaLabel = "Show All Tickets",
+                                onCtaClick = { selectedFilter = MaintenanceTicketFilter.ALL },
+                                showIllustration = false
                             )
                         }
                     } else {
-                        items(st.data, key = { it.id }) { req ->
-                            MaintenanceCard(req = req)
+                        items(filtered, key = { it.id }) { req ->
+                            val isOpenTicket = req.statusEnum() !in listOf(
+                                MaintenanceStatus.COMPLETED,
+                                MaintenanceStatus.REJECTED
+                            )
+                            EnhancedMaintenanceCard(
+                                req = req,
+                                onPhotoClick = { idx ->
+                                    lightboxState = PhotoLightboxState(
+                                        title = req.title,
+                                        imageRefs = req.imageRefs,
+                                        initialIndex = idx
+                                    )
+                                },
+                                actions = if (isOpenTicket) {
+                                    {
+                                        OutlinedButton(
+                                            onClick = { followUpRequest = req },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .heightIn(min = 48.dp)
+                                                .testTag("followup_ticket_button_${req.id}")
+                                        ) {
+                                            Icon(Icons.Filled.AddAPhoto, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(Modifier.width(8.dp))
+                                            Text("Add Follow-Up / Photos")
+                                        }
+                                    }
+                                } else {
+                                    null
+                                }
+                            )
                         }
                     }
                 }
@@ -969,156 +1248,57 @@ fun TenantMaintenanceScreen(
         }
     }
 
-    if (showCreateDialog && activeLease != null) {
-        SubmitMaintenanceDialog(
-            lease = activeLease!!,
+    if (showCreateDialog && unitTargets.isNotEmpty()) {
+        MaintenanceSubmissionScreenDialog(
+            unitTargets = unitTargets,
+            initialUnitId = activeLease?.unitId,
             isBusy = busy,
             onDismiss = { showCreateDialog = false },
-            onSubmit = { title, desc, cat, prio, imgs ->
-                viewModel.submitMaintenance(activeLease!!, title, desc, cat, prio, imgs) {
+            onSubmit = { target, title, desc, cat, prio, imgs ->
+                val submitterName = currentUser.fullName.ifBlank { target.lease?.tenantName ?: "Tenant" }
+                viewModel.submitMaintenanceForUnit(
+                    unitId = target.unitId,
+                    lease = target.lease,
+                    title = title,
+                    description = desc,
+                    category = cat,
+                    priority = prio,
+                    imageRefs = imgs,
+                    submitterName = submitterName
+                ) {
                     showCreateDialog = false
                 }
             }
+        )
+    }
+
+    followUpRequest?.let { req ->
+        TenantFollowUpDialog(
+            request = req,
+            isBusy = busy,
+            onDismiss = { followUpRequest = null },
+            onSubmit = { note, updatedImages ->
+                viewModel.appendMaintenanceFollowUp(
+                    request = req,
+                    appendedNote = note,
+                    updatedImageRefs = updatedImages,
+                    actorName = currentUser.fullName.ifBlank { req.tenantName }
+                ) {
+                    followUpRequest = null
+                }
+            }
+        )
+    }
+
+    lightboxState?.let { lb ->
+        PhotoLightboxDialog(
+            state = lb,
+            onDismiss = { lightboxState = null }
         )
     }
 }
 
 @Composable
 fun MaintenanceCard(req: MaintenanceRequest) {
-    val tone = when (req.statusEnum()) {
-        MaintenanceStatus.COMPLETED -> PillTone.SUCCESS
-        MaintenanceStatus.REJECTED -> PillTone.ERROR
-        MaintenanceStatus.IN_PROGRESS, MaintenanceStatus.ASSIGNED -> PillTone.INFO
-        MaintenanceStatus.SUBMITTED, MaintenanceStatus.UNDER_REVIEW -> PillTone.WARNING
-    }
-    Card(
-        shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(req.title, style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        "${req.propertyName} (${req.unitNumber}) • ${req.categoryEnum().label} • ${req.priorityEnum().label}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                StatusPill(req.statusEnum().label, tone)
-            }
-            Text(req.description, style = MaterialTheme.typography.bodySmall)
-            if (!req.assignedStaffName.isNullOrBlank()) {
-                Text("Assigned Technician: ${req.assignedStaffName}", style = MaterialTheme.typography.labelSmall, color = StatusInfo)
-            }
-            if (req.repairCostCents > 0L) {
-                Text("Recorded Cost: ${CurrencyUtils.formatKes(req.repairCostCents, true)}", style = MaterialTheme.typography.labelSmall)
-            }
-            if (!req.latestUpdateNote.isNullOrBlank()) {
-                Surface(color = StatusInfoBg, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        "Update: ${req.latestUpdateNote}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = StatusInfo,
-                        modifier = Modifier.padding(8.dp)
-                    )
-                }
-            }
-            if (req.imageRefs.isNotEmpty()) {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(req.imageRefs) { uri ->
-                        AsyncImage(
-                            model = uri,
-                            contentDescription = "Maintenance photo",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.size(64.dp).clip(MaterialTheme.shapes.small)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
-@Composable
-private fun SubmitMaintenanceDialog(
-    lease: Lease,
-    isBusy: Boolean,
-    onDismiss: () -> Unit,
-    onSubmit: (String, String, MaintenanceCategory, MaintenancePriority, List<String>) -> Unit
-) {
-    var title by remember { mutableStateOf("") }
-    var desc by remember { mutableStateOf("") }
-    var category by remember { mutableStateOf(MaintenanceCategory.PLUMBING) }
-    var catExpanded by remember { mutableStateOf(false) }
-    var priority by remember { mutableStateOf(MaintenancePriority.MEDIUM) }
-    val imageUris = remember { mutableStateListOf<String>() }
-    var err by remember { mutableStateOf<String?>(null) }
-
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null && imageUris.size < 4) imageUris.add(uri.toString())
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Report Maintenance Issue") },
-        text = {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.verticalScroll(rememberScrollState())
-            ) {
-                Text("${lease.propertyName} • Unit ${lease.unitNumber}", style = MaterialTheme.typography.labelMedium)
-                if (!err.isNullOrBlank()) ErrorBannerCard(err!!)
-                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Issue Title") }, singleLine = true)
-                ExposedDropdownMenuBox(expanded = catExpanded, onExpandedChange = { catExpanded = !catExpanded }) {
-                    OutlinedTextField(
-                        value = category.label,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Category") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(catExpanded) },
-                        modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = true).fillMaxWidth()
-                    )
-                    ExposedDropdownMenu(expanded = catExpanded, onDismissRequest = { catExpanded = false }) {
-                        MaintenanceCategory.entries.forEach { c ->
-                            DropdownMenuItem(text = { Text(c.label) }, onClick = { category = c; catExpanded = false })
-                        }
-                    }
-                }
-                Text("Priority", style = MaterialTheme.typography.labelSmall)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    MaintenancePriority.entries.forEach { p ->
-                        FilterChip(
-                            selected = priority == p,
-                            onClick = { priority = p },
-                            label = { Text(p.label) }
-                        )
-                    }
-                }
-                OutlinedTextField(value = desc, onValueChange = { desc = it }, label = { Text("Describe the problem") }, maxLines = 4)
-                OutlinedButton(
-                    onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Filled.PhotoLibrary, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Attach Photo (${imageUris.size}/4)")
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    if (title.trim().length < 2) err = "Enter an issue title"
-                    else if (desc.trim().length < 4) err = "Describe the issue"
-                    else onSubmit(title, desc, category, priority, imageUris.toList())
-                },
-                enabled = !isBusy
-            ) { Text("Submit Ticket") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
+    EnhancedMaintenanceCard(req = req)
 }

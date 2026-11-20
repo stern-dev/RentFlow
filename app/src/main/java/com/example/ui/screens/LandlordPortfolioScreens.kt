@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.content.Context
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -87,6 +88,8 @@ import com.example.data.ai.AiTaskState
 import com.example.domain.finance.CurrencyUtils
 import com.example.domain.finance.ReportExporter
 import com.example.domain.model.ApplicationStatus
+import com.example.domain.model.InviteStatus
+import com.example.domain.model.KenyaCounties
 import com.example.domain.model.Lease
 import com.example.domain.model.LeaseStatus
 import com.example.domain.model.Organization
@@ -94,10 +97,15 @@ import com.example.domain.model.Property
 import com.example.domain.model.PropertyCategory
 import com.example.domain.model.RentalApplication
 import com.example.domain.model.RentalUnit
+import com.example.domain.model.RoleInvite
 import com.example.domain.model.UnitStatus
 import com.example.domain.model.UnitType
 import com.example.domain.model.UserProfile
-import com.example.ui.components.ConfirmationDialog
+import com.example.domain.model.UserRole
+import com.example.domain.security.PermissionPolicy
+import com.example.domain.validation.PropertyUnitSchemas
+import com.example.domain.validation.ValidationResult
+import com.example.ui.components.CriticalActionConfirmationDialog
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.ErrorBannerCard
 import com.example.ui.components.LoadingStateBox
@@ -121,7 +129,13 @@ fun LandlordPortfolioScreen(
     organizations: List<Organization>,
     onCreateOrgRequest: () -> Unit,
     openAddPropertyImmediately: Boolean = false,
-    onConsumeAddPropertyTrigger: () -> Unit = {}
+    onConsumeAddPropertyTrigger: () -> Unit = {},
+    activeOrganization: Organization? = null,
+    orgInvites: List<RoleInvite> = emptyList(),
+    onCreateRoleInvite: (Organization, String, UserRole, List<String>, () -> Unit) -> Unit = { _, _, _, _, _ -> },
+    onRevokeRoleInvite: (RoleInvite) -> Unit = {},
+    isRecentlyAuthenticated: () -> Boolean = { true },
+    onReauthenticate: suspend (Context) -> Result<Unit> = { Result.success(Unit) }
 ) {
     val context = LocalContext.current
     val propsState by viewModel.properties.collectAsStateWithLifecycle()
@@ -139,8 +153,18 @@ fun LandlordPortfolioScreen(
     val applications = (appsState as? UiState.Success)?.data ?: emptyList()
     val leases = (leasesState as? UiState.Success)?.data ?: emptyList()
 
+    val uid = currentUser.userId
+    val activeRole = currentUser.activeRoleEnum()
+    val selectedOrg = activeOrganization ?: organizations.firstOrNull { it.id == activeOrgId } ?: organizations.firstOrNull()
+    val canInviteTeam = PermissionPolicy.canInviteTeamMembers(uid, activeRole, selectedOrg)
+    val canCreateProperty = activeRole == UserRole.ADMIN || activeRole == UserRole.LANDLORD
+    val creatableProperties = remember(properties, uid, activeRole) {
+        properties.filter { !it.archived && PermissionPolicy.canCreateUnit(uid, activeRole, it) }
+    }
+
     var selectedTab by remember { mutableIntStateOf(0) }
-    var showAddPropertyDialog by remember { mutableStateOf(openAddPropertyImmediately) }
+    var showAddPropertyDialog by remember { mutableStateOf(openAddPropertyImmediately && canCreateProperty) }
+    var showInviteTeamDialog by remember { mutableStateOf(false) }
     var propertyToEdit by remember { mutableStateOf<Property?>(null) }
     var propertyForUnitDialog by remember { mutableStateOf<Property?>(null) }
     var propertyForManagerDialog by remember { mutableStateOf<Property?>(null) }
@@ -162,12 +186,14 @@ fun LandlordPortfolioScreen(
 
     Scaffold(
         floatingActionButton = {
-            if (selectedTab == 0 || selectedTab == 1) {
+            val showFab = (selectedTab == 0 && (canCreateProperty || organizations.isEmpty())) ||
+                (selectedTab == 1 && (creatableProperties.isNotEmpty() || (organizations.isEmpty() && canCreateProperty)))
+            if (showFab) {
                 FloatingActionButton(
                     onClick = {
                         if (organizations.isEmpty()) onCreateOrgRequest()
                         else if (selectedTab == 0 || properties.isEmpty()) showAddPropertyDialog = true
-                        else propertyForUnitDialog = properties.firstOrNull { !it.archived } ?: properties.firstOrNull()
+                        else propertyForUnitDialog = creatableProperties.firstOrNull()
                     },
                     containerColor = MaterialTheme.colorScheme.secondary,
                     contentColor = Color.White,
@@ -198,8 +224,17 @@ fun LandlordPortfolioScreen(
                     units = units,
                     organizations = organizations,
                     activeOrgId = activeOrgId,
+                    canInviteTeam = canInviteTeam,
+                    orgInvites = orgInvites,
+                    canCreateProperty = canCreateProperty,
+                    canManageProperty = { prop -> PermissionPolicy.canManagePropertyStructure(uid, activeRole, prop) },
+                    canAssignManager = { prop -> PermissionPolicy.canAssignPropertyManager(uid, activeRole, prop) },
+                    canCreateUnit = { prop -> PermissionPolicy.canCreateUnit(uid, activeRole, prop) },
+                    canDeleteProperty = { prop -> PermissionPolicy.canDeleteProperty(uid, activeRole, prop) },
                     onSelectOrg = { orgId -> viewModel.setActiveOrgId(orgId) },
                     onCreateOrgRequest = onCreateOrgRequest,
+                    onOpenInviteTeam = { showInviteTeamDialog = true },
+                    onRevokeInvite = onRevokeRoleInvite,
                     onAddProperty = {
                         if (organizations.isEmpty()) onCreateOrgRequest() else showAddPropertyDialog = true
                     },
@@ -216,6 +251,10 @@ fun LandlordPortfolioScreen(
                     properties = properties,
                     isBusy = busy,
                     aiDraftState = aiUnitDraftState,
+                    canCreateUnit = { prop -> PermissionPolicy.canCreateUnit(uid, activeRole, prop) },
+                    canEditPricingOrDelete = { unit -> PermissionPolicy.canEditUnitPricingOrDelete(uid, activeRole, unit) },
+                    isRecentlyAuthenticated = isRecentlyAuthenticated,
+                    onReauthenticate = onReauthenticate,
                     onStatusFilterToggle = { st -> viewModel.setUnitStatusFilter(st) },
                     onPropertyFilterToggle = { propId -> viewModel.setUnitPropertyFilter(propId) },
                     onSearchQueryChange = { q -> viewModel.setUnitSearchQuery(q) },
@@ -265,6 +304,7 @@ fun LandlordPortfolioScreen(
                 )
                 3 -> LeasesTab(
                     leasesState = leasesState,
+                    canTerminateLease = { lease -> PermissionPolicy.canTerminateLease(uid, activeRole, lease) },
                     onExportPdf = { lease ->
                         ReportExporter.exportPdfDocument(
                             context = context,
@@ -295,16 +335,30 @@ fun LandlordPortfolioScreen(
         }
     }
 
+    if (showInviteTeamDialog && selectedOrg != null) {
+        InviteTeamMemberDialog(
+            org = selectedOrg,
+            properties = properties.filter { it.orgId == selectedOrg.id && !it.archived },
+            isBusy = busy,
+            onDismiss = { showInviteTeamDialog = false },
+            onSendInvite = { email, role, propertyIds ->
+                onCreateRoleInvite(selectedOrg, email, role, propertyIds) {
+                    showInviteTeamDialog = false
+                }
+            }
+        )
+    }
+
     if (showAddPropertyDialog) {
-        val selectedOrg = organizations.firstOrNull { it.id == activeOrgId } ?: organizations.firstOrNull()
         if (selectedOrg != null) {
             PropertyEditorDialog(
                 organizations = organizations,
                 initialOrgId = selectedOrg.id,
+                ownerUid = uid,
                 existingProperty = null,
                 isBusy = busy,
                 onDismiss = { showAddPropertyDialog = false },
-                onSave = { orgId, name, cat, city, county, hood, addr, desc, waterMeter, powerMeter, notes, imgs ->
+                onSave = { orgId, name, cat, city, county, hood, addr, desc, waterMeter, powerMeter, notes, imgs, paybill, till, prefix ->
                     viewModel.setActiveOrgId(orgId)
                     viewModel.createProperty(
                         orgId = orgId,
@@ -318,7 +372,10 @@ fun LandlordPortfolioScreen(
                         waterMeterNumber = waterMeter,
                         electricityMeterNumber = powerMeter,
                         notes = notes,
-                        imageRefs = imgs
+                        imageRefs = imgs,
+                        mpesaPaybill = paybill,
+                        mpesaTill = till,
+                        mpesaAccountPrefix = prefix
                     ) {
                         showAddPropertyDialog = false
                     }
@@ -331,10 +388,11 @@ fun LandlordPortfolioScreen(
         PropertyEditorDialog(
             organizations = organizations,
             initialOrgId = prop.orgId,
+            ownerUid = prop.ownerUid,
             existingProperty = prop,
             isBusy = busy,
             onDismiss = { propertyToEdit = null },
-            onSave = { _, name, cat, city, county, hood, addr, desc, waterMeter, powerMeter, notes, imgs ->
+            onSave = { _, name, cat, city, county, hood, addr, desc, waterMeter, powerMeter, notes, imgs, paybill, till, prefix ->
                 viewModel.updateProperty(
                     property = prop,
                     name = name,
@@ -347,7 +405,10 @@ fun LandlordPortfolioScreen(
                     waterMeterNumber = waterMeter,
                     electricityMeterNumber = powerMeter,
                     notes = notes,
-                    imageRefs = imgs
+                    imageRefs = imgs,
+                    mpesaPaybill = paybill,
+                    mpesaTill = till,
+                    mpesaAccountPrefix = prefix
                 ) {
                     propertyToEdit = null
                 }
@@ -356,16 +417,18 @@ fun LandlordPortfolioScreen(
     }
 
     propertyToDelete?.let { prop ->
-        ConfirmationDialog(
+        CriticalActionConfirmationDialog(
             title = "Delete ${prop.name}?",
-            message = "This permanently removes ${prop.name} from your organization. Properties with existing rental units cannot be deleted.",
-            confirmLabel = "Delete",
-            isDestructive = true,
+            impactSummary = "Permanently deletes ${prop.name} from your organization and removes access for all assigned managers.",
+            confirmButtonText = "Delete",
+            requiredPhrase = "DELETE",
+            isRecentlyAuthenticated = isRecentlyAuthenticated(),
+            onReauthenticate = onReauthenticate,
+            onDismiss = { propertyToDelete = null },
             onConfirm = {
                 viewModel.deleteProperty(prop.id)
                 propertyToDelete = null
-            },
-            onDismiss = { propertyToDelete = null }
+            }
         )
     }
 
@@ -431,6 +494,7 @@ fun LandlordPortfolioScreen(
     leaseToRenew?.let { lease ->
         RenewLeaseDialog(
             lease = lease,
+            canEditRent = PermissionPolicy.canEditLeaseTerms(uid, activeRole, lease),
             onDismiss = { leaseToRenew = null },
             onConfirm = { newEndMs, newRentCents ->
                 viewModel.renewLease(lease, newEndMs, newRentCents, currentUser.fullName)
@@ -440,31 +504,20 @@ fun LandlordPortfolioScreen(
     }
 
     leaseToTerminate?.let { lease ->
-        var notice by remember { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { leaseToTerminate = null },
-            title = { Text("Terminate Lease?") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("This will end ${lease.tenantName}'s active tenancy for Unit ${lease.unitNumber} and mark the unit Available.")
-                    OutlinedTextField(
-                        value = notice,
-                        onValueChange = { notice = it },
-                        label = { Text("Termination Notice / Reason") },
-                        maxLines = 3
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.terminateLease(lease, notice.ifBlank { "Tenancy ended by landlord" }, currentUser.fullName)
-                        leaseToTerminate = null
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = StatusError)
-                ) { Text("Terminate") }
-            },
-            dismissButton = { TextButton(onClick = { leaseToTerminate = null }) { Text("Cancel") } }
+        CriticalActionConfirmationDialog(
+            title = "Terminate Lease?",
+            impactSummary = "Ends ${lease.tenantName}'s active tenancy for Unit ${lease.unitNumber}, releases the unit as Available, and writes an immutable audit log.",
+            confirmButtonText = "Terminate",
+            requiredPhrase = "TERMINATE",
+            reasonLabel = "Termination Notice / Reason",
+            requireReasonMinLen = 3,
+            isRecentlyAuthenticated = isRecentlyAuthenticated(),
+            onReauthenticate = onReauthenticate,
+            onDismiss = { leaseToTerminate = null },
+            onConfirm = { reason ->
+                viewModel.terminateLease(lease, reason, currentUser.fullName)
+                leaseToTerminate = null
+            }
         )
     }
 }
@@ -476,8 +529,17 @@ private fun PropertiesTab(
     units: List<RentalUnit>,
     organizations: List<Organization>,
     activeOrgId: String?,
+    canInviteTeam: Boolean,
+    orgInvites: List<RoleInvite>,
+    canCreateProperty: Boolean,
+    canManageProperty: (Property) -> Boolean,
+    canAssignManager: (Property) -> Boolean,
+    canCreateUnit: (Property) -> Boolean,
+    canDeleteProperty: (Property) -> Boolean,
     onSelectOrg: (String) -> Unit,
     onCreateOrgRequest: () -> Unit,
+    onOpenInviteTeam: () -> Unit,
+    onRevokeInvite: (RoleInvite) -> Unit,
     onAddProperty: () -> Unit,
     onEditProperty: (Property) -> Unit,
     onAddUnit: (Property) -> Unit,
@@ -488,10 +550,14 @@ private fun PropertiesTab(
     if (organizations.isEmpty()) {
         Box(Modifier.padding(16.dp)) {
             EmptyStateCard(
-                title = "Create an Organization First",
-                message = "Properties in RentFlow belong to an organization portfolio. Create your organization before registering properties.",
-                ctaLabel = "Create Organization",
-                onCtaClick = onCreateOrgRequest
+                title = if (canCreateProperty) "Create an Organization First" else "No Organization Assigned",
+                message = if (canCreateProperty) {
+                    "Properties in RentFlow belong to an organization portfolio. Create your organization before registering properties."
+                } else {
+                    "Ask a Landlord / Organization Owner to invite you or assign you as Property Manager."
+                },
+                ctaLabel = if (canCreateProperty) "Create Organization" else null,
+                onCtaClick = if (canCreateProperty) onCreateOrgRequest else null
             )
         }
         return
@@ -513,6 +579,69 @@ private fun PropertiesTab(
             }
         }
 
+        if (canInviteTeam) {
+            val pendingTeamInvites = orgInvites.filter { it.statusEnum() == InviteStatus.PENDING }
+            Card(
+                shape = MaterialTheme.shapes.medium,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Organization Team & Invites", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "${pendingTeamInvites.size} pending invite(s)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onOpenInviteTeam,
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("invite_team_button")
+                        ) {
+                            Icon(Icons.Filled.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Invite Team")
+                        }
+                    }
+                    pendingTeamInvites.forEach { invite ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(invite.inviteeEmail, style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    "${invite.roleEnum().label} • Pending acceptance",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            TextButton(
+                                onClick = { onRevokeInvite(invite) },
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .testTag("revoke_invite_${invite.id}")
+                            ) {
+                                Text("Revoke", color = StatusError)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         when (propsState) {
             is UiState.Loading -> LoadingStateBox("Loading properties...")
             is UiState.Error -> Box(Modifier.padding(16.dp)) { ErrorBannerCard(propsState.message) }
@@ -522,9 +651,13 @@ private fun PropertiesTab(
                     Box(Modifier.padding(16.dp)) {
                         EmptyStateCard(
                             title = "No Properties Registered",
-                            message = "Register your first apartment block, bedsitter court, or commercial building to begin adding rental units.",
-                            ctaLabel = "Register Property",
-                            onCtaClick = onAddProperty
+                            message = if (canCreateProperty) {
+                                "Register your first apartment block, bedsitter court, or commercial building to begin adding rental units."
+                            } else {
+                                "Properties you are assigned to manage will appear here."
+                            },
+                            ctaLabel = if (canCreateProperty) "Register Property" else null,
+                            onCtaClick = if (canCreateProperty) onAddProperty else null
                         )
                     }
                 } else {
@@ -565,9 +698,26 @@ private fun PropertiesTab(
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
-                                        StatusPill(
-                                            label = if (prop.archived) "Archived" else "$occupied/${propUnits.size} Occupied",
-                                            tone = if (prop.archived) PillTone.NEUTRAL else PillTone.SUCCESS
+                                        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            StatusPill(
+                                                label = if (prop.archived) "Archived" else "$occupied/${propUnits.size} Occupied",
+                                                tone = if (prop.archived) PillTone.NEUTRAL else PillTone.SUCCESS
+                                            )
+                                            if (prop.landlordVerified) {
+                                                StatusPill("Verified Landlord", PillTone.SUCCESS)
+                                            }
+                                        }
+                                    }
+                                    if (!prop.mpesaPaybill.isNullOrBlank() || !prop.mpesaTill.isNullOrBlank()) {
+                                        val mpesaText = listOfNotNull(
+                                            prop.mpesaPaybill?.let { "M-Pesa Paybill: $it" },
+                                            prop.mpesaTill?.let { "Till: $it" },
+                                            prop.mpesaAccountPrefix?.let { "Prefix: $it" }
+                                        ).joinToString(" • ")
+                                        Text(
+                                            text = mpesaText,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.secondary
                                         )
                                     }
                                     if (!prop.waterMeterNumber.isNullOrBlank() || !prop.electricityMeterNumber.isNullOrBlank()) {
@@ -613,49 +763,70 @@ private fun PropertiesTab(
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
-                                    Row(
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        OutlinedButton(
-                                            onClick = { onAddUnit(prop) },
-                                            modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                                    val allowManage = canManageProperty(prop)
+                                    val allowAssignMgr = canAssignManager(prop)
+                                    val allowCreateUnit = canCreateUnit(prop)
+                                    val allowDelete = canDeleteProperty(prop)
+                                    if (!allowManage) {
+                                        Text(
+                                            "Managed Access • Structure & rent pricing controlled by Owner",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.secondary
+                                        )
+                                    }
+                                    if (allowCreateUnit || allowManage || allowAssignMgr || (propUnits.isEmpty() && allowDelete)) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.fillMaxWidth()
                                         ) {
-                                            Icon(Icons.Filled.MeetingRoom, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(Modifier.width(4.dp))
-                                            Text("Unit", maxLines = 1)
-                                        }
-                                        OutlinedButton(
-                                            onClick = { onEditProperty(prop) },
-                                            modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("edit_property_button_${prop.id}")
-                                        ) {
-                                            Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(Modifier.width(4.dp))
-                                            Text("Edit", maxLines = 1)
-                                        }
-                                        IconButton(
-                                            onClick = { onAssignManager(prop) },
-                                            modifier = Modifier.size(48.dp)
-                                        ) {
-                                            Icon(Icons.Filled.PersonAdd, contentDescription = "Assign Manager")
-                                        }
-                                        IconButton(
-                                            onClick = { onToggleArchive(prop) },
-                                            modifier = Modifier.size(48.dp)
-                                        ) {
-                                            Icon(Icons.Filled.Archive, contentDescription = if (prop.archived) "Restore Property" else "Archive Property")
-                                        }
-                                        if (propUnits.isEmpty()) {
-                                            IconButton(
-                                                onClick = { onDeleteProperty(prop) },
-                                                modifier = Modifier.size(48.dp)
-                                            ) {
-                                                Icon(
-                                                    Icons.Filled.DeleteOutline,
-                                                    contentDescription = "Delete Property",
-                                                    tint = StatusError
-                                                )
+                                            if (allowCreateUnit) {
+                                                OutlinedButton(
+                                                    onClick = { onAddUnit(prop) },
+                                                    modifier = Modifier.weight(1f).heightIn(min = 48.dp)
+                                                ) {
+                                                    Icon(Icons.Filled.MeetingRoom, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                    Spacer(Modifier.width(4.dp))
+                                                    Text("Unit", maxLines = 1)
+                                                }
+                                            }
+                                            if (allowManage) {
+                                                OutlinedButton(
+                                                    onClick = { onEditProperty(prop) },
+                                                    modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("edit_property_button_${prop.id}")
+                                                ) {
+                                                    Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                    Spacer(Modifier.width(4.dp))
+                                                    Text("Edit", maxLines = 1)
+                                                }
+                                            }
+                                            if (allowAssignMgr) {
+                                                IconButton(
+                                                    onClick = { onAssignManager(prop) },
+                                                    modifier = Modifier.size(48.dp)
+                                                ) {
+                                                    Icon(Icons.Filled.PersonAdd, contentDescription = "Assign Manager")
+                                                }
+                                            }
+                                            if (allowManage) {
+                                                IconButton(
+                                                    onClick = { onToggleArchive(prop) },
+                                                    modifier = Modifier.size(48.dp)
+                                                ) {
+                                                    Icon(Icons.Filled.Archive, contentDescription = if (prop.archived) "Restore Property" else "Archive Property")
+                                                }
+                                            }
+                                            if (propUnits.isEmpty() && allowDelete) {
+                                                IconButton(
+                                                    onClick = { onDeleteProperty(prop) },
+                                                    modifier = Modifier.size(48.dp).testTag("delete_property_button_${prop.id}")
+                                                ) {
+                                                    Icon(
+                                                        Icons.Filled.DeleteOutline,
+                                                        contentDescription = "Delete Property",
+                                                        tint = StatusError
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -689,6 +860,10 @@ private fun UnitsMatrixTab(
     properties: List<Property>,
     isBusy: Boolean,
     aiDraftState: AiTaskState,
+    canCreateUnit: (Property) -> Boolean,
+    canEditPricingOrDelete: (RentalUnit) -> Boolean,
+    isRecentlyAuthenticated: () -> Boolean,
+    onReauthenticate: suspend (Context) -> Result<Unit>,
     onStatusFilterToggle: (UnitStatus?) -> Unit,
     onPropertyFilterToggle: (String?) -> Unit,
     onSearchQueryChange: (String) -> Unit,
@@ -730,12 +905,13 @@ private fun UnitsMatrixTab(
         is UiState.Success -> {
             val units = filteredUnitsState.data
             if (allUnits.isEmpty()) {
+                val creatableProp = properties.firstOrNull { !it.archived && canCreateUnit(it) }
                 Box(Modifier.padding(16.dp)) {
                     EmptyStateCard(
                         title = "No Rental Units Added",
                         message = "Add units to your properties to set KES rent, deposit, amenities, and publish vacant units for applications.",
-                        ctaLabel = if (properties.isNotEmpty()) "Add First Unit" else null,
-                        onCtaClick = properties.firstOrNull()?.let { p -> { onAddUnit(p) } }
+                        ctaLabel = if (creatableProp != null) "Add First Unit" else null,
+                        onCtaClick = creatableProp?.let { p -> { onAddUnit(p) } }
                     )
                 }
             } else {
@@ -881,6 +1057,7 @@ private fun UnitsMatrixTab(
         UnitEditorDialog(
             unit = unit,
             parentProperty = parentProp,
+            canEditPricingOrDelete = canEditPricingOrDelete(unit),
             isBusy = isBusy,
             aiDraftState = aiDraftState,
             onDismiss = {
@@ -919,16 +1096,18 @@ private fun UnitsMatrixTab(
     }
 
     unitToDelete?.let { unit ->
-        ConfirmationDialog(
+        CriticalActionConfirmationDialog(
             title = "Delete Unit ${unit.unitNumber}?",
-            message = "This permanently removes Unit ${unit.unitNumber} from ${unit.propertyName}.",
-            confirmLabel = "Delete",
-            isDestructive = true,
+            impactSummary = "Permanently deletes Unit ${unit.unitNumber} from ${unit.propertyName} and updates property unit counts.",
+            confirmButtonText = "Delete",
+            requiredPhrase = "DELETE",
+            isRecentlyAuthenticated = isRecentlyAuthenticated(),
+            onReauthenticate = onReauthenticate,
+            onDismiss = { unitToDelete = null },
             onConfirm = {
                 onDeleteUnit(unit)
                 unitToDelete = null
-            },
-            onDismiss = { unitToDelete = null }
+            }
         )
     }
 }
@@ -938,6 +1117,7 @@ private fun UnitsMatrixTab(
 private fun UnitEditorDialog(
     unit: RentalUnit,
     parentProperty: Property?,
+    canEditPricingOrDelete: Boolean,
     isBusy: Boolean,
     aiDraftState: AiTaskState,
     onDismiss: () -> Unit,
@@ -959,6 +1139,7 @@ private fun UnitEditorDialog(
     var description by remember(unit.id) { mutableStateOf(unit.description) }
     var published by remember(unit.id) { mutableStateOf(unit.published) }
     var err by remember { mutableStateOf<String?>(null) }
+    var fieldErrors by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
     LaunchedEffect(aiDraftState) {
         when (aiDraftState) {
@@ -980,8 +1161,10 @@ private fun UnitEditorDialog(
                 if (aiDraftState is AiTaskState.Error) ErrorBannerCard(aiDraftState.message)
                 OutlinedTextField(
                     value = unitNumber,
-                    onValueChange = { unitNumber = it },
+                    onValueChange = { unitNumber = it; fieldErrors = fieldErrors - "unitNumber"; err = null },
                     label = { Text("Unit Number") },
+                    isError = fieldErrors.containsKey("unitNumber"),
+                    supportingText = fieldErrors["unitNumber"]?.let { msg -> { Text(msg) } },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("edit_unit_number_input")
                 )
@@ -1002,15 +1185,29 @@ private fun UnitEditorDialog(
                 }
                 OutlinedTextField(
                     value = rentText,
-                    onValueChange = { rentText = it },
+                    onValueChange = { rentText = it; fieldErrors = fieldErrors - "rentCents"; err = null },
                     label = { Text("Monthly Rent (KES)") },
+                    enabled = canEditPricingOrDelete,
+                    isError = fieldErrors.containsKey("rentCents"),
+                    supportingText = when {
+                        fieldErrors.containsKey("rentCents") -> { { Text(fieldErrors["rentCents"]!!) } }
+                        !canEditPricingOrDelete -> { { Text("Owner only") } }
+                        else -> null
+                    },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("edit_unit_rent_input")
                 )
                 OutlinedTextField(
                     value = depositText,
-                    onValueChange = { depositText = it },
+                    onValueChange = { depositText = it; fieldErrors = fieldErrors - "depositCents"; err = null },
                     label = { Text("Security Deposit (KES)") },
+                    enabled = canEditPricingOrDelete,
+                    isError = fieldErrors.containsKey("depositCents"),
+                    supportingText = when {
+                        fieldErrors.containsKey("depositCents") -> { { Text(fieldErrors["depositCents"]!!) } }
+                        !canEditPricingOrDelete -> { { Text("Owner only") } }
+                        else -> null
+                    },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("edit_unit_deposit_input")
                 )
@@ -1019,7 +1216,11 @@ private fun UnitEditorDialog(
                     UnitStatus.entries.forEach { st ->
                         FilterChip(
                             selected = status == st,
-                            onClick = { status = st },
+                            onClick = {
+                                status = st
+                                if (st != UnitStatus.AVAILABLE) published = false
+                                fieldErrors = fieldErrors - "published"
+                            },
                             label = { Text(st.label) }
                         )
                     }
@@ -1039,8 +1240,10 @@ private fun UnitEditorDialog(
                 }
                 OutlinedTextField(
                     value = customAmenitiesText,
-                    onValueChange = { customAmenitiesText = it },
+                    onValueChange = { customAmenitiesText = it; fieldErrors = fieldErrors - "amenities" },
                     label = { Text("Other Amenities (comma separated)") },
+                    isError = fieldErrors.containsKey("amenities"),
+                    supportingText = fieldErrors["amenities"]?.let { msg -> { Text(msg) } },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -1067,8 +1270,10 @@ private fun UnitEditorDialog(
                 }
                 OutlinedTextField(
                     value = description,
-                    onValueChange = { description = it },
+                    onValueChange = { description = it; fieldErrors = fieldErrors - "description" },
                     label = { Text("Description") },
+                    isError = fieldErrors.containsKey("description"),
+                    supportingText = fieldErrors["description"]?.let { msg -> { Text(msg) } },
                     maxLines = 4,
                     modifier = Modifier.fillMaxWidth().testTag("edit_unit_description_input")
                 )
@@ -1092,7 +1297,7 @@ private fun UnitEditorDialog(
                         Text("Onboard Tenant & Create Lease")
                     }
                 }
-                if (unit.statusEnum() != UnitStatus.OCCUPIED && unit.currentLeaseId.isNullOrBlank()) {
+                if (canEditPricingOrDelete && unit.statusEnum() != UnitStatus.OCCUPIED && unit.currentLeaseId.isNullOrBlank()) {
                     TextButton(
                         onClick = onRequestDelete,
                         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("delete_unit_button")
@@ -1107,27 +1312,59 @@ private fun UnitEditorDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    val rentCents = CurrencyUtils.parseKesToCents(rentText)
-                    val depCents = CurrencyUtils.parseKesToCents(depositText)
-                    when {
-                        unitNumber.trim().isEmpty() -> err = "Unit number is required"
-                        rentCents == null || rentCents <= 0L -> err = "Enter a valid monthly rent in KES"
-                        depositText.isNotBlank() && (depCents == null || depCents < 0L) -> err = "Deposit must be 0 or greater"
-                        else -> {
-                            val combinedAmenities = (selectedAmenities.filter { it in COMMON_KENYAN_AMENITIES } +
-                                customAmenitiesText.split(",").map { it.trim() })
-                                .filter { it.isNotBlank() }
-                                .distinct()
+                    val rentCents = if (canEditPricingOrDelete) CurrencyUtils.parseKesToCents(rentText) else unit.rentCents
+                    val depCents = if (canEditPricingOrDelete) {
+                        if (depositText.isBlank()) 0L else CurrencyUtils.parseKesToCents(depositText)
+                    } else unit.depositCents
+
+                    if (rentCents == null) {
+                        fieldErrors = mapOf("rentCents" to "Enter a valid monthly rent in KES")
+                        err = "Enter a valid monthly rent in KES"
+                        return@Button
+                    }
+                    if (depCents == null) {
+                        fieldErrors = mapOf("depositCents" to "Enter a valid security deposit in KES")
+                        err = "Enter a valid security deposit in KES"
+                        return@Button
+                    }
+
+                    val combinedAmenities = (selectedAmenities.filter { it in COMMON_KENYAN_AMENITIES } +
+                        customAmenitiesText.split(",").map { it.trim() })
+                        .filter { it.isNotBlank() }
+                        .distinct()
+
+                    val input = PropertyUnitSchemas.RentalUnitUpdateInput(
+                        propertyId = unit.propertyId,
+                        unitId = unit.id,
+                        unitNumber = unitNumber,
+                        unitType = unitType.name,
+                        rentCents = rentCents,
+                        depositCents = depCents,
+                        status = status.name,
+                        amenities = combinedAmenities,
+                        description = description,
+                        imageRefs = unit.imageRefs,
+                        published = published && status == UnitStatus.AVAILABLE
+                    )
+                    when (val validation = PropertyUnitSchemas.unitUpdateSchema.parse(input)) {
+                        is ValidationResult.Invalid -> {
+                            fieldErrors = validation.fieldMessages()
+                            err = validation.errors.firstOrNull()?.message
+                        }
+                        is ValidationResult.Valid -> {
+                            fieldErrors = emptyMap()
+                            err = null
+                            val clean = validation.value
                             onSave(
-                                unitNumber.trim(),
+                                clean.unitNumber,
                                 unitType,
-                                rentCents,
-                                (depCents ?: 0L).coerceAtLeast(0L),
+                                clean.rentCents,
+                                clean.depositCents,
                                 status,
-                                combinedAmenities,
-                                description.trim(),
-                                unit.imageRefs,
-                                published
+                                clean.amenities,
+                                clean.description,
+                                clean.imageRefs,
+                                clean.published
                             )
                         }
                     }
@@ -1224,6 +1461,7 @@ private fun ApplicationsTab(
 @Composable
 private fun LeasesTab(
     leasesState: UiState<List<Lease>>,
+    canTerminateLease: (Lease) -> Boolean,
     onExportPdf: (Lease) -> Unit,
     onRenew: (Lease) -> Unit,
     onTerminate: (Lease) -> Unit
@@ -1289,10 +1527,12 @@ private fun LeasesTab(
                                             onClick = { onRenew(lease) },
                                             modifier = Modifier.weight(1f).heightIn(min = 48.dp)
                                         ) { Text("Renew") }
-                                        TextButton(
-                                            onClick = { onTerminate(lease) },
-                                            modifier = Modifier.heightIn(min = 48.dp)
-                                        ) { Text("End", color = StatusError) }
+                                        if (canTerminateLease(lease)) {
+                                            TextButton(
+                                                onClick = { onTerminate(lease) },
+                                                modifier = Modifier.heightIn(min = 48.dp).testTag("terminate_lease_button_${lease.id}")
+                                            ) { Text("End", color = StatusError) }
+                                        }
                                     }
                                 }
                             }
@@ -1304,11 +1544,12 @@ private fun LeasesTab(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun PropertyEditorDialog(
     organizations: List<Organization>,
     initialOrgId: String,
+    ownerUid: String,
     existingProperty: Property?,
     isBusy: Boolean,
     onDismiss: () -> Unit,
@@ -1324,7 +1565,10 @@ private fun PropertyEditorDialog(
         waterMeterNumber: String?,
         electricityMeterNumber: String?,
         notes: String?,
-        imageRefs: List<String>
+        imageRefs: List<String>,
+        mpesaPaybill: String?,
+        mpesaTill: String?,
+        mpesaAccountPrefix: String?
     ) -> Unit
 ) {
     val isEditing = existingProperty != null
@@ -1334,10 +1578,14 @@ private fun PropertyEditorDialog(
     var category by remember(existingProperty?.id) { mutableStateOf(existingProperty?.categoryEnum() ?: PropertyCategory.APARTMENTS) }
     var city by remember(existingProperty?.id) { mutableStateOf(existingProperty?.city ?: "Nairobi") }
     var county by remember(existingProperty?.id) { mutableStateOf(existingProperty?.county ?: "Nairobi") }
+    var countyExpanded by remember { mutableStateOf(false) }
     var neighborhood by remember(existingProperty?.id) { mutableStateOf(existingProperty?.neighborhood ?: "") }
     var address by remember(existingProperty?.id) { mutableStateOf(existingProperty?.addressLine ?: "") }
     var waterMeter by remember(existingProperty?.id) { mutableStateOf(existingProperty?.waterMeterNumber ?: "") }
     var powerMeter by remember(existingProperty?.id) { mutableStateOf(existingProperty?.electricityMeterNumber ?: "") }
+    var mpesaPaybill by remember(existingProperty?.id) { mutableStateOf(existingProperty?.mpesaPaybill ?: "") }
+    var mpesaTill by remember(existingProperty?.id) { mutableStateOf(existingProperty?.mpesaTill ?: "") }
+    var mpesaAccountPrefix by remember(existingProperty?.id) { mutableStateOf(existingProperty?.mpesaAccountPrefix ?: "") }
     var desc by remember(existingProperty?.id) { mutableStateOf(existingProperty?.description ?: "") }
     var notes by remember(existingProperty?.id) { mutableStateOf(existingProperty?.notes ?: "") }
     val imageUris = remember(existingProperty?.id) {
@@ -1347,6 +1595,7 @@ private fun PropertyEditorDialog(
     }
     var catExpanded by remember { mutableStateOf(false) }
     var err by remember { mutableStateOf<String?>(null) }
+    var fieldErrors by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
     val selectedOrg = organizations.firstOrNull { it.id == selectedOrgId } ?: organizations.firstOrNull()
 
@@ -1391,8 +1640,10 @@ private fun PropertyEditorDialog(
                 }
                 OutlinedTextField(
                     value = name,
-                    onValueChange = { name = it },
+                    onValueChange = { name = it; fieldErrors = fieldErrors - "name"; err = null },
                     label = { Text("Property Name") },
+                    isError = fieldErrors.containsKey("name"),
+                    supportingText = fieldErrors["name"]?.let { msg -> { Text(msg) } },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("property_name_input")
                 )
@@ -1416,57 +1667,113 @@ private fun PropertyEditorDialog(
                 }
                 OutlinedTextField(
                     value = city,
-                    onValueChange = { city = it },
+                    onValueChange = { city = it; fieldErrors = fieldErrors - "city"; err = null },
                     label = { Text("City (e.g. Nairobi, Eldoret, Kisumu)") },
+                    isError = fieldErrors.containsKey("city"),
+                    supportingText = fieldErrors["city"]?.let { msg -> { Text(msg) } },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("property_city_input")
                 )
-                OutlinedTextField(
-                    value = county,
-                    onValueChange = { county = it },
-                    label = { Text("County (e.g. Nairobi, Kiambu, Mombasa)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().testTag("property_county_input")
-                )
+                ExposedDropdownMenuBox(expanded = countyExpanded, onExpandedChange = { countyExpanded = !countyExpanded }) {
+                    OutlinedTextField(
+                        value = county,
+                        onValueChange = { county = it; fieldErrors = fieldErrors - "county" },
+                        label = { Text("Kenyan County") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(countyExpanded) },
+                        isError = fieldErrors.containsKey("county"),
+                        supportingText = fieldErrors["county"]?.let { msg -> { Text(msg) } },
+                        singleLine = true,
+                        modifier = Modifier
+                            .menuAnchor(MenuAnchorType.PrimaryEditable, enabled = true)
+                            .fillMaxWidth()
+                            .testTag("property_county_input")
+                    )
+                    ExposedDropdownMenu(expanded = countyExpanded, onDismissRequest = { countyExpanded = false }) {
+                        KenyaCounties.MAJOR_COUNTIES.forEach { preset ->
+                            DropdownMenuItem(
+                                text = { Text(preset) },
+                                onClick = {
+                                    county = preset
+                                    fieldErrors = fieldErrors - "county"
+                                    countyExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = neighborhood,
-                    onValueChange = { neighborhood = it },
+                    onValueChange = { neighborhood = it; fieldErrors = fieldErrors - "neighborhood" },
                     label = { Text("Estate / Neighborhood") },
+                    isError = fieldErrors.containsKey("neighborhood"),
+                    supportingText = fieldErrors["neighborhood"]?.let { msg -> { Text(msg) } },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("property_neighborhood_input")
                 )
                 OutlinedTextField(
                     value = address,
-                    onValueChange = { address = it },
+                    onValueChange = { address = it; fieldErrors = fieldErrors - "addressLine" },
                     label = { Text("Street / Road") },
+                    isError = fieldErrors.containsKey("addressLine"),
+                    supportingText = fieldErrors["addressLine"]?.let { msg -> { Text(msg) } },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("property_address_input")
                 )
                 OutlinedTextField(
                     value = waterMeter,
-                    onValueChange = { waterMeter = it },
+                    onValueChange = { waterMeter = it; fieldErrors = fieldErrors - "waterMeterNumber" },
                     label = { Text("Water Meter No. (Optional)") },
+                    isError = fieldErrors.containsKey("waterMeterNumber"),
+                    supportingText = fieldErrors["waterMeterNumber"]?.let { msg -> { Text(msg) } },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("property_water_meter_input")
                 )
                 OutlinedTextField(
                     value = powerMeter,
-                    onValueChange = { powerMeter = it },
+                    onValueChange = { powerMeter = it; fieldErrors = fieldErrors - "electricityMeterNumber" },
                     label = { Text("Electricity / KPLC Meter No. (Optional)") },
+                    isError = fieldErrors.containsKey("electricityMeterNumber"),
+                    supportingText = fieldErrors["electricityMeterNumber"]?.let { msg -> { Text(msg) } },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("property_power_meter_input")
                 )
+                Text("Kenya M-Pesa Rent Collection (Optional)", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
+                OutlinedTextField(
+                    value = mpesaPaybill,
+                    onValueChange = { mpesaPaybill = it.take(20) },
+                    label = { Text("M-Pesa Paybill No.") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("property_mpesa_paybill_input")
+                )
+                OutlinedTextField(
+                    value = mpesaTill,
+                    onValueChange = { mpesaTill = it.take(20) },
+                    label = { Text("M-Pesa Till / Buy Goods No.") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("property_mpesa_till_input")
+                )
+                OutlinedTextField(
+                    value = mpesaAccountPrefix,
+                    onValueChange = { mpesaAccountPrefix = it.take(24) },
+                    label = { Text("Account Ref Prefix (e.g. KH-)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("property_mpesa_prefix_input")
+                )
                 OutlinedTextField(
                     value = desc,
-                    onValueChange = { desc = it },
+                    onValueChange = { desc = it; fieldErrors = fieldErrors - "description" },
                     label = { Text("Description") },
+                    isError = fieldErrors.containsKey("description"),
+                    supportingText = fieldErrors["description"]?.let { msg -> { Text(msg) } },
                     maxLines = 3,
                     modifier = Modifier.fillMaxWidth().testTag("property_description_input")
                 )
                 OutlinedTextField(
                     value = notes,
-                    onValueChange = { notes = it },
+                    onValueChange = { notes = it; fieldErrors = fieldErrors - "notes" },
                     label = { Text("Operational Notes (Optional)") },
+                    isError = fieldErrors.containsKey("notes"),
+                    supportingText = fieldErrors["notes"]?.let { msg -> { Text(msg) } },
                     maxLines = 3,
                     modifier = Modifier.fillMaxWidth().testTag("property_notes_input")
                 )
@@ -1484,24 +1791,96 @@ private fun PropertyEditorDialog(
             Button(
                 onClick = {
                     val targetOrgId = selectedOrg?.id.orEmpty()
-                    if (!isEditing && targetOrgId.isBlank()) err = "Select or create an organization first"
-                    else if (name.trim().length < 2) err = "Enter a property name"
-                    else if (city.trim().length < 2) err = "Enter city"
-                    else if (county.trim().length > 60) err = "County must be 60 characters or fewer"
-                    else onSave(
-                        targetOrgId,
-                        name,
-                        category,
-                        city,
-                        county,
-                        neighborhood,
-                        address,
-                        desc,
-                        waterMeter.takeIf { it.isNotBlank() },
-                        powerMeter.takeIf { it.isNotBlank() },
-                        notes.takeIf { it.isNotBlank() },
-                        imageUris.toList()
-                    )
+                    if (existingProperty != null) {
+                        val input = PropertyUnitSchemas.PropertyUpdateInput(
+                            propertyId = existingProperty.id,
+                            name = name,
+                            category = category.name,
+                            city = city,
+                            county = county,
+                            neighborhood = neighborhood,
+                            addressLine = address,
+                            description = desc,
+                            waterMeterNumber = waterMeter.takeIf { it.isNotBlank() },
+                            electricityMeterNumber = powerMeter.takeIf { it.isNotBlank() },
+                            notes = notes.takeIf { it.isNotBlank() },
+                            imageRefs = imageUris.toList(),
+                            archived = existingProperty.archived
+                        )
+                        when (val validation = PropertyUnitSchemas.propertyUpdateSchema.parse(input)) {
+                            is ValidationResult.Invalid -> {
+                                fieldErrors = validation.fieldMessages()
+                                err = validation.errors.firstOrNull()?.message
+                            }
+                            is ValidationResult.Valid -> {
+                                fieldErrors = emptyMap()
+                                err = null
+                                val clean = validation.value
+                                onSave(
+                                    existingProperty.orgId,
+                                    clean.name,
+                                    category,
+                                    clean.city,
+                                    clean.county,
+                                    clean.neighborhood,
+                                    clean.addressLine,
+                                    clean.description,
+                                    clean.waterMeterNumber,
+                                    clean.electricityMeterNumber,
+                                    clean.notes,
+                                    clean.imageRefs,
+                                    mpesaPaybill.trim().takeIf { it.isNotBlank() },
+                                    mpesaTill.trim().takeIf { it.isNotBlank() },
+                                    mpesaAccountPrefix.trim().takeIf { it.isNotBlank() }
+                                )
+                            }
+                        }
+                    } else {
+                        val candidate = Property(
+                            orgId = targetOrgId,
+                            ownerUid = ownerUid,
+                            authorizedUids = listOf(ownerUid),
+                            name = name,
+                            category = category.name,
+                            city = city,
+                            county = county,
+                            neighborhood = neighborhood,
+                            addressLine = address,
+                            description = desc,
+                            waterMeterNumber = waterMeter.takeIf { it.isNotBlank() },
+                            electricityMeterNumber = powerMeter.takeIf { it.isNotBlank() },
+                            notes = notes.takeIf { it.isNotBlank() },
+                            imageRefs = imageUris.toList()
+                        )
+                        when (val validation = PropertyUnitSchemas.propertyCreateSchema.parse(candidate)) {
+                            is ValidationResult.Invalid -> {
+                                fieldErrors = validation.fieldMessages()
+                                err = validation.errors.firstOrNull()?.message
+                            }
+                            is ValidationResult.Valid -> {
+                                fieldErrors = emptyMap()
+                                err = null
+                                val clean = validation.value
+                                onSave(
+                                    clean.orgId,
+                                    clean.name,
+                                    category,
+                                    clean.city,
+                                    clean.county,
+                                    clean.neighborhood,
+                                    clean.addressLine,
+                                    clean.description,
+                                    clean.waterMeterNumber,
+                                    clean.electricityMeterNumber,
+                                    clean.notes,
+                                    clean.imageRefs,
+                                    mpesaPaybill.trim().takeIf { it.isNotBlank() },
+                                    mpesaTill.trim().takeIf { it.isNotBlank() },
+                                    mpesaAccountPrefix.trim().takeIf { it.isNotBlank() }
+                                )
+                            }
+                        }
+                    }
                 },
                 enabled = !isBusy,
                 modifier = Modifier.testTag("register_property_submit_button")
@@ -1533,6 +1912,7 @@ private fun AddUnitDialog(
     var typeExpanded by remember { mutableStateOf(false) }
     val imageUris = remember { mutableStateListOf<String>() }
     var err by remember { mutableStateOf<String?>(null) }
+    var fieldErrors by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
     LaunchedEffect(aiDraftState) {
         when (aiDraftState) {
@@ -1556,7 +1936,15 @@ private fun AddUnitDialog(
             ) {
                 if (!err.isNullOrBlank()) ErrorBannerCard(err!!)
                 if (aiDraftState is AiTaskState.Error) ErrorBannerCard(aiDraftState.message)
-                OutlinedTextField(value = unitNumber, onValueChange = { unitNumber = it }, label = { Text("Unit Number (e.g. A1, B-204)") }, singleLine = true)
+                OutlinedTextField(
+                    value = unitNumber,
+                    onValueChange = { unitNumber = it; fieldErrors = fieldErrors - "unitNumber"; err = null },
+                    label = { Text("Unit Number (e.g. A1, B-204)") },
+                    isError = fieldErrors.containsKey("unitNumber"),
+                    supportingText = fieldErrors["unitNumber"]?.let { msg -> { Text(msg) } },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("add_unit_number_input")
+                )
                 ExposedDropdownMenuBox(expanded = typeExpanded, onExpandedChange = { typeExpanded = !typeExpanded }) {
                     OutlinedTextField(
                         value = unitType.label,
@@ -1572,8 +1960,24 @@ private fun AddUnitDialog(
                         }
                     }
                 }
-                OutlinedTextField(value = rentText, onValueChange = { rentText = it }, label = { Text("Monthly Rent (KES)") }, singleLine = true)
-                OutlinedTextField(value = depositText, onValueChange = { depositText = it }, label = { Text("Deposit (KES)") }, singleLine = true)
+                OutlinedTextField(
+                    value = rentText,
+                    onValueChange = { rentText = it; fieldErrors = fieldErrors - "rentCents"; err = null },
+                    label = { Text("Monthly Rent (KES)") },
+                    isError = fieldErrors.containsKey("rentCents"),
+                    supportingText = fieldErrors["rentCents"]?.let { msg -> { Text(msg) } },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("add_unit_rent_input")
+                )
+                OutlinedTextField(
+                    value = depositText,
+                    onValueChange = { depositText = it; fieldErrors = fieldErrors - "depositCents"; err = null },
+                    label = { Text("Deposit (KES)") },
+                    isError = fieldErrors.containsKey("depositCents"),
+                    supportingText = fieldErrors["depositCents"]?.let { msg -> { Text(msg) } },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("add_unit_deposit_input")
+                )
                 Text("Amenities", style = MaterialTheme.typography.labelMedium)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     COMMON_KENYAN_AMENITIES.forEach { amenity ->
@@ -1587,7 +1991,14 @@ private fun AddUnitDialog(
                         )
                     }
                 }
-                OutlinedTextField(value = customAmenitiesText, onValueChange = { customAmenitiesText = it }, label = { Text("Other Amenities (comma separated)") }, singleLine = true)
+                OutlinedTextField(
+                    value = customAmenitiesText,
+                    onValueChange = { customAmenitiesText = it; fieldErrors = fieldErrors - "amenities" },
+                    label = { Text("Other Amenities (comma separated)") },
+                    isError = fieldErrors.containsKey("amenities"),
+                    supportingText = fieldErrors["amenities"]?.let { msg -> { Text(msg) } },
+                    singleLine = true
+                )
                 Row(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
@@ -1609,7 +2020,14 @@ private fun AddUnitDialog(
                         Text(if (aiDraftState is AiTaskState.Loading) "Drafting..." else "Draft with AI")
                     }
                 }
-                OutlinedTextField(value = desc, onValueChange = { desc = it }, label = { Text("Description") }, maxLines = 3)
+                OutlinedTextField(
+                    value = desc,
+                    onValueChange = { desc = it; fieldErrors = fieldErrors - "description" },
+                    label = { Text("Description") },
+                    isError = fieldErrors.containsKey("description"),
+                    supportingText = fieldErrors["description"]?.let { msg -> { Text(msg) } },
+                    maxLines = 3
+                )
                 OutlinedButton(
                     onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
@@ -1628,18 +2046,65 @@ private fun AddUnitDialog(
             Button(
                 onClick = {
                     val rentCents = CurrencyUtils.parseKesToCents(rentText)
-                    val depCents = CurrencyUtils.parseKesToCents(depositText) ?: 0L
-                    if (unitNumber.isBlank()) err = "Unit number required"
-                    else if (rentCents == null || rentCents <= 0L) err = "Enter valid monthly rent in KES"
-                    else {
-                        val amenities = (selectedAmenities.toList() + customAmenitiesText.split(",").map { it.trim() })
-                            .filter { it.isNotBlank() }
-                            .distinct()
-                        onClearAiDraft()
-                        onSave(unitNumber, unitType, rentCents, depCents, UnitStatus.AVAILABLE, amenities, desc, imageUris.toList(), published)
+                    val depCents = if (depositText.isBlank()) 0L else CurrencyUtils.parseKesToCents(depositText)
+                    if (rentCents == null) {
+                        fieldErrors = mapOf("rentCents" to "Enter valid monthly rent in KES")
+                        err = "Enter valid monthly rent in KES"
+                        return@Button
+                    }
+                    if (depCents == null) {
+                        fieldErrors = mapOf("depositCents" to "Enter valid security deposit in KES")
+                        err = "Enter valid security deposit in KES"
+                        return@Button
+                    }
+                    val amenities = (selectedAmenities.toList() + customAmenitiesText.split(",").map { it.trim() })
+                        .filter { it.isNotBlank() }
+                        .distinct()
+                    val candidate = RentalUnit(
+                        propertyId = property.id,
+                        propertyName = property.name,
+                        propertyCity = property.city,
+                        propertyCategory = property.category,
+                        orgId = property.orgId,
+                        ownerUid = property.ownerUid,
+                        managerUids = property.managerUids,
+                        authorizedUids = property.authorizedUids,
+                        unitNumber = unitNumber,
+                        unitType = unitType.name,
+                        rentCents = rentCents,
+                        depositCents = depCents,
+                        status = UnitStatus.AVAILABLE.name,
+                        amenities = amenities,
+                        description = desc,
+                        imageRefs = imageUris.toList(),
+                        published = published
+                    )
+                    when (val validation = PropertyUnitSchemas.unitCreateSchema.parse(candidate)) {
+                        is ValidationResult.Invalid -> {
+                            fieldErrors = validation.fieldMessages()
+                            err = validation.errors.firstOrNull()?.message
+                        }
+                        is ValidationResult.Valid -> {
+                            fieldErrors = emptyMap()
+                            err = null
+                            val clean = validation.value
+                            onClearAiDraft()
+                            onSave(
+                                clean.unitNumber,
+                                unitType,
+                                clean.rentCents,
+                                clean.depositCents,
+                                UnitStatus.AVAILABLE,
+                                clean.amenities,
+                                clean.description,
+                                clean.imageRefs,
+                                clean.published
+                            )
+                        }
                     }
                 },
-                enabled = !isBusy
+                enabled = !isBusy,
+                modifier = Modifier.testTag("add_unit_submit_button")
             ) { Text("Add Unit") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
@@ -1758,6 +2223,7 @@ private fun CreateLeaseDialog(
 @Composable
 private fun RenewLeaseDialog(
     lease: Lease,
+    canEditRent: Boolean,
     onDismiss: () -> Unit,
     onConfirm: (Long, Long) -> Unit
 ) {
@@ -1769,17 +2235,111 @@ private fun RenewLeaseDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(value = monthsText, onValueChange = { monthsText = it }, label = { Text("Extend By (Months)") }, singleLine = true)
-                OutlinedTextField(value = rentText, onValueChange = { rentText = it }, label = { Text("New Monthly Rent (KES)") }, singleLine = true)
+                OutlinedTextField(
+                    value = rentText,
+                    onValueChange = { rentText = it },
+                    label = { Text("New Monthly Rent (KES)") },
+                    enabled = canEditRent,
+                    supportingText = if (!canEditRent) { { Text("Owner only") } } else null,
+                    singleLine = true
+                )
             }
         },
         confirmButton = {
             Button(onClick = {
                 val months = monthsText.toIntOrNull()?.coerceIn(1, 120) ?: 12
-                val rent = CurrencyUtils.parseKesToCents(rentText) ?: lease.rentCents
+                val rent = if (canEditRent) (CurrencyUtils.parseKesToCents(rentText) ?: lease.rentCents) else lease.rentCents
                 val baseEnd = maxOf(lease.endDateEpochMs, System.currentTimeMillis())
                 onConfirm(baseEnd + months * 30L * 86_400_000L, rent)
             }) { Text("Renew Lease") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun InviteTeamMemberDialog(
+    org: Organization,
+    properties: List<Property>,
+    isBusy: Boolean,
+    onDismiss: () -> Unit,
+    onSendInvite: (email: String, role: UserRole, propertyIds: List<String>) -> Unit
+) {
+    var email by remember { mutableStateOf("") }
+    var selectedRole by remember { mutableStateOf(UserRole.PROPERTY_MANAGER) }
+    var selectedPropIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var err by remember { mutableStateOf<String?>(null) }
+
+    val invitableRoles = remember {
+        listOf(UserRole.PROPERTY_MANAGER, UserRole.MAINTENANCE_STAFF, UserRole.TENANT)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Invite Team Member • ${org.name}") },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    "The invited user will see this invitation in their Profile screen and can accept it using their verified Google email.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (!err.isNullOrBlank()) ErrorBannerCard(err!!)
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = { email = it; err = null },
+                    label = { Text("Invitee Google Email") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("invite_email_input")
+                )
+                Text("Role to Grant", style = MaterialTheme.typography.labelMedium)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    invitableRoles.forEach { role ->
+                        FilterChip(
+                            selected = selectedRole == role,
+                            onClick = { selectedRole = role },
+                            label = { Text(role.label) },
+                            modifier = Modifier.testTag("invite_role_${role.name.lowercase()}")
+                        )
+                    }
+                }
+                if (properties.isNotEmpty() && selectedRole == UserRole.PROPERTY_MANAGER) {
+                    Text("Property Scope (Optional)", style = MaterialTheme.typography.labelMedium)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        properties.forEach { prop ->
+                            val selected = prop.id in selectedPropIds
+                            FilterChip(
+                                selected = selected,
+                                onClick = {
+                                    selectedPropIds = if (selected) selectedPropIds - prop.id else selectedPropIds + prop.id
+                                },
+                                label = { Text(prop.name, maxLines = 1) }
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val clean = email.trim().lowercase()
+                    if (clean.length < 4 || "@" !in clean || "." !in clean.substringAfter("@")) {
+                        err = "Enter a valid Google email address"
+                    } else {
+                        onSendInvite(clean, selectedRole, selectedPropIds.toList())
+                    }
+                },
+                enabled = !isBusy,
+                modifier = Modifier.testTag("send_invite_submit_button")
+            ) { Text("Send Invite") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
     )
 }

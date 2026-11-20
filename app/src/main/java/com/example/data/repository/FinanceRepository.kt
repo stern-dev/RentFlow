@@ -7,6 +7,7 @@ import com.example.data.firebase.guardFirestoreReads
 import com.example.data.firebase.handleFirestoreError
 import com.example.domain.finance.CurrencyUtils
 import com.example.domain.finance.FinancialEngine
+import com.example.domain.finance.RentReminderEngine
 import com.example.domain.model.AppNotification
 import com.example.domain.model.AuditLog
 import com.example.domain.model.Expense
@@ -457,6 +458,9 @@ class FinanceRepository(
         val path = "payments/${payment.id}"
         return try {
             val uid = requireUserId()
+            if (payment.ownerUid != uid) {
+                return Result.failure(SecurityException("Only the property owner can reverse a verified payment."))
+            }
             require(payment.statusEnum() == PaymentStatus.VERIFIED) { "Only verified payments can be reversed" }
             require(reason.trim().length >= 3) { "Reversal reason is required" }
 
@@ -595,4 +599,76 @@ class FinanceRepository(
             Result.failure(e)
         }
     }
+
+    suspend fun sendRentDueAndOverdueReminders(
+        invoices: List<Invoice>,
+        actorName: String,
+        respectCooldown: Boolean = true
+    ): Result<Int> {
+        return try {
+            val uid = requireUserId()
+            val nowMs = System.currentTimeMillis()
+            val candidates = RentReminderEngine.evaluateInvoices(
+                invoices = invoices,
+                nowMs = nowMs,
+                respectCooldown = respectCooldown
+            ).take(50)
+
+            if (candidates.isEmpty()) {
+                return Result.success(0)
+            }
+
+            candidates.chunked(100).forEach { chunk ->
+                val batch = db.batch()
+                for (candidate in chunk) {
+                    val inv = candidate.invoice
+                    val notifRef = db.collection("notifications").document()
+                    batch.set(
+                        notifRef,
+                        AppNotification(
+                            recipientUid = inv.tenantUid,
+                            senderUid = uid,
+                            orgId = inv.orgId,
+                            type = NotificationType.INVOICE.name,
+                            title = candidate.title.take(140),
+                            body = candidate.body.take(500),
+                            relatedEntityId = inv.id,
+                            read = false
+                        ).toCreateMap()
+                    )
+                    val invRef = db.collection("invoices").document(inv.id)
+                    batch.update(
+                        invRef,
+                        mapOf(
+                            "lastReminderSentEpochMs" to nowMs,
+                            "reminderCount" to (inv.reminderCount + 1L),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    )
+                }
+                batch.commit().await()
+            }
+
+            val orgId = candidates.first().invoice.orgId
+            db.collection("audit_logs").document().set(
+                AuditLog(
+                    orgId = orgId,
+                    actorUid = uid,
+                    actorName = actorName,
+                    action = "SEND_RENT_REMINDERS",
+                    entityType = "Invoice",
+                    entityId = "batch_${candidates.size}",
+                    details = "Dispatched ${candidates.size} rent due/overdue reminder(s) to tenants"
+                ).toCreateMap()
+            ).await()
+
+            Result.success(candidates.size)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "invoices")
+            Result.failure(e)
+        }
+    }
 }
+

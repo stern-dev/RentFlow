@@ -5,6 +5,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import com.example.ui.screens.AuthScreen
 import com.example.ui.theme.RentFlowTheme
@@ -42,8 +43,9 @@ class ExampleRobolectricTest {
             }
         }
 
-        composeTestRule.onNodeWithTag("google_sign_in_button").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("browse_listings_button").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("email_auth_submit_button").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("google_sign_in_button").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("browse_listings_button").performScrollTo().assertIsDisplayed().performClick()
         assertTrue(browsed)
     }
 }

@@ -212,6 +212,9 @@ class LandlordViewModel(
         electricityMeterNumber: String? = null,
         notes: String? = null,
         imageRefs: List<String> = emptyList(),
+        mpesaPaybill: String? = null,
+        mpesaTill: String? = null,
+        mpesaAccountPrefix: String? = null,
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
@@ -233,7 +236,10 @@ class LandlordViewModel(
                 waterMeterNumber = waterMeterNumber,
                 electricityMeterNumber = electricityMeterNumber,
                 notes = notes,
-                imageRefs = imageRefs
+                imageRefs = imageRefs,
+                mpesaPaybill = mpesaPaybill,
+                mpesaTill = mpesaTill,
+                mpesaAccountPrefix = mpesaAccountPrefix
             )
             _busy.value = false
             res.fold(
@@ -259,6 +265,9 @@ class LandlordViewModel(
         electricityMeterNumber: String?,
         notes: String?,
         imageRefs: List<String>,
+        mpesaPaybill: String? = property.mpesaPaybill,
+        mpesaTill: String? = property.mpesaTill,
+        mpesaAccountPrefix: String? = property.mpesaAccountPrefix,
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
@@ -276,7 +285,10 @@ class LandlordViewModel(
                 electricityMeterNumber = electricityMeterNumber,
                 notes = notes,
                 imageRefs = imageRefs,
-                archived = property.archived
+                archived = property.archived,
+                mpesaPaybill = mpesaPaybill,
+                mpesaTill = mpesaTill,
+                mpesaAccountPrefix = mpesaAccountPrefix
             )
             _busy.value = false
             res.fold(
@@ -305,7 +317,10 @@ class LandlordViewModel(
                 electricityMeterNumber = property.electricityMeterNumber,
                 notes = property.notes,
                 imageRefs = property.imageRefs,
-                archived = !property.archived
+                archived = !property.archived,
+                mpesaPaybill = property.mpesaPaybill,
+                mpesaTill = property.mpesaTill,
+                mpesaAccountPrefix = property.mpesaAccountPrefix
             )
             _busy.value = false
             _feedback.value = res.fold(
@@ -524,6 +539,26 @@ class LandlordViewModel(
         }
     }
 
+    fun sendBatchRentReminders(actorName: String) {
+        viewModelScope.launch {
+            val invList = (invoices.value as? UiState.Success)?.data ?: emptyList()
+            _busy.value = true
+            val res = financeRepo.sendRentDueAndOverdueReminders(
+                invoices = invList,
+                actorName = actorName,
+                respectCooldown = true
+            )
+            _busy.value = false
+            _feedback.value = res.fold(
+                onSuccess = { count ->
+                    if (count == 0) "No new due or overdue reminders eligible right now"
+                    else "Dispatched $count rent due/overdue reminder(s) to tenants"
+                },
+                onFailure = { it.localizedMessage ?: "Failed to dispatch reminders" }
+            )
+        }
+    }
+
     fun recordLandlordPayment(
         lease: Lease,
         referenceCode: String,
@@ -665,6 +700,42 @@ class LandlordViewModel(
                     onSuccess()
                 },
                 onFailure = { _feedback.value = it.localizedMessage ?: "Failed to record expense" }
+            )
+        }
+    }
+
+    fun submitMaintenanceForUnit(
+        unitId: String,
+        lease: Lease?,
+        title: String,
+        description: String,
+        category: com.example.domain.model.MaintenanceCategory,
+        priority: com.example.domain.model.MaintenancePriority,
+        imageRefs: List<String>,
+        submitterName: String,
+        onSuccess: () -> Unit
+    ) {
+        viewModelScope.launch {
+            _busy.value = true
+            val res = opsRepo.submitMaintenanceRequestForUnit(
+                unitId = unitId,
+                lease = lease,
+                title = title,
+                description = description,
+                category = category,
+                priority = priority,
+                imageRefs = imageRefs,
+                submitterName = submitterName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = "Maintenance request logged for unit"
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to submit maintenance ticket"
+                }
             )
         }
     }

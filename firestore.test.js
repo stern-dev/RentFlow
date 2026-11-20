@@ -13,6 +13,7 @@ const MANAGER_UID = "manager_002";
 const TENANT_UID = "tenant_003";
 const OTHER_TENANT_UID = "tenant_999";
 const STAFF_UID = "staff_004";
+const OTHER_STAFF_UID = "staff_005";
 const ADMIN_UID = "admin_000";
 
 const [emulatorHost, emulatorPortStr] = (process.env.FIRESTORE_EMULATOR_HOST || "127.0.0.1:8085").split(":");
@@ -20,6 +21,36 @@ const emulatorPort = parseInt(emulatorPortStr, 10);
 
 function pastDate(msOffset = 5000) {
   return new Date(Date.now() - msOffset);
+}
+
+function authedDb(uid, email, emailVerified = true) {
+  return testEnv
+    .authenticatedContext(uid, { email, email_verified: emailVerified })
+    .firestore();
+}
+
+async function seedUser(ctxDb, {
+  uid,
+  fullName,
+  email,
+  roles,
+  activeRole = roles[0],
+  suspended = false,
+  now = pastDate(20000),
+}) {
+  await ctxDb.collection("users").doc(uid).set({
+    userId: uid,
+    fullName,
+    email,
+    roles,
+    activeRole,
+    notifyRentDue: true,
+    notifyMaintenance: true,
+    notifyAnnouncements: true,
+    suspended,
+    createdAt: now,
+    updatedAt: now,
+  });
 }
 
 before(async () => {
@@ -122,9 +153,44 @@ test("Unauthenticated visitor: can query published units/properties only, denied
   await assertFails(unauthDb.collection("payments").get());
 });
 
-test("User profile: owner CRUD succeeds, privilege escalation and cross-user PII read fail", async () => {
+test("User profile: owner CRUD succeeds, immutable fields, privilege escalation, and cross-user PII read fail", async () => {
   const now = pastDate();
-  const landlordDb = testEnv.authenticatedContext(LANDLORD_UID, { email: "owner@example.com", email_verified: true }).firestore();
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com", true);
+  const unverifiedDb = authedDb("unverified_uid", "unverified@example.com", false);
+
+  // Unverified email cannot create a profile
+  await assertFails(
+    unverifiedDb.collection("users").doc("unverified_uid").set({
+      userId: "unverified_uid",
+      fullName: "Unverified User",
+      email: "unverified@example.com",
+      roles: ["TENANT"],
+      activeRole: "TENANT",
+      notifyRentDue: true,
+      notifyMaintenance: true,
+      notifyAnnouncements: true,
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Spoofed email field on profile creation fails
+  await assertFails(
+    landlordDb.collection("users").doc(LANDLORD_UID).set({
+      userId: LANDLORD_UID,
+      fullName: "Wanjiku Kamau",
+      email: "spoofed@example.com",
+      roles: ["LANDLORD"],
+      activeRole: "LANDLORD",
+      notifyRentDue: true,
+      notifyMaintenance: true,
+      notifyAnnouncements: true,
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
 
   await assertSucceeds(
     landlordDb.collection("users").doc(LANDLORD_UID).set({
@@ -143,11 +209,25 @@ test("User profile: owner CRUD succeeds, privilege escalation and cross-user PII
     })
   );
 
-  // Reject self-assigned ADMIN role
+  // Reject self-assigned ADMIN role or any role addition
   await assertFails(
     landlordDb.collection("users").doc(LANDLORD_UID).update({
       roles: ["LANDLORD", "ADMIN"],
       activeRole: "ADMIN",
+      updatedAt: pastDate(1000),
+    })
+  );
+
+  // Reject immutable field mutations on user profile (userId, email, createdAt, suspended)
+  await assertFails(
+    landlordDb.collection("users").doc(LANDLORD_UID).update({
+      email: "newemail@example.com",
+      updatedAt: pastDate(1000),
+    })
+  );
+  await assertFails(
+    landlordDb.collection("users").doc(LANDLORD_UID).update({
+      createdAt: pastDate(1000),
       updatedAt: pastDate(1000),
     })
   );
@@ -162,7 +242,7 @@ test("User profile: owner CRUD succeeds, privilege escalation and cross-user PII
   );
 
   // Cross-user PII read/update/delete rejected
-  const tenantDb = testEnv.authenticatedContext(TENANT_UID, { email: "tenant@example.com", email_verified: true }).firestore();
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com", true);
   await assertFails(tenantDb.collection("users").doc(LANDLORD_UID).get());
   await assertFails(tenantDb.collection("users").doc(LANDLORD_UID).update({ fullName: "Hijacked", updatedAt: pastDate(500) }));
   await assertFails(tenantDb.collection("users").doc(LANDLORD_UID).delete());
@@ -178,10 +258,16 @@ test("User profile: owner CRUD succeeds, privilege escalation and cross-user PII
   await assertSucceeds(landlordDb.collection("users").doc(LANDLORD_UID).delete());
 });
 
-test("Property CRUD isolation: owner can read/update/delete, unrelated user is denied", async () => {
+test("Property CRUD isolation: verified landlord can read/update/delete, unrelated user is denied", async () => {
   const now = pastDate(10000);
-  const landlordDb = testEnv.authenticatedContext(LANDLORD_UID).firestore();
-  const otherDb = testEnv.authenticatedContext(OTHER_TENANT_UID).firestore();
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Wanjiku", email: "owner@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: OTHER_TENANT_UID, fullName: "Intruder", email: "other@example.com", roles: ["TENANT"], now });
+  });
+
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com");
+  const otherDb = authedDb(OTHER_TENANT_UID, "other@example.com");
 
   await assertSucceeds(
     landlordDb.collection("organizations").doc("org_iso").set({
@@ -224,6 +310,14 @@ test("Property CRUD isolation: owner can read/update/delete, unrelated user is d
   await assertFails(otherDb.collection("properties").doc("prop_iso").update({ name: "Hijacked", updatedAt: pastDate(500) }));
   await assertFails(otherDb.collection("properties").doc("prop_iso").delete());
 
+  // Owner cannot mutate immutable orgId or ownerUid on property
+  await assertFails(
+    landlordDb.collection("properties").doc("prop_iso").update({
+      ownerUid: OTHER_TENANT_UID,
+      updatedAt: pastDate(500),
+    })
+  );
+
   // Owner can read, update, and delete their own property
   await assertSucceeds(landlordDb.collection("properties").where("authorizedUids", "array-contains", LANDLORD_UID).get());
   await assertSucceeds(landlordDb.collection("properties").doc("prop_iso").update({ name: "Lavington Green Villas", updatedAt: pastDate(500) }));
@@ -232,13 +326,22 @@ test("Property CRUD isolation: owner can read/update/delete, unrelated user is d
 
 test("Full RentFlow lifecycle: org -> property -> unit -> application -> lease -> invoice -> payment -> maintenance -> isolation", async () => {
   const now = pastDate(10000);
-  const landlordDb = testEnv.authenticatedContext(LANDLORD_UID).firestore();
-  const managerDb = testEnv.authenticatedContext(MANAGER_UID).firestore();
-  const tenantDb = testEnv.authenticatedContext(TENANT_UID).firestore();
-  const otherTenantDb = testEnv.authenticatedContext(OTHER_TENANT_UID).firestore();
-  const staffDb = testEnv.authenticatedContext(STAFF_UID).firestore();
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Wanjiku Kamau", email: "owner@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: MANAGER_UID, fullName: "Grace Wambui", email: "manager@example.com", roles: ["PROPERTY_MANAGER"], now });
+    await seedUser(db, { uid: TENANT_UID, fullName: "Brian Ochieng", email: "tenant@example.com", roles: ["TENANT"], now });
+    await seedUser(db, { uid: OTHER_TENANT_UID, fullName: "Other Tenant", email: "other@example.com", roles: ["TENANT"], now });
+    await seedUser(db, { uid: STAFF_UID, fullName: "John Plumber", email: "staff@example.com", roles: ["MAINTENANCE_STAFF"], now });
+  });
 
-  // 1. Organization
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com");
+  const managerDb = authedDb(MANAGER_UID, "manager@example.com");
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com");
+  const otherTenantDb = authedDb(OTHER_TENANT_UID, "other@example.com");
+  const staffDb = authedDb(STAFF_UID, "staff@example.com");
+
+  // 1. Organization (Landlord only)
   await assertSucceeds(
     landlordDb.collection("organizations").doc("org_1").set({
       name: "Savannah Homes Ltd",
@@ -253,7 +356,7 @@ test("Full RentFlow lifecycle: org -> property -> unit -> application -> lease -
     })
   );
 
-  // 2. Property
+  // 2. Property (Landlord only)
   await assertSucceeds(
     landlordDb.collection("properties").doc("prop_1").set({
       orgId: "org_1",
@@ -276,9 +379,33 @@ test("Full RentFlow lifecycle: org -> property -> unit -> application -> lease -
     })
   );
 
-  // 3. Unit
+  // 3. Unit (Owner creates; Manager cannot create units)
+  await assertFails(
+    managerDb.collection("units").doc("unit_mgr_blocked").set({
+      propertyId: "prop_1",
+      propertyName: "Milimani Court",
+      propertyCity: "Kisumu",
+      propertyCategory: "APARTMENTS",
+      orgId: "org_1",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      unitNumber: "B99",
+      unitType: "TWO_BEDROOM",
+      rentCents: 2800000,
+      depositCents: 2800000,
+      status: "AVAILABLE",
+      amenities: [],
+      description: "Blocked for manager",
+      imageRefs: [],
+      published: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
   await assertSucceeds(
-    managerDb.collection("units").doc("unit_1").set({
+    landlordDb.collection("units").doc("unit_1").set({
       propertyId: "prop_1",
       propertyName: "Milimani Court",
       propertyCity: "Kisumu",
@@ -525,33 +652,21 @@ test("Full RentFlow lifecycle: org -> property -> unit -> application -> lease -
 test("Bootstrapped verified admin has read/manage access; unverified email admin spoof fails", async () => {
   const now = pastDate();
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
-    await ctx.firestore().collection("users").doc(TENANT_UID).set({
-      userId: TENANT_UID,
+    await seedUser(ctx.firestore(), {
+      uid: TENANT_UID,
       fullName: "Brian Ochieng",
       email: "brian@example.com",
       roles: ["TENANT"],
-      activeRole: "TENANT",
-      notifyRentDue: true,
-      notifyMaintenance: true,
-      notifyAnnouncements: true,
-      suspended: false,
-      createdAt: now,
-      updatedAt: now,
+      now,
     });
   });
 
   // Unverified email spoof must fail
-  const spoofAdminDb = testEnv.authenticatedContext("spoof_uid", {
-    email: "sternomolo2@gmail.com",
-    email_verified: false,
-  }).firestore();
+  const spoofAdminDb = authedDb("spoof_uid", "sternomolo2@gmail.com", false);
   await assertFails(spoofAdminDb.collection("users").get());
 
   // Verified bootstrapped admin succeeds
-  const realAdminDb = testEnv.authenticatedContext(ADMIN_UID, {
-    email: "sternomolo2@gmail.com",
-    email_verified: true,
-  }).firestore();
+  const realAdminDb = authedDb(ADMIN_UID, "sternomolo2@gmail.com", true);
   await assertSucceeds(realAdminDb.collection("users").get());
 });
 
@@ -565,6 +680,11 @@ test("Cross-organization isolation: landlords and managers are restricted to the
 
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
     const db = ctx.firestore();
+    await seedUser(db, { uid: ORG_A_LANDLORD, fullName: "Org A Owner", email: "orga_owner@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: ORG_A_MANAGER, fullName: "Org A Manager", email: "orga_mgr@example.com", roles: ["PROPERTY_MANAGER"], now });
+    await seedUser(db, { uid: ORG_B_LANDLORD, fullName: "Org B Owner", email: "orgb_owner@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: ORG_B_MANAGER, fullName: "Org B Manager", email: "orgb_mgr@example.com", roles: ["PROPERTY_MANAGER"], now });
+
     await db.collection("organizations").doc("org_a").set({
       name: "Nairobi West Holdings",
       ownerUid: ORG_A_LANDLORD,
@@ -688,10 +808,10 @@ test("Cross-organization isolation: landlords and managers are restricted to the
     });
   });
 
-  const orgALandlordDb = testEnv.authenticatedContext(ORG_A_LANDLORD).firestore();
-  const orgAManagerDb = testEnv.authenticatedContext(ORG_A_MANAGER).firestore();
-  const orgBLandlordDb = testEnv.authenticatedContext(ORG_B_LANDLORD).firestore();
-  const orgBManagerDb = testEnv.authenticatedContext(ORG_B_MANAGER).firestore();
+  const orgALandlordDb = authedDb(ORG_A_LANDLORD, "orga_owner@example.com");
+  const orgAManagerDb = authedDb(ORG_A_MANAGER, "orga_mgr@example.com");
+  const orgBLandlordDb = authedDb(ORG_B_LANDLORD, "orgb_owner@example.com");
+  const orgBManagerDb = authedDb(ORG_B_MANAGER, "orgb_mgr@example.com");
 
   // Org B members can access Org B records
   await assertSucceeds(orgBLandlordDb.collection("organizations").doc("org_b").get());
@@ -792,11 +912,11 @@ test("Cross-organization isolation: landlords and managers are restricted to the
 
 test("Property extended metadata & dual-filter orgId+authorizedUids query scoping", async () => {
   const now = pastDate(10000);
-  const landlordDb = testEnv.authenticatedContext(LANDLORD_UID).firestore();
-  const otherDb = testEnv.authenticatedContext(OTHER_TENANT_UID).firestore();
-
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
     const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Wanjiku", email: "owner@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: OTHER_TENANT_UID, fullName: "Other", email: "other@example.com", roles: ["TENANT"], now });
+
     await db.collection("organizations").doc("org_alpha").set({
       name: "Alpha Estates",
       ownerUid: LANDLORD_UID,
@@ -820,6 +940,9 @@ test("Property extended metadata & dual-filter orgId+authorizedUids query scopin
       updatedAt: now,
     });
   });
+
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com");
+  const otherDb = authedDb(OTHER_TENANT_UID, "other@example.com");
 
   // Reject creating property referencing non-existent organization
   await assertFails(
@@ -952,11 +1075,11 @@ test("Property extended metadata & dual-filter orgId+authorizedUids query scopin
 
 test("RentalUnit CRUD scoped to parent property: create, property-scoped list, update, delete unoccupied vs occupied", async () => {
   const now = pastDate(10000);
-  const landlordDb = testEnv.authenticatedContext(LANDLORD_UID).firestore();
-  const otherDb = testEnv.authenticatedContext(OTHER_TENANT_UID).firestore();
-
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
     const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Wanjiku", email: "owner@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: OTHER_TENANT_UID, fullName: "Other", email: "other@example.com", roles: ["TENANT"], now });
+
     await db.collection("organizations").doc("org_units").set({
       name: "Mombasa Bay Estates",
       ownerUid: LANDLORD_UID,
@@ -1009,6 +1132,9 @@ test("RentalUnit CRUD scoped to parent property: create, property-scoped list, u
       updatedAt: now,
     });
   });
+
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com");
+  const otherDb = authedDb(OTHER_TENANT_UID, "other@example.com");
 
   // Create vacant unit under prop_p1
   await assertSucceeds(
@@ -1117,5 +1243,942 @@ test("RentalUnit CRUD scoped to parent property: create, property-scoped list, u
 
   // Owner can delete an unoccupied (AVAILABLE) unit
   await assertSucceeds(landlordDb.collection("units").doc("unit_a1").delete());
+});
+
+test("Role immutability, RoleInvite atomic acceptance, and Admin role grants", async () => {
+  const now = pastDate(10000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Owner", email: "owner@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: MANAGER_UID, fullName: "Grace Wambui", email: "manager@example.com", roles: ["TENANT"], now });
+    await seedUser(db, { uid: OTHER_TENANT_UID, fullName: "Intruder", email: "intruder@example.com", roles: ["TENANT"], now });
+
+    await db.collection("organizations").doc("org_rbac").set({
+      name: "Westlands Realty",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID],
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com");
+  const managerDb = authedDb(MANAGER_UID, "manager@example.com");
+  const intruderDb = authedDb(OTHER_TENANT_UID, "intruder@example.com");
+  const adminDb = authedDb(ADMIN_UID, "sternomolo2@gmail.com");
+
+  // User cannot self-mutate roles or switch activeRole to an ungranted role
+  await assertFails(
+    managerDb.collection("users").doc(MANAGER_UID).update({
+      roles: ["TENANT", "LANDLORD"],
+      activeRole: "LANDLORD",
+      updatedAt: pastDate(1000),
+    })
+  );
+  await assertFails(
+    managerDb.collection("users").doc(MANAGER_UID).update({
+      activeRole: "PROPERTY_MANAGER",
+      updatedAt: pastDate(1000),
+    })
+  );
+
+  // Non-owner cannot create a RoleInvite for org_rbac
+  await assertFails(
+    intruderDb.collection("role_invites").doc("inv_bad").set({
+      orgId: "org_rbac",
+      orgName: "Westlands Realty",
+      propertyIds: [],
+      inviterUid: OTHER_TENANT_UID,
+      inviterName: "Intruder",
+      inviteeEmail: "intruder@example.com",
+      role: "PROPERTY_MANAGER",
+      status: "PENDING",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Org owner creates a legitimate RoleInvite for manager@example.com
+  await assertSucceeds(
+    landlordDb.collection("role_invites").doc("inv_mgr_1").set({
+      orgId: "org_rbac",
+      orgName: "Westlands Realty",
+      propertyIds: [],
+      inviterUid: LANDLORD_UID,
+      inviterName: "Owner",
+      inviteeEmail: "manager@example.com",
+      role: "PROPERTY_MANAGER",
+      status: "PENDING",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Wrong user (intruder) cannot read or accept Grace's invite
+  await assertFails(intruderDb.collection("role_invites").doc("inv_mgr_1").get());
+  await assertFails(
+    intruderDb.collection("role_invites").doc("inv_mgr_1").update({
+      status: "ACCEPTED",
+      acceptedByUid: OTHER_TENANT_UID,
+      updatedAt: pastDate(500),
+    })
+  );
+
+  // Grace atomically accepts the invite via WriteBatch (invite + user profile + org memberUids)
+  const batch = managerDb.batch();
+  const acceptTime = pastDate(500);
+  batch.update(managerDb.collection("role_invites").doc("inv_mgr_1"), {
+    status: "ACCEPTED",
+    acceptedByUid: MANAGER_UID,
+    updatedAt: acceptTime,
+  });
+  batch.update(managerDb.collection("users").doc(MANAGER_UID), {
+    roles: ["TENANT", "PROPERTY_MANAGER"],
+    activeRole: "PROPERTY_MANAGER",
+    activeOrgId: "org_rbac",
+    lastAcceptedInviteId: "inv_mgr_1",
+    updatedAt: acceptTime,
+  });
+  batch.update(managerDb.collection("organizations").doc("org_rbac"), {
+    memberUids: [LANDLORD_UID, MANAGER_UID],
+    updatedAt: acceptTime,
+  });
+  await assertSucceeds(batch.commit());
+
+  // Grace can now switch between TENANT and PROPERTY_MANAGER (both in roles) without mutating roles
+  await assertSucceeds(
+    managerDb.collection("users").doc(MANAGER_UID).update({
+      activeRole: "TENANT",
+      updatedAt: pastDate(200),
+    })
+  );
+
+  // Grace can write a self-scoped audit log for her role switch, and cannot mutate it
+  await assertSucceeds(
+    managerDb.collection("audit_logs").doc("log_switch_1").set({
+      orgId: `user_${MANAGER_UID}`,
+      actorUid: MANAGER_UID,
+      actorName: "Grace Wambui",
+      action: "SWITCH_ROLE",
+      entityType: "UserProfile",
+      entityId: MANAGER_UID,
+      details: "Switched active workspace to TENANT",
+      createdAt: pastDate(100),
+    })
+  );
+  await assertFails(managerDb.collection("audit_logs").doc("log_switch_1").update({ details: "tampered" }));
+
+  // Verified Admin can grant MAINTENANCE_STAFF role directly
+  await assertSucceeds(
+    adminDb.collection("users").doc(MANAGER_UID).update({
+      roles: ["TENANT", "PROPERTY_MANAGER", "MAINTENANCE_STAFF"],
+      updatedAt: pastDate(100),
+    })
+  );
+});
+
+test("Owner vs Property Manager separation on units, leases, payments, and expenses", async () => {
+  const now = pastDate(10000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Owner", email: "owner@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: MANAGER_UID, fullName: "Manager", email: "manager@example.com", roles: ["PROPERTY_MANAGER"], now });
+
+    await db.collection("organizations").doc("org_sep").set({
+      name: "Kilimani Holdings",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID, MANAGER_UID],
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("properties").doc("prop_sep").set({
+      orgId: "org_sep",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      name: "Acacia Suites",
+      category: "APARTMENTS",
+      city: "Nairobi",
+      neighborhood: "Kilimani",
+      addressLine: "Denis Pritt Rd",
+      description: "Apartments",
+      imageRefs: [],
+      archived: false,
+      hasPublishedUnits: false,
+      totalUnitsCount: 1,
+      occupiedUnitsCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("units").doc("unit_sep").set({
+      propertyId: "prop_sep",
+      propertyName: "Acacia Suites",
+      propertyCity: "Nairobi",
+      propertyCategory: "APARTMENTS",
+      orgId: "org_sep",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      unitNumber: "C1",
+      unitType: "ONE_BEDROOM",
+      rentCents: 3000000,
+      depositCents: 3000000,
+      status: "AVAILABLE",
+      amenities: ["Parking"],
+      description: "Nice unit",
+      imageRefs: [],
+      published: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("leases").doc("lease_sep").set({
+      orgId: "org_sep",
+      propertyId: "prop_sep",
+      propertyName: "Acacia Suites",
+      unitId: "unit_sep",
+      unitNumber: "C1",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      tenantPhone: "+254722111222",
+      rentCents: 3000000,
+      depositCents: 3000000,
+      startDateEpochMs: Date.now() - 86400000,
+      endDateEpochMs: Date.now() + 86400000 * 300,
+      dueDayOfMonth: 5,
+      status: "ACTIVE",
+      creditBalanceCents: 0,
+      termsSummary: "Standard",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("payments").doc("pay_verified").set({
+      referenceCode: "UBK11122",
+      leaseId: "lease_sep",
+      orgId: "org_sep",
+      propertyId: "prop_sep",
+      propertyName: "Acacia Suites",
+      unitId: "unit_sep",
+      unitNumber: "C1",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      amountCents: 3000000,
+      method: "MPESA",
+      simulatedCheckout: false,
+      paymentDateEpochMs: Date.now() - 10000,
+      status: "VERIFIED",
+      recordedByUid: TENANT_UID,
+      verifiedByUid: MANAGER_UID,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("expenses").doc("exp_sep").set({
+      orgId: "org_sep",
+      propertyId: "prop_sep",
+      propertyName: "Acacia Suites",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      category: "REPAIRS",
+      title: "Gate lock replacement",
+      description: "Replaced lock",
+      amountCents: 450000,
+      expenseDateEpochMs: Date.now() - 10000,
+      recordedByUid: MANAGER_UID,
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com");
+  const managerDb = authedDb(MANAGER_UID, "manager@example.com");
+
+  // Manager CAN update operational unit fields (status, amenities)
+  await assertSucceeds(
+    managerDb.collection("units").doc("unit_sep").update({
+      status: "UNDER_MAINTENANCE",
+      published: false,
+      amenities: ["Parking", "CCTV"],
+      updatedAt: pastDate(500),
+    })
+  );
+
+  // Manager CANNOT alter unit rentCents/depositCents or delete unit
+  await assertFails(
+    managerDb.collection("units").doc("unit_sep").update({
+      rentCents: 3500000,
+      updatedAt: pastDate(400),
+    })
+  );
+  await assertFails(managerDb.collection("units").doc("unit_sep").delete());
+
+  // Manager CANNOT terminate lease or alter lease rentCents
+  await assertFails(
+    managerDb.collection("leases").doc("lease_sep").update({
+      status: "TERMINATED",
+      terminationNotice: "Manager forced out",
+      updatedAt: pastDate(400),
+    })
+  );
+  await assertFails(
+    managerDb.collection("leases").doc("lease_sep").update({
+      rentCents: 4000000,
+      updatedAt: pastDate(400),
+    })
+  );
+
+  // Manager CANNOT reverse a verified payment or delete an expense
+  await assertFails(
+    managerDb.collection("payments").doc("pay_verified").update({
+      status: "REVERSED",
+      reversalReason: "Unauthorized reversal",
+      updatedAt: pastDate(400),
+    })
+  );
+  await assertFails(managerDb.collection("expenses").doc("exp_sep").delete());
+
+  // Owner CAN update pricing, reverse verified payment, terminate lease, and delete expense
+  await assertSucceeds(
+    landlordDb.collection("units").doc("unit_sep").update({
+      rentCents: 3200000,
+      updatedAt: pastDate(300),
+    })
+  );
+  await assertSucceeds(
+    landlordDb.collection("payments").doc("pay_verified").update({
+      status: "REVERSED",
+      reversalReason: "Bank bounce confirmed by owner",
+      updatedAt: pastDate(300),
+    })
+  );
+  await assertSucceeds(
+    landlordDb.collection("leases").doc("lease_sep").update({
+      status: "TERMINATED",
+      terminationNotice: "Mutual end of term",
+      updatedAt: pastDate(300),
+    })
+  );
+  await assertSucceeds(landlordDb.collection("expenses").doc("exp_sep").delete());
+});
+
+test("Verified Role Enforcement: Tenant/Staff cannot invoke Landlord/Manager operations; Staff cannot access unassigned tickets", async () => {
+  const now = pastDate(10000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Owner", email: "owner@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: TENANT_UID, fullName: "Tenant", email: "tenant@example.com", roles: ["TENANT"], now });
+    await seedUser(db, { uid: STAFF_UID, fullName: "Staff", email: "staff@example.com", roles: ["MAINTENANCE_STAFF"], now });
+    await seedUser(db, { uid: OTHER_STAFF_UID, fullName: "Other Staff", email: "staff2@example.com", roles: ["MAINTENANCE_STAFF"], now });
+
+    await db.collection("organizations").doc("org_role_gate").set({
+      name: "Karen Villas",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID, STAFF_UID],
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("properties").doc("prop_gate").set({
+      orgId: "org_role_gate",
+      ownerUid: LANDLORD_UID,
+      managerUids: [],
+      authorizedUids: [LANDLORD_UID, STAFF_UID],
+      name: "Karen Court",
+      category: "APARTMENTS",
+      city: "Nairobi",
+      neighborhood: "Karen",
+      addressLine: "Langata Rd",
+      description: "Secure court",
+      imageRefs: [],
+      archived: false,
+      hasPublishedUnits: true,
+      totalUnitsCount: 1,
+      occupiedUnitsCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("units").doc("unit_gate").set({
+      propertyId: "prop_gate",
+      propertyName: "Karen Court",
+      propertyCity: "Nairobi",
+      propertyCategory: "APARTMENTS",
+      orgId: "org_role_gate",
+      ownerUid: LANDLORD_UID,
+      managerUids: [],
+      authorizedUids: [LANDLORD_UID],
+      unitNumber: "K1",
+      unitType: "ONE_BEDROOM",
+      rentCents: 2000000,
+      depositCents: 2000000,
+      status: "AVAILABLE",
+      amenities: [],
+      description: "1BR",
+      imageRefs: [],
+      published: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("maintenance_requests").doc("maint_gate").set({
+      orgId: "org_role_gate",
+      propertyId: "prop_gate",
+      propertyName: "Karen Court",
+      unitId: "unit_gate",
+      unitNumber: "K1",
+      ownerUid: LANDLORD_UID,
+      managerUids: [],
+      authorizedUids: [LANDLORD_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Tenant",
+      assignedStaffUid: STAFF_UID,
+      assignedStaffName: "Staff",
+      title: "Broken window latch",
+      description: "Latch snapped",
+      category: "DOORS_WINDOWS",
+      priority: "MEDIUM",
+      status: "ASSIGNED",
+      repairCostCents: 0,
+      imageRefs: [],
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com");
+  const staffDb = authedDb(STAFF_UID, "staff@example.com");
+  const otherStaffDb = authedDb(OTHER_STAFF_UID, "staff2@example.com");
+
+  // Tenant-only user CANNOT create an organization or property even claiming own UID
+  await assertFails(
+    tenantDb.collection("organizations").doc("org_rogue_tenant").set({
+      name: "Rogue Org",
+      ownerUid: TENANT_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [TENANT_UID],
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Maintenance Staff CANNOT create an organization, read/update property, or publish an announcement even if listed in authorizedUids
+  await assertFails(
+    staffDb.collection("organizations").doc("org_rogue_staff").set({
+      name: "Rogue Staff Org",
+      ownerUid: STAFF_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [STAFF_UID],
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+  await assertFails(
+    staffDb.collection("properties").doc("prop_gate").update({
+      totalUnitsCount: 99,
+      updatedAt: pastDate(500),
+    })
+  );
+  await assertFails(
+    staffDb.collection("announcements").doc("ann_rogue_staff").set({
+      orgId: "org_role_gate",
+      propertyId: "prop_gate",
+      propertyName: "Karen Court",
+      ownerUid: LANDLORD_UID,
+      authorizedUids: [LANDLORD_UID, STAFF_UID],
+      targetUids: [TENANT_UID],
+      title: "Fake Notice",
+      body: "Staff cannot broadcast announcements",
+      authorUid: STAFF_UID,
+      authorName: "Staff",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Staff-only user CANNOT submit a tenant rental application
+  await assertFails(
+    staffDb.collection("applications").doc("app_staff_bad").set({
+      unitId: "unit_gate",
+      unitNumber: "K1",
+      propertyId: "prop_gate",
+      propertyName: "Karen Court",
+      orgId: "org_role_gate",
+      ownerUid: LANDLORD_UID,
+      managerUids: [],
+      authorizedUids: [LANDLORD_UID],
+      applicantUid: STAFF_UID,
+      applicantName: "Staff",
+      applicantPhone: "+254711000999",
+      desiredMoveInDate: "2026-12-01",
+      status: "SUBMITTED",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Unassigned staff CANNOT read or update maint_gate
+  await assertFails(otherStaffDb.collection("maintenance_requests").doc("maint_gate").get());
+  await assertFails(
+    otherStaffDb.collection("maintenance_requests").doc("maint_gate").update({
+      status: "COMPLETED",
+      updatedAt: pastDate(500),
+    })
+  );
+
+  // Assigned staff CANNOT mutate immutable title, category, or tenantUid on maintenance ticket
+  await assertFails(
+    staffDb.collection("maintenance_requests").doc("maint_gate").update({
+      title: "Altered Title",
+      status: "IN_PROGRESS",
+      updatedAt: pastDate(500),
+    })
+  );
+});
+
+test("Account and organization suspension locks down all member reads and writes while Admin retains access", async () => {
+  const now = pastDate(10000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Owner", email: "owner@example.com", roles: ["LANDLORD"], suspended: false, now });
+    await seedUser(db, { uid: MANAGER_UID, fullName: "Suspended Manager", email: "mgr_susp@example.com", roles: ["PROPERTY_MANAGER"], suspended: true, now });
+
+    await db.collection("organizations").doc("org_susp").set({
+      name: "Suspended Holdings",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID, MANAGER_UID],
+      suspended: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("properties").doc("prop_susp").set({
+      orgId: "org_susp",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      name: "Frozen Estate",
+      category: "APARTMENTS",
+      city: "Nairobi",
+      neighborhood: "South B",
+      addressLine: "Mombasa Rd",
+      description: "Under suspension",
+      imageRefs: [],
+      archived: false,
+      hasPublishedUnits: false,
+      totalUnitsCount: 0,
+      occupiedUnitsCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com");
+  const suspendedManagerDb = authedDb(MANAGER_UID, "mgr_susp@example.com");
+  const adminDb = authedDb(ADMIN_UID, "sternomolo2@gmail.com");
+
+  // Suspended manager can read their own profile (to display suspension banner) but cannot update profile or read orgs/properties
+  await assertSucceeds(suspendedManagerDb.collection("users").doc(MANAGER_UID).get());
+  await assertFails(
+    suspendedManagerDb.collection("users").doc(MANAGER_UID).update({
+      fullName: "Unsuspend Attempt",
+      updatedAt: pastDate(500),
+    })
+  );
+  await assertFails(suspendedManagerDb.collection("organizations").doc("org_susp").get());
+  await assertFails(suspendedManagerDb.collection("properties").doc("prop_susp").get());
+
+  // Active landlord cannot mutate or create properties under a suspended organization
+  await assertFails(
+    landlordDb.collection("organizations").doc("org_susp").update({
+      name: "Rename While Suspended",
+      updatedAt: pastDate(500),
+    })
+  );
+  await assertFails(
+    landlordDb.collection("properties").doc("prop_susp").update({
+      name: "Edit While Org Suspended",
+      updatedAt: pastDate(500),
+    })
+  );
+
+  // Admin can reinstate the organization, restoring landlord writes
+  await assertSucceeds(
+    adminDb.collection("organizations").doc("org_susp").update({
+      suspended: false,
+      updatedAt: pastDate(300),
+    })
+  );
+  await assertSucceeds(
+    landlordDb.collection("properties").doc("prop_susp").update({
+      name: "Restored Estate",
+      updatedAt: pastDate(200),
+    })
+  );
+});
+
+test("FCM device tokens: owner CRUD succeeds, cross-user access, unverified email, and tampered payloads fail", async () => {
+  const now = pastDate();
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com", true);
+  const otherDb = authedDb(OTHER_TENANT_UID, "other@example.com", true);
+  const unverifiedDb = authedDb("unverified_fcm", "unv@example.com", false);
+
+  const tokenDocRef = tenantDb.collection("users").doc(TENANT_UID).collection("fcm_tokens").doc("tok_hash_abc123");
+  const validPayload = {
+    userId: TENANT_UID,
+    token: "fcm_sample_token_value_1234567890",
+    platform: "ANDROID",
+    notifyMaintenance: true,
+    activeRole: "TENANT",
+    appVersion: "1.0",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  // Unverified email cannot write FCM token
+  await assertFails(
+    unverifiedDb.collection("users").doc("unverified_fcm").collection("fcm_tokens").doc("tok_hash_unv")
+      .set({ ...validPayload, userId: "unverified_fcm" })
+  );
+
+  // Cross-user write rejected
+  await assertFails(
+    otherDb.collection("users").doc(TENANT_UID).collection("fcm_tokens").doc("tok_hash_abc123").set(validPayload)
+  );
+
+  // Invalid short token rejected
+  await assertFails(tokenDocRef.set({ ...validPayload, token: "short" }));
+
+  // Owner create succeeds
+  await assertSucceeds(tokenDocRef.set(validPayload));
+
+  // Cross-user read/list/delete rejected
+  await assertFails(otherDb.collection("users").doc(TENANT_UID).collection("fcm_tokens").doc("tok_hash_abc123").get());
+  await assertFails(otherDb.collection("users").doc(TENANT_UID).collection("fcm_tokens").get());
+  await assertFails(otherDb.collection("users").doc(TENANT_UID).collection("fcm_tokens").doc("tok_hash_abc123").delete());
+
+  // Owner list & partial update succeed
+  await assertSucceeds(tenantDb.collection("users").doc(TENANT_UID).collection("fcm_tokens").get());
+  await assertSucceeds(
+    tokenDocRef.update({
+      notifyMaintenance: false,
+      activeRole: "LANDLORD",
+      updatedAt: pastDate(500),
+    })
+  );
+
+  // Immutable userId / createdAt tamper rejected
+  await assertFails(
+    tokenDocRef.update({
+      userId: OTHER_TENANT_UID,
+      updatedAt: pastDate(300),
+    })
+  );
+  await assertFails(
+    tokenDocRef.update({
+      createdAt: pastDate(100),
+      updatedAt: pastDate(100),
+    })
+  );
+
+  // Owner delete succeeds on sign-out
+  await assertSucceeds(tokenDocRef.delete());
+});
+
+test("Saved listings bookmarks: owner create/read/delete succeeds, update and cross-user access denied", async () => {
+  const now = pastDate();
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com", true);
+  const otherDb = authedDb(OTHER_TENANT_UID, "other@example.com", true);
+
+  const savedRef = tenantDb.collection("users").doc(TENANT_UID).collection("saved_units").doc("unit_saved_1");
+  const validSaved = {
+    unitId: "unit_saved_1",
+    propertyId: "prop_saved_1",
+    propertyName: "Kilimani Heights",
+    unitNumber: "A4",
+    rentCents: 3500000,
+    savedAt: now,
+  };
+
+  // Cross-user write rejected
+  await assertFails(
+    otherDb.collection("users").doc(TENANT_UID).collection("saved_units").doc("unit_saved_1").set(validSaved)
+  );
+
+  // Mismatched unitId rejected
+  await assertFails(
+    savedRef.set({ ...validSaved, unitId: "different_unit" })
+  );
+
+  // Owner create & list succeed
+  await assertSucceeds(savedRef.set(validSaved));
+  await assertSucceeds(tenantDb.collection("users").doc(TENANT_UID).collection("saved_units").get());
+
+  // Cross-user read/list/delete rejected
+  await assertFails(otherDb.collection("users").doc(TENANT_UID).collection("saved_units").doc("unit_saved_1").get());
+  await assertFails(otherDb.collection("users").doc(TENANT_UID).collection("saved_units").get());
+  await assertFails(otherDb.collection("users").doc(TENANT_UID).collection("saved_units").doc("unit_saved_1").delete());
+
+  // Updates are immutable (delete + recreate instead)
+  await assertFails(savedRef.update({ rentCents: 4000000 }));
+
+  // Owner delete succeeds
+  await assertSucceeds(savedRef.delete());
+});
+
+test("Verified landlord anti-spoofing, M-Pesa settings, invoice reminders, and listing scam reporting", async () => {
+  const now = pastDate(10000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Wanjiku Kamau", email: "owner@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: TENANT_UID, fullName: "Brian Ochieng", email: "tenant@example.com", roles: ["TENANT"], now });
+  });
+
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com", true);
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com", true);
+  const adminDb = authedDb(ADMIN_UID, "sternomolo2@gmail.com", true);
+
+  // Landlord CANNOT self-verify on organization creation
+  await assertFails(
+    landlordDb.collection("organizations").doc("org_spoof").set({
+      name: "Fake Verified Ltd",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID],
+      suspended: false,
+      verified: true,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Landlord creates unverified organization with M-Pesa Paybill/Till
+  await assertSucceeds(
+    landlordDb.collection("organizations").doc("org_ke").set({
+      name: "Nairobi Homes Ltd",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID],
+      suspended: false,
+      verified: false,
+      mpesaPaybill: "522522",
+      mpesaTill: "814920",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Landlord CANNOT toggle verified=true on update
+  await assertFails(
+    landlordDb.collection("organizations").doc("org_ke").update({
+      verified: true,
+      updatedAt: pastDate(500),
+    })
+  );
+
+  // Landlord CANNOT create a property claiming landlordVerified=true before admin verifies org
+  await assertFails(
+    landlordDb.collection("properties").doc("prop_spoof").set({
+      orgId: "org_ke",
+      ownerUid: LANDLORD_UID,
+      managerUids: [],
+      authorizedUids: [LANDLORD_UID],
+      name: "Spoofed Court",
+      category: "APARTMENTS",
+      city: "Nairobi",
+      county: "Nairobi",
+      neighborhood: "Kilimani",
+      addressLine: "Argwings Kodhek Rd",
+      description: "Test",
+      imageRefs: [],
+      archived: false,
+      hasPublishedUnits: false,
+      totalUnitsCount: 0,
+      occupiedUnitsCount: 0,
+      landlordVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Admin verifies the organization
+  await assertSucceeds(
+    adminDb.collection("organizations").doc("org_ke").update({
+      verified: true,
+      verifiedAtEpochMs: Date.now() - 1000,
+      verifiedByUid: ADMIN_UID,
+      updatedAt: pastDate(500),
+    })
+  );
+
+  // Now landlord CAN create verified property and unit with M-Pesa instructions
+  await assertSucceeds(
+    landlordDb.collection("properties").doc("prop_ke").set({
+      orgId: "org_ke",
+      ownerUid: LANDLORD_UID,
+      managerUids: [],
+      authorizedUids: [LANDLORD_UID],
+      name: "Kilimani Ridge",
+      category: "APARTMENTS",
+      city: "Nairobi",
+      county: "Nairobi",
+      neighborhood: "Kilimani",
+      addressLine: "Lenana Rd",
+      description: "Verified apartments",
+      imageRefs: [],
+      archived: false,
+      hasPublishedUnits: true,
+      totalUnitsCount: 1,
+      occupiedUnitsCount: 0,
+      landlordVerified: true,
+      mpesaPaybill: "522522",
+      mpesaAccountPrefix: "KR-",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  await assertSucceeds(
+    landlordDb.collection("units").doc("unit_ke_1").set({
+      propertyId: "prop_ke",
+      propertyName: "Kilimani Ridge",
+      propertyCity: "Nairobi",
+      propertyCategory: "APARTMENTS",
+      orgId: "org_ke",
+      ownerUid: LANDLORD_UID,
+      managerUids: [],
+      authorizedUids: [LANDLORD_UID],
+      unitNumber: "A1",
+      unitType: "ONE_BEDROOM",
+      rentCents: 3200000,
+      depositCents: 3200000,
+      status: "AVAILABLE",
+      amenities: ["CCTV", "Borehole"],
+      description: "Spacious 1BR",
+      imageRefs: [],
+      published: true,
+      landlordVerified: true,
+      mpesaPaybill: "522522",
+      mpesaAccountPrefix: "KR-",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Tenant can report a suspicious listing in reported_issues
+  await assertSucceeds(
+    tenantDb.collection("reported_issues").doc("scam_rep_1").set({
+      reporterUid: TENANT_UID,
+      reporterName: "Brian Ochieng",
+      orgId: "org_ke",
+      category: "LISTING_SCAM",
+      title: "Suspicious deposit request on Unit A1",
+      description: "Asked for mobile money deposit prior to physical viewing.",
+      status: "OPEN",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Tenant cannot resolve their own report; Admin can resolve
+  await assertFails(
+    tenantDb.collection("reported_issues").doc("scam_rep_1").update({
+      status: "RESOLVED",
+      updatedAt: pastDate(200),
+    })
+  );
+  await assertSucceeds(
+    adminDb.collection("reported_issues").doc("scam_rep_1").update({
+      status: "RESOLVED",
+      adminNotes: "Reviewed and verified owner identity.",
+      updatedAt: pastDate(200),
+    })
+  );
+
+  // Seed lease & invoice, verify landlord can update reminder metadata
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("leases").doc("lease_ke_1").set({
+      orgId: "org_ke",
+      propertyId: "prop_ke",
+      propertyName: "Kilimani Ridge",
+      unitId: "unit_ke_1",
+      unitNumber: "A1",
+      ownerUid: LANDLORD_UID,
+      managerUids: [],
+      authorizedUids: [LANDLORD_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      tenantPhone: "+254712345678",
+      rentCents: 3200000,
+      depositCents: 3200000,
+      startDateEpochMs: Date.now() - 864000000,
+      endDateEpochMs: Date.now() + 864000000,
+      dueDayOfMonth: 5,
+      status: "ACTIVE",
+      creditBalanceCents: 0,
+      termsSummary: "Standard KE lease",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("invoices").doc("inv_ke_1").set({
+      invoiceNumber: "INV-202611-A1",
+      leaseId: "lease_ke_1",
+      orgId: "org_ke",
+      propertyId: "prop_ke",
+      propertyName: "Kilimani Ridge",
+      unitId: "unit_ke_1",
+      unitNumber: "A1",
+      ownerUid: LANDLORD_UID,
+      managerUids: [],
+      authorizedUids: [LANDLORD_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      billingPeriod: "2026-11",
+      rentCents: 3200000,
+      extraChargesCents: 0,
+      previousBalanceCents: 0,
+      totalDueCents: 3200000,
+      paidCents: 0,
+      outstandingCents: 3200000,
+      dueDateEpochMs: Date.now() - 86400000,
+      status: "OVERDUE",
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  await assertSucceeds(
+    landlordDb.collection("invoices").doc("inv_ke_1").update({
+      lastReminderSentEpochMs: Date.now() - 1000,
+      reminderCount: 1,
+      updatedAt: pastDate(100),
+    })
+  );
 });
 

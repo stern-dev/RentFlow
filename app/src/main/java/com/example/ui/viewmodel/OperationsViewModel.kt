@@ -105,8 +105,8 @@ class OperationsViewModel(
                 newStatus = newStatus,
                 repairCostCents = costCents,
                 updateNote = note,
-                assignedStaffUid = request.assignedStaffUid,
-                assignedStaffName = request.assignedStaffName,
+                assignedStaffUid = null,
+                assignedStaffName = null,
                 recordAsExpense = false
             )
             _feedback.value = res.fold(

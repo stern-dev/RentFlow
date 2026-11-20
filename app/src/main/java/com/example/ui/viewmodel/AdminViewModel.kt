@@ -7,6 +7,7 @@ import com.example.domain.model.AuditLog
 import com.example.domain.model.Organization
 import com.example.domain.model.ReportedIssue
 import com.example.domain.model.UserProfile
+import com.example.domain.model.UserRole
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -58,9 +59,9 @@ class AdminViewModel(
         _feedback.value = null
     }
 
-    fun toggleUserSuspension(user: UserProfile) {
+    fun toggleUserSuspension(user: UserProfile, actorName: String = "Administrator") {
         viewModelScope.launch {
-            val res = userOrgRepo.setUserSuspended(user.userId, !user.suspended)
+            val res = userOrgRepo.setUserSuspended(user.userId, !user.suspended, actorName)
             _feedback.value = res.fold(
                 onSuccess = { if (!user.suspended) "Account suspended" else "Account reinstated" },
                 onFailure = { it.localizedMessage ?: "Action failed" }
@@ -68,12 +69,38 @@ class AdminViewModel(
         }
     }
 
-    fun toggleOrgSuspension(org: Organization) {
+    fun toggleOrgSuspension(org: Organization, actorName: String = "Administrator") {
         viewModelScope.launch {
-            val res = userOrgRepo.setOrganizationSuspended(org.id, !org.suspended)
+            val res = userOrgRepo.setOrganizationSuspended(org.id, !org.suspended, actorName)
             _feedback.value = res.fold(
                 onSuccess = { if (!org.suspended) "Organization suspended" else "Organization reinstated" },
                 onFailure = { it.localizedMessage ?: "Action failed" }
+            )
+        }
+    }
+
+    fun toggleOrgVerified(org: Organization, actorName: String = "Administrator") {
+        viewModelScope.launch {
+            val res = userOrgRepo.setOrganizationVerified(org.id, !org.verified, actorName)
+            _feedback.value = res.fold(
+                onSuccess = {
+                    if (!org.verified) {
+                        "${org.name} marked Verified Landlord"
+                    } else {
+                        "Verification revoked for ${org.name}"
+                    }
+                },
+                onFailure = { it.localizedMessage ?: "Verification action failed" }
+            )
+        }
+    }
+
+    fun updateUserRoles(targetUser: UserProfile, newRoles: List<UserRole>, actorName: String) {
+        viewModelScope.launch {
+            val res = userOrgRepo.updateUserRolesByAdmin(targetUser, newRoles, actorName)
+            _feedback.value = res.fold(
+                onSuccess = { "Updated roles for ${targetUser.fullName}" },
+                onFailure = { it.localizedMessage ?: "Failed to update roles" }
             )
         }
     }

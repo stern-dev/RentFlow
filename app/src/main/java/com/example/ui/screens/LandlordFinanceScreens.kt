@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.content.Context
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -60,6 +62,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.domain.finance.CurrencyUtils
+import com.example.domain.finance.MpesaSmsParser
+import com.example.domain.finance.RentReminderEngine
 import com.example.domain.model.Expense
 import com.example.domain.model.ExpenseCategory
 import com.example.domain.model.Invoice
@@ -71,6 +75,8 @@ import com.example.domain.model.PaymentMethod
 import com.example.domain.model.PaymentStatus
 import com.example.domain.model.Property
 import com.example.domain.model.UserProfile
+import com.example.domain.security.PermissionPolicy
+import com.example.ui.components.CriticalActionConfirmationDialog
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.ErrorBannerCard
 import com.example.ui.components.LoadingStateBox
@@ -103,7 +109,9 @@ private enum class LandlordPaymentFilter(val label: String) {
 @Composable
 fun LandlordFinanceScreen(
     viewModel: LandlordViewModel,
-    currentUser: UserProfile
+    currentUser: UserProfile,
+    isRecentlyAuthenticated: () -> Boolean = { true },
+    onReauthenticate: suspend (Context) -> Result<Unit> = { Result.success(Unit) }
 ) {
     val invoicesState by viewModel.invoices.collectAsStateWithLifecycle()
     val paymentsState by viewModel.payments.collectAsStateWithLifecycle()
@@ -136,11 +144,16 @@ fun LandlordFinanceScreen(
             0 -> InvoicesTab(
                 invoicesState = invoicesState,
                 hasActiveLeases = leases.any { it.statusEnum() == LeaseStatus.ACTIVE },
-                onGenerateInvoices = { showGenerateInvoiceDialog = true }
+                isBusy = busy,
+                onGenerateInvoices = { showGenerateInvoiceDialog = true },
+                onSendReminders = { viewModel.sendBatchRentReminders(currentUser.fullName) }
             )
             1 -> PaymentsTab(
                 paymentsState = paymentsState,
                 hasActiveLeases = leases.any { it.statusEnum() == LeaseStatus.ACTIVE },
+                canReversePayment = { pay ->
+                    PermissionPolicy.canReversePayment(currentUser.userId, currentUser.activeRoleEnum(), pay)
+                },
                 onRecordPayment = { showRecordPaymentDialog = true },
                 onVerify = { pay -> paymentToVerify = pay },
                 onReject = { pay -> paymentToReject = pay },
@@ -305,37 +318,20 @@ fun LandlordFinanceScreen(
     }
 
     paymentToReverse?.let { pay ->
-        var reason by remember { mutableStateOf("") }
-        var err by remember { mutableStateOf<String?>(null) }
-        AlertDialog(
-            onDismissRequest = { paymentToReverse = null },
-            title = { Text("Reverse Verified Payment") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Reversing ${pay.referenceCode} (${CurrencyUtils.formatKes(pay.amountCents, true)}) restores affected invoice balances and records an immutable audit entry.")
-                    if (!err.isNullOrBlank()) ErrorBannerCard(err!!)
-                    OutlinedTextField(
-                        value = reason,
-                        onValueChange = { reason = it; err = null },
-                        label = { Text("Audit Reason (Required)") },
-                        maxLines = 3,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (reason.trim().length < 3) err = "Enter a valid reversal reason"
-                        else {
-                            viewModel.reversePayment(pay, reason, currentUser.fullName)
-                            paymentToReverse = null
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = StatusError)
-                ) { Text("Reverse Payment") }
-            },
-            dismissButton = { TextButton(onClick = { paymentToReverse = null }) { Text("Cancel") } }
+        CriticalActionConfirmationDialog(
+            title = "Reverse Verified Payment",
+            impactSummary = "Reversing ${pay.referenceCode} (${CurrencyUtils.formatKes(pay.amountCents, true)}) restores affected invoice balances, revokes the receipt, and writes an immutable audit entry.",
+            confirmButtonText = "Reverse Payment",
+            requiredPhrase = "REVERSE",
+            reasonLabel = "Audit Reason (Required)",
+            requireReasonMinLen = 3,
+            isRecentlyAuthenticated = isRecentlyAuthenticated(),
+            onReauthenticate = onReauthenticate,
+            onDismiss = { paymentToReverse = null },
+            onConfirm = { reason ->
+                viewModel.reversePayment(pay, reason, currentUser.fullName)
+                paymentToReverse = null
+            }
         )
     }
 }
@@ -344,10 +340,16 @@ fun LandlordFinanceScreen(
 private fun InvoicesTab(
     invoicesState: UiState<List<Invoice>>,
     hasActiveLeases: Boolean,
-    onGenerateInvoices: () -> Unit
+    isBusy: Boolean,
+    onGenerateInvoices: () -> Unit,
+    onSendReminders: () -> Unit
 ) {
     var selectedFilter by remember { mutableStateOf(LandlordInvoiceFilter.ALL) }
     var expandedInvoiceIds by remember { mutableStateOf(emptySet<String>()) }
+    val allInvoicesList = (invoicesState as? UiState.Success)?.data ?: emptyList()
+    val reminderCandidates = remember(allInvoicesList) {
+        RentReminderEngine.evaluateInvoices(allInvoicesList, respectCooldown = true)
+    }
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -370,6 +372,46 @@ private fun InvoicesTab(
                     Icon(Icons.Filled.Receipt, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
                     Text("Bill Month")
+                }
+            }
+        }
+        if (allInvoicesList.isNotEmpty()) {
+            item {
+                Card(
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f)),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.padding(12.dp).fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text("Automated Rent Reminders", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                text = if (reminderCandidates.isEmpty()) {
+                                    "All due & overdue tenants were recently reminded"
+                                } else {
+                                    "${reminderCandidates.size} invoice(s) eligible for a due/overdue alert"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onSendReminders,
+                            enabled = !isBusy && reminderCandidates.isNotEmpty(),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("send_rent_reminders_button")
+                        ) {
+                            Icon(Icons.Filled.NotificationsActive, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Remind (${reminderCandidates.size})")
+                        }
+                    }
                 }
             }
         }
@@ -540,6 +582,7 @@ private fun InvoiceBreakdownLine(
 private fun PaymentsTab(
     paymentsState: UiState<List<Payment>>,
     hasActiveLeases: Boolean,
+    canReversePayment: (Payment) -> Boolean,
     onRecordPayment: () -> Unit,
     onVerify: (Payment) -> Unit,
     onReject: (Payment) -> Unit,
@@ -576,6 +619,14 @@ private fun PaymentsTab(
             is UiState.Error -> item { ErrorBannerCard(paymentsState.message) }
             is UiState.Success -> {
                 val allPayments = paymentsState.data
+                val verifiedGrossCents = allPayments
+                    .filter { it.statusEnum() == PaymentStatus.VERIFIED }
+                    .sumOf { it.amountCents }
+                if (verifiedGrossCents > 0L) {
+                    item {
+                        KenyaMriTaxEstimateCard(grossCollectedCents = verifiedGrossCents)
+                    }
+                }
                 if (allPayments.isEmpty()) {
                     item {
                         EmptyStateCard(
@@ -710,13 +761,17 @@ private fun PaymentsTab(
                                             }
                                         }
                                         PaymentStatus.VERIFIED -> {
-                                            OutlinedButton(
-                                                onClick = { onReverse(pay) },
-                                                modifier = Modifier.heightIn(min = 48.dp)
-                                            ) {
-                                                Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = null)
-                                                Spacer(Modifier.width(6.dp))
-                                                Text("Reverse Payment")
+                                            if (canReversePayment(pay)) {
+                                                OutlinedButton(
+                                                    onClick = { onReverse(pay) },
+                                                    modifier = Modifier
+                                                        .heightIn(min = 48.dp)
+                                                        .testTag("reverse_payment_button_${pay.id}")
+                                                ) {
+                                                    Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = null)
+                                                    Spacer(Modifier.width(6.dp))
+                                                    Text("Reverse Payment")
+                                                }
                                             }
                                         }
                                         else -> {}
@@ -727,6 +782,52 @@ private fun PaymentsTab(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun KenyaMriTaxEstimateCard(grossCollectedCents: Long) {
+    val estimatedTaxCents = MpesaSmsParser.computeKenyaMriTaxCents(grossCollectedCents)
+    Card(
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("kenya_mri_tax_card")
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Kenya KRA 7.5% MRI Tax Estimate", style = MaterialTheme.typography.titleSmall)
+                StatusPill("7.5% MRI", PillTone.INFO)
+            }
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column {
+                    Text("Verified Gross Rent", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(CurrencyUtils.formatKes(grossCollectedCents, true), style = TabularMoneyStyle)
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("Est. MRI Tax (7.5%)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        CurrencyUtils.formatKes(estimatedTaxCents, true),
+                        style = TabularMoneyStyle,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+            }
+            Text(
+                text = "Advisory estimate on verified residential rent collected (KRA iTax due by 20th of the following month).",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

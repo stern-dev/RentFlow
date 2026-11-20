@@ -134,6 +134,13 @@ enum class IssueStatus(val label: String) {
     RESOLVED("Resolved")
 }
 
+enum class InviteStatus(val label: String) {
+    PENDING("Pending"),
+    ACCEPTED("Accepted"),
+    DECLINED("Declined"),
+    REVOKED("Revoked")
+}
+
 @Keep
 @IgnoreExtraProperties
 data class UserProfile(
@@ -148,6 +155,7 @@ data class UserProfile(
     val roles: List<String> = listOf(UserRole.TENANT.name),
     val activeRole: String = UserRole.TENANT.name,
     val activeOrgId: String? = null,
+    val lastAcceptedInviteId: String? = null,
     val notifyRentDue: Boolean = true,
     val notifyMaintenance: Boolean = true,
     val notifyAnnouncements: Boolean = true,
@@ -170,6 +178,7 @@ data class UserProfile(
         "roles" to roles,
         "activeRole" to activeRole,
         "activeOrgId" to activeOrgId?.takeIf { it.isNotBlank() },
+        "lastAcceptedInviteId" to lastAcceptedInviteId?.takeIf { it.isNotBlank() },
         "notifyRentDue" to notifyRentDue,
         "notifyMaintenance" to notifyMaintenance,
         "notifyAnnouncements" to notifyAnnouncements,
@@ -183,6 +192,41 @@ typealias User = UserProfile
 
 @Keep
 @IgnoreExtraProperties
+data class RoleInvite(
+    @DocumentId val id: String = "",
+    val orgId: String = "",
+    val orgName: String = "",
+    val propertyIds: List<String> = emptyList(),
+    val inviterUid: String = "",
+    val inviterName: String = "",
+    val inviteeEmail: String = "",
+    val role: String = UserRole.PROPERTY_MANAGER.name,
+    val status: String = InviteStatus.PENDING.name,
+    val acceptedByUid: String? = null,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun roleEnum(): UserRole = safeEnum(role, UserRole.PROPERTY_MANAGER)
+    fun statusEnum(): InviteStatus = safeEnum(status, InviteStatus.PENDING)
+
+    @Suppress("UNCHECKED_CAST")
+    fun toCreateMap(): Map<String, Any> = mapOf(
+        "orgId" to orgId,
+        "orgName" to orgName,
+        "propertyIds" to propertyIds,
+        "inviterUid" to inviterUid,
+        "inviterName" to inviterName,
+        "inviteeEmail" to inviteeEmail.trim().lowercase(),
+        "role" to role,
+        "status" to status,
+        "acceptedByUid" to acceptedByUid?.takeIf { it.isNotBlank() },
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp()
+    ).filterValues { it != null } as Map<String, Any>
+}
+
+@Keep
+@IgnoreExtraProperties
 data class Organization(
     @DocumentId val id: String = "",
     val name: String = "",
@@ -192,6 +236,11 @@ data class Organization(
     val defaultDueDay: Long = 5L,
     val memberUids: List<String> = emptyList(),
     val suspended: Boolean = false,
+    val verified: Boolean = false,
+    val verifiedAtEpochMs: Long? = null,
+    val verifiedByUid: String? = null,
+    val mpesaPaybill: String? = null,
+    val mpesaTill: String? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -204,6 +253,11 @@ data class Organization(
         "defaultDueDay" to defaultDueDay,
         "memberUids" to memberUids,
         "suspended" to suspended,
+        "verified" to verified,
+        "verifiedAtEpochMs" to verifiedAtEpochMs,
+        "verifiedByUid" to verifiedByUid?.takeIf { it.isNotBlank() },
+        "mpesaPaybill" to mpesaPaybill?.takeIf { it.isNotBlank() },
+        "mpesaTill" to mpesaTill?.takeIf { it.isNotBlank() },
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     ).filterValues { it != null } as Map<String, Any>
@@ -232,6 +286,10 @@ data class Property(
     val hasPublishedUnits: Boolean = false,
     val totalUnitsCount: Long = 0L,
     val occupiedUnitsCount: Long = 0L,
+    val landlordVerified: Boolean = false,
+    val mpesaPaybill: String? = null,
+    val mpesaTill: String? = null,
+    val mpesaAccountPrefix: String? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -258,6 +316,10 @@ data class Property(
         "hasPublishedUnits" to hasPublishedUnits,
         "totalUnitsCount" to totalUnitsCount,
         "occupiedUnitsCount" to occupiedUnitsCount,
+        "landlordVerified" to landlordVerified,
+        "mpesaPaybill" to mpesaPaybill?.takeIf { it.isNotBlank() },
+        "mpesaTill" to mpesaTill?.takeIf { it.isNotBlank() },
+        "mpesaAccountPrefix" to mpesaAccountPrefix?.takeIf { it.isNotBlank() },
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     ).filterValues { it != null } as Map<String, Any>
@@ -286,6 +348,10 @@ data class RentalUnit(
     val published: Boolean = true,
     val currentTenantUid: String? = null,
     val currentLeaseId: String? = null,
+    val landlordVerified: Boolean = false,
+    val mpesaPaybill: String? = null,
+    val mpesaTill: String? = null,
+    val mpesaAccountPrefix: String? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -315,6 +381,10 @@ data class RentalUnit(
         "published" to published,
         "currentTenantUid" to currentTenantUid?.takeIf { it.isNotBlank() },
         "currentLeaseId" to currentLeaseId?.takeIf { it.isNotBlank() },
+        "landlordVerified" to landlordVerified,
+        "mpesaPaybill" to mpesaPaybill?.takeIf { it.isNotBlank() },
+        "mpesaTill" to mpesaTill?.takeIf { it.isNotBlank() },
+        "mpesaAccountPrefix" to mpesaAccountPrefix?.takeIf { it.isNotBlank() },
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     ).filterValues { it != null } as Map<String, Any>
@@ -452,6 +522,8 @@ data class Invoice(
     val outstandingCents: Long = 0L,
     val dueDateEpochMs: Long = 0L,
     val status: String = InvoiceStatus.UNPAID.name,
+    val lastReminderSentEpochMs: Long? = null,
+    val reminderCount: Long = 0L,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -481,6 +553,8 @@ data class Invoice(
         "outstandingCents" to outstandingCents,
         "dueDateEpochMs" to dueDateEpochMs,
         "status" to status,
+        "lastReminderSentEpochMs" to lastReminderSentEpochMs,
+        "reminderCount" to reminderCount,
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     ).filterValues { it != null } as Map<String, Any>
@@ -829,3 +903,69 @@ data class ReportedIssue(
         "updatedAt" to FieldValue.serverTimestamp()
     ).filterValues { it != null } as Map<String, Any>
 }
+
+@Keep
+@IgnoreExtraProperties
+data class FcmDeviceToken(
+    @DocumentId val id: String = "",
+    val userId: String = "",
+    val token: String = "",
+    val platform: String = "ANDROID",
+    val notifyMaintenance: Boolean = true,
+    val activeRole: String = UserRole.TENANT.name,
+    val appVersion: String? = null,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    @Suppress("UNCHECKED_CAST")
+    fun toCreateMap(): Map<String, Any> = mapOf(
+        "userId" to userId,
+        "token" to token,
+        "platform" to platform,
+        "notifyMaintenance" to notifyMaintenance,
+        "activeRole" to activeRole,
+        "appVersion" to appVersion?.takeIf { it.isNotBlank() },
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp()
+    ).filterValues { it != null } as Map<String, Any>
+}
+
+@Keep
+@IgnoreExtraProperties
+data class SavedUnit(
+    @DocumentId val id: String = "",
+    val unitId: String = "",
+    val propertyId: String = "",
+    val propertyName: String = "",
+    val unitNumber: String = "",
+    val rentCents: Long = 0L,
+    @ServerTimestamp val savedAt: Timestamp? = null
+) {
+    fun toCreateMap(): Map<String, Any> = mapOf(
+        "unitId" to unitId,
+        "propertyId" to propertyId,
+        "propertyName" to propertyName,
+        "unitNumber" to unitNumber,
+        "rentCents" to rentCents,
+        "savedAt" to FieldValue.serverTimestamp()
+    )
+}
+
+object KenyaCounties {
+    val MAJOR_COUNTIES: List<String> = listOf(
+        "Nairobi",
+        "Kiambu",
+        "Mombasa",
+        "Kisumu",
+        "Nakuru",
+        "Uasin Gishu",
+        "Machakos",
+        "Kajiado",
+        "Kilifi",
+        "Nyeri",
+        "Laikipia",
+        "Meru",
+        "Kakamega"
+    )
+}
+

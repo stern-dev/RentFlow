@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -24,9 +26,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Apartment
+import androidx.compose.material.icons.automirrored.filled.CompareArrows
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -34,6 +40,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -45,6 +52,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,7 +63,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
@@ -71,11 +78,22 @@ import com.example.ui.components.LoadingStateBox
 import com.example.ui.components.PillTone
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusPill
+import com.example.ui.theme.StatusError
+import com.example.ui.theme.StatusSuccess
+import com.example.ui.theme.StatusWarning
+import com.example.ui.theme.StatusWarningBg
 import com.example.ui.theme.TabularMoneyStyle
 import com.example.ui.viewmodel.DiscoveryViewModel
 import com.example.ui.viewmodel.UiState
 
 private val kenyanCities = listOf("All", "Nairobi", "Mombasa", "Kisumu", "Nakuru", "Eldoret")
+
+private val scamReportReasons = listOf(
+    "Upfront Viewing Fee Demand",
+    "Fake or Stolen Photos",
+    "Misleading KES Rent / Deposit",
+    "Impersonation / Suspicious Contact"
+)
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -90,53 +108,87 @@ fun PropertyDiscoveryScreen(
     val filteredUnits by viewModel.filteredUnits.collectAsStateWithLifecycle()
     val filters by viewModel.filters.collectAsStateWithLifecycle()
     val myAppsState by viewModel.myApplications.collectAsStateWithLifecycle()
+    val savedUnitIds by viewModel.savedUnitIds.collectAsStateWithLifecycle()
+    val compareUnitIds by viewModel.compareUnitIds.collectAsStateWithLifecycle()
+    val compareUnits by viewModel.compareUnits.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
 
     var selectedUnit by remember { mutableStateOf<RentalUnit?>(null) }
     var unitForApplication by remember { mutableStateOf<RentalUnit?>(null) }
+    var unitToReport by remember { mutableStateOf<RentalUnit?>(null) }
+    var showCompareSheet by remember { mutableStateOf(false) }
     var maxRentInput by remember { mutableStateOf("") }
 
     val content: @Composable (PaddingValues) -> Unit = { innerPadding ->
-        LazyColumn(
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            item {
-                OutlinedTextField(
-                    value = filters.searchQuery,
-                    onValueChange = viewModel::updateSearch,
-                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "Search") },
-                    placeholder = { Text("Search property, city, neighborhood, unit...") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().testTag("discovery_search_input")
-                )
-            }
+            LazyColumn(
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                item {
+                    OutlinedTextField(
+                        value = filters.searchQuery,
+                        onValueChange = viewModel::updateSearch,
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "Search") },
+                        placeholder = { Text("Search property, city, neighborhood, unit...") },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("discovery_search_input")
+                    )
+                }
 
-            item {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(kenyanCities) { city ->
-                        FilterChip(
-                            selected = filters.selectedCity == city,
-                            onClick = { viewModel.updateCity(city) },
-                            label = { Text(city) }
-                        )
+                item {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(kenyanCities) { city ->
+                            FilterChip(
+                                selected = filters.selectedCity == city,
+                                onClick = { viewModel.updateCity(city) },
+                                label = { Text(city) }
+                            )
+                        }
                     }
                 }
-            }
 
-            item {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.weight(1f)
-                    ) {
+                item {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        item {
+                            FilterChip(
+                                selected = filters.verifiedOnly,
+                                onClick = viewModel::toggleVerifiedOnly,
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.VerifiedUser,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                },
+                                label = { Text("Verified Only") },
+                                modifier = Modifier.testTag("filter_verified_only")
+                            )
+                        }
+                        item {
+                            FilterChip(
+                                selected = filters.savedOnly,
+                                onClick = viewModel::toggleSavedOnly,
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.Bookmark,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                },
+                                label = { Text("Saved Only (${savedUnitIds.size})") },
+                                modifier = Modifier.testTag("filter_saved_only")
+                            )
+                        }
                         item {
                             FilterChip(
                                 selected = filters.selectedCategory == "All",
@@ -153,83 +205,117 @@ fun PropertyDiscoveryScreen(
                         }
                     }
                 }
-            }
 
-            item {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    OutlinedTextField(
-                        value = maxRentInput,
-                        onValueChange = {
-                            maxRentInput = it
-                            viewModel.updateMaxRent(it.filter { c -> c.isDigit() }.toLongOrNull())
-                        },
-                        label = { Text("Max Rent (KES)") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                    if (isPublicMode && onBackToSignIn != null) {
-                        Button(
-                            onClick = onBackToSignIn,
-                            modifier = Modifier.heightIn(min = 52.dp)
-                        ) {
-                            Text("Sign In")
-                        }
-                    }
-                }
-            }
-
-            if (!isPublicMode) {
-                val apps = (myAppsState as? UiState.Success)?.data ?: emptyList()
-                if (apps.isNotEmpty()) {
-                    item {
-                        SectionHeader("My Rental Applications (${apps.size})")
-                    }
-                    items(apps, key = { it.id }) { app ->
-                        ApplicationStatusCard(
-                            application = app,
-                            onWithdraw = { viewModel.withdrawApplication(app.id) }
+                item {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        OutlinedTextField(
+                            value = maxRentInput,
+                            onValueChange = {
+                                maxRentInput = it
+                                viewModel.updateMaxRent(it.filter { c -> c.isDigit() }.toLongOrNull())
+                            },
+                            label = { Text("Max Rent (KES)") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
                         )
+                        if (isPublicMode && onBackToSignIn != null) {
+                            Button(
+                                onClick = onBackToSignIn,
+                                modifier = Modifier.heightIn(min = 52.dp)
+                            ) {
+                                Text("Sign In")
+                            }
+                        }
                     }
                 }
-            }
 
-            item {
-                SectionHeader("Available Units (${filteredUnits.size})")
-            }
-
-            when (val st = unitsState) {
-                is UiState.Loading -> item { LoadingStateBox("Loading published Kenyan rentals...") }
-                is UiState.Error -> item { ErrorBannerCard(st.message) }
-                is UiState.Success -> {
-                    if (filteredUnits.isEmpty()) {
+                if (!isPublicMode) {
+                    val apps = (myAppsState as? UiState.Success)?.data ?: emptyList()
+                    if (apps.isNotEmpty()) {
                         item {
-                            EmptyStateCard(
-                                title = "No Published Rentals Yet",
-                                message = "Landlords can publish vacant units from their portfolio dashboard, and they will appear here immediately for prospective tenants.",
-                                ctaLabel = if (isPublicMode) "Sign In to List or Apply" else null,
-                                onCtaClick = onBackToSignIn
-                            )
+                            SectionHeader("My Rental Applications (${apps.size})")
                         }
-                    } else {
-                        items(filteredUnits, key = { it.id }) { unit ->
-                            DiscoveryUnitCard(
-                                unit = unit,
-                                onViewDetails = { selectedUnit = unit },
-                                onApply = {
-                                    if (isPublicMode || currentUser == null) {
-                                        onRequireAuthToApply()
-                                    } else {
-                                        unitForApplication = unit
-                                    }
-                                }
+                        items(apps, key = { it.id }) { app ->
+                            ApplicationStatusCard(
+                                application = app,
+                                onWithdraw = { viewModel.withdrawApplication(app.id) }
                             )
                         }
                     }
                 }
+
+                item {
+                    SectionHeader("Available Units (${filteredUnits.size})")
+                }
+
+                when (val st = unitsState) {
+                    is UiState.Loading -> item { LoadingStateBox("Loading published Kenyan rentals...") }
+                    is UiState.Error -> item { ErrorBannerCard(st.message) }
+                    is UiState.Success -> {
+                        if (filteredUnits.isEmpty()) {
+                            item {
+                                EmptyStateCard(
+                                    title = if (filters.savedOnly || filters.verifiedOnly) {
+                                        "No Matching Rentals"
+                                    } else {
+                                        "No Published Rentals Yet"
+                                    },
+                                    message = if (filters.savedOnly) {
+                                        "Tap the bookmark icon on any unit to save and compare it later."
+                                    } else if (filters.verifiedOnly) {
+                                        "No verified landlord listings match your current filters."
+                                    } else {
+                                        "Landlords can publish vacant units from their portfolio dashboard, and they will appear here immediately for prospective tenants."
+                                    },
+                                    ctaLabel = if (filters.savedOnly || filters.verifiedOnly) {
+                                        "Reset Filters"
+                                    } else if (isPublicMode) {
+                                        "Sign In to List or Apply"
+                                    } else {
+                                        null
+                                    },
+                                    onCtaClick = if (filters.savedOnly) {
+                                        viewModel::toggleSavedOnly
+                                    } else if (filters.verifiedOnly) {
+                                        viewModel::toggleVerifiedOnly
+                                    } else {
+                                        onBackToSignIn
+                                    }
+                                )
+                            }
+                        } else {
+                            items(filteredUnits, key = { it.id }) { unit ->
+                                DiscoveryUnitCard(
+                                    unit = unit,
+                                    isSaved = unit.id in savedUnitIds,
+                                    isCompared = unit.id in compareUnitIds,
+                                    onToggleSave = { viewModel.toggleSaveUnit(unit) },
+                                    onToggleCompare = { viewModel.toggleCompareUnit(unit.id) },
+                                    onViewDetails = { selectedUnit = unit },
+                                    onApply = {
+                                        if (isPublicMode || currentUser == null) {
+                                            onRequireAuthToApply()
+                                        } else {
+                                            unitForApplication = unit
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            AnimatedVisibility(visible = compareUnits.isNotEmpty()) {
+                CompareUnitsDockBar(
+                    selectedCount = compareUnits.size,
+                    onClear = viewModel::clearCompareUnits,
+                    onCompareNow = { showCompareSheet = true }
+                )
             }
         }
     }
@@ -256,6 +342,7 @@ fun PropertyDiscoveryScreen(
     }
 
     selectedUnit?.let { unit ->
+        val isSaved = unit.id in savedUnitIds
         ModalBottomSheet(onDismissRequest = { selectedUnit = null }) {
             Column(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -278,8 +365,42 @@ fun PropertyDiscoveryScreen(
                         }
                     }
                 }
-                Text("${unit.propertyName} • Unit ${unit.unitNumber}", style = MaterialTheme.typography.headlineSmall)
-                Text("${unit.propertyCity} • ${unit.unitTypeEnum().label}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("${unit.propertyName} • Unit ${unit.unitNumber}", style = MaterialTheme.typography.headlineSmall)
+                        Text("${unit.propertyCity} • ${unit.unitTypeEnum().label}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    IconButton(
+                        onClick = { viewModel.toggleSaveUnit(unit) },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isSaved) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                            contentDescription = if (isSaved) "Remove bookmark" else "Save listing",
+                            tint = if (isSaved) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                if (unit.landlordVerified) {
+                    StatusPill("Verified Landlord", PillTone.SUCCESS)
+                } else {
+                    Surface(
+                        color = StatusWarningBg,
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Unverified landlord — always view the property in person and avoid paying inspection fees before verifying ownership.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = StatusWarning,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     Column {
                         Text("Monthly Rent", style = MaterialTheme.typography.labelSmall)
@@ -289,6 +410,17 @@ fun PropertyDiscoveryScreen(
                         Text("Security Deposit", style = MaterialTheme.typography.labelSmall)
                         Text(CurrencyUtils.formatKes(unit.depositCents), style = TabularMoneyStyle)
                     }
+                }
+                if (!unit.mpesaPaybill.isNullOrBlank() || !unit.mpesaTill.isNullOrBlank()) {
+                    val mpesaDetails = listOfNotNull(
+                        unit.mpesaPaybill?.let { "M-Pesa Paybill: $it" },
+                        unit.mpesaTill?.let { "M-Pesa Till: $it" }
+                    ).joinToString(" • ")
+                    Text(
+                        text = mpesaDetails,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
                 }
                 if (unit.description.isNotBlank()) {
                     Text(unit.description, style = MaterialTheme.typography.bodyMedium)
@@ -311,9 +443,61 @@ fun PropertyDiscoveryScreen(
                 ) {
                     Text(if (isPublicMode || currentUser == null) "Sign In with Google to Apply" else "Apply for This Unit")
                 }
+                TextButton(
+                    onClick = {
+                        selectedUnit = null
+                        if (isPublicMode || currentUser == null) {
+                            onRequireAuthToApply()
+                        } else {
+                            unitToReport = unit
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("report_listing_button")
+                ) {
+                    Icon(Icons.Filled.Flag, contentDescription = null, tint = StatusError, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Report Suspicious Listing", color = StatusError)
+                }
                 Spacer(Modifier.height(16.dp))
             }
         }
+    }
+
+    if (showCompareSheet && compareUnits.isNotEmpty()) {
+        UnitComparisonBottomSheet(
+            units = compareUnits,
+            onDismiss = { showCompareSheet = false },
+            onRemoveUnit = { viewModel.toggleCompareUnit(it.id) },
+            onApplyUnit = { unit ->
+                showCompareSheet = false
+                if (isPublicMode || currentUser == null) {
+                    onRequireAuthToApply()
+                } else {
+                    unitForApplication = unit
+                }
+            }
+        )
+    }
+
+    unitToReport?.let { unit ->
+        ReportListingDialog(
+            unit = unit,
+            isBusy = busy,
+            onDismiss = { unitToReport = null },
+            onSubmit = { reason, details ->
+                viewModel.reportListingScam(
+                    unit = unit,
+                    reason = reason,
+                    details = details,
+                    reporterName = currentUser?.fullName ?: "RentFlow Tenant"
+                ) {
+                    unitToReport = null
+                }
+            }
+        )
     }
 
     unitForApplication?.let { unit ->
@@ -343,6 +527,10 @@ fun PropertyDiscoveryScreen(
 @Composable
 private fun DiscoveryUnitCard(
     unit: RentalUnit,
+    isSaved: Boolean,
+    isCompared: Boolean,
+    onToggleSave: () -> Unit,
+    onToggleCompare: () -> Unit,
     onViewDetails: () -> Unit,
     onApply: () -> Unit
 ) {
@@ -376,10 +564,27 @@ private fun DiscoveryUnitCard(
                         Text("${unit.propertyCity} • ${unit.unitTypeEnum().label}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
+                IconButton(
+                    onClick = onToggleSave,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("save_unit_${unit.id}")
+                ) {
+                    Icon(
+                        imageVector = if (isSaved) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                        contentDescription = if (isSaved) "Remove saved listing" else "Save listing",
+                        tint = if (isSaved) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 StatusPill("Available", PillTone.SUCCESS)
+                if (unit.landlordVerified) {
+                    StatusPill("Verified Landlord", PillTone.SUCCESS)
+                }
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         "${CurrencyUtils.formatKes(unit.rentCents)} / mo",
                         style = TabularMoneyStyle.copy(fontSize = MaterialTheme.typography.titleMedium.fontSize),
@@ -391,17 +596,33 @@ private fun DiscoveryUnitCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onViewDetails, modifier = Modifier.heightIn(min = 48.dp)) {
-                        Text("Details")
-                    }
-                    Button(
-                        onClick = onApply,
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                        modifier = Modifier.heightIn(min = 48.dp)
-                    ) {
-                        Text("Apply")
-                    }
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                FilterChip(
+                    selected = isCompared,
+                    onClick = onToggleCompare,
+                    leadingIcon = {
+                        Icon(Icons.AutoMirrored.Filled.CompareArrows, contentDescription = null, modifier = Modifier.size(16.dp))
+                    },
+                    label = { Text(if (isCompared) "Compared" else "Compare") },
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("compare_unit_${unit.id}")
+                )
+                Spacer(Modifier.weight(1f))
+                OutlinedButton(onClick = onViewDetails, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text("Details")
+                }
+                Button(
+                    onClick = onApply,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Apply")
                 }
             }
             if (unit.amenities.isNotEmpty()) {
@@ -415,6 +636,246 @@ private fun DiscoveryUnitCard(
             }
         }
     }
+}
+
+@Composable
+private fun CompareUnitsDockBar(
+    selectedCount: Int,
+    onClear: () -> Unit,
+    onCompareNow: () -> Unit
+) {
+    Surface(
+        tonalElevation = 6.dp,
+        shadowElevation = 8.dp,
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("compare_dock")
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Compare ($selectedCount/3)",
+                    style = MaterialTheme.typography.titleSmall
+                )
+                Text(
+                    text = if (selectedCount < 2) "Select 1 more unit to compare side by side" else "Ready for KES move-in & amenity comparison",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            TextButton(onClick = onClear, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text("Clear")
+            }
+            Spacer(Modifier.width(4.dp))
+            Button(
+                onClick = onCompareNow,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("open_compare_sheet_button")
+            ) {
+                Text("Compare Now")
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun UnitComparisonBottomSheet(
+    units: List<RentalUnit>,
+    onDismiss: () -> Unit,
+    onRemoveUnit: (RentalUnit) -> Unit,
+    onApplyUnit: (RentalUnit) -> Unit
+) {
+    val minRentCents = units.minOfOrNull { it.rentCents } ?: 0L
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
+        UnitComparisonContent(
+            units = units,
+            minRentCents = minRentCents,
+            onRemoveUnit = onRemoveUnit,
+            onApplyUnit = onApplyUnit
+        )
+    }
+}
+
+@Composable
+fun UnitComparisonContent(
+    units: List<RentalUnit>,
+    minRentCents: Long = units.minOfOrNull { it.rentCents } ?: 0L,
+    onRemoveUnit: (RentalUnit) -> Unit,
+    onApplyUnit: (RentalUnit) -> Unit
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .testTag("unit_comparison_sheet")
+    ) {
+        Text(
+            text = "Side-by-Side Unit Comparison (${units.size})",
+            style = MaterialTheme.typography.titleLarge
+        )
+        if (units.size == 1) {
+            Text(
+                text = "Tip: Select up to 3 units from listings to compare KES rent, move-in cash, and amenities side by side.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(bottom = 16.dp)
+        ) {
+            units.forEach { unit ->
+                val moveInTotal = unit.rentCents + unit.depositCents
+                val isLowestRent = units.size >= 2 && unit.rentCents == minRentCents
+                Card(
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    border = BorderStroke(
+                        width = if (isLowestRent) 2.dp else 1.dp,
+                        color = if (isLowestRent) StatusSuccess else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                    ),
+                    modifier = Modifier.width(188.dp)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(unit.propertyName, style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                        Text("Unit ${unit.unitNumber}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+                        if (isLowestRent) {
+                            StatusPill("Best Price", PillTone.SUCCESS)
+                        }
+                        if (unit.landlordVerified) {
+                            StatusPill("Verified Landlord", PillTone.SUCCESS)
+                        } else {
+                            StatusPill("Unverified", PillTone.NEUTRAL)
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                        ComparisonRow("Monthly Rent", CurrencyUtils.formatKes(unit.rentCents), highlight = isLowestRent)
+                        ComparisonRow("Deposit", CurrencyUtils.formatKes(unit.depositCents))
+                        ComparisonRow("Move-In Cash", CurrencyUtils.formatKes(moveInTotal))
+                        ComparisonRow("Location", unit.propertyCity)
+                        ComparisonRow("Unit Type", unit.unitTypeEnum().label)
+                        ComparisonRow(
+                            "Amenities",
+                            if (unit.amenities.isEmpty()) "Standard" else unit.amenities.take(4).joinToString(", ")
+                        )
+                        Button(
+                            onClick = { onApplyUnit(unit) },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("compare_apply_${unit.id}")
+                        ) {
+                            Text("Apply")
+                        }
+                        TextButton(
+                            onClick = { onRemoveUnit(unit) },
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        ) {
+                            Text("Remove")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComparisonRow(label: String, value: String, highlight: Boolean = false) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (highlight) StatusSuccess else MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ReportListingDialog(
+    unit: RentalUnit,
+    isBusy: Boolean,
+    onDismiss: () -> Unit,
+    onSubmit: (reason: String, details: String) -> Unit
+) {
+    var selectedReason by remember { mutableStateOf(scamReportReasons.first()) }
+    var details by remember { mutableStateOf("") }
+    var err by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Report Suspicious Listing") },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    "${unit.propertyName} • Unit ${unit.unitNumber} (${unit.propertyCity})",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (!err.isNullOrBlank()) ErrorBannerCard(err!!)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    scamReportReasons.forEach { reason ->
+                        FilterChip(
+                            selected = selectedReason == reason,
+                            onClick = { selectedReason = reason },
+                            label = { Text(reason) }
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = details,
+                    onValueChange = { details = it; err = null },
+                    label = { Text("What seemed suspicious?") },
+                    maxLines = 4,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("report_listing_details_input")
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (details.trim().length < 5) {
+                        err = "Please describe what seemed suspicious (at least 5 characters)"
+                    } else {
+                        onSubmit(selectedReason, details.trim())
+                    }
+                },
+                enabled = !isBusy,
+                colors = ButtonDefaults.buttonColors(containerColor = StatusError),
+                modifier = Modifier.testTag("submit_listing_report_button")
+            ) {
+                Text("Submit Report")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }
 
 @Composable

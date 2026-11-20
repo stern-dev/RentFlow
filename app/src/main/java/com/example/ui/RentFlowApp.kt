@@ -1,6 +1,10 @@
 package com.example.ui
 
+import android.Manifest
+import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -70,21 +74,32 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material3.Surface
+import com.example.data.notifications.FcmTokenRepository
+import com.example.data.notifications.NotificationHelper
 import com.example.data.repository.FinanceRepository
 import com.example.data.repository.OperationsRepository
 import com.example.data.repository.PropertyRepository
+import com.example.data.repository.SecurityPreferences
 import com.example.data.repository.ThemeMode
 import com.example.data.repository.UserOrgRepository
 import com.example.data.repository.UserRepository
+import com.example.data.security.BiometricAvailability
+import com.example.domain.model.InviteStatus
+import com.example.domain.model.NotificationType
 import com.example.domain.model.Organization
 import com.example.domain.model.UserProfile
 import com.example.domain.model.UserRole
+import com.example.domain.security.PermissionPolicy
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.ErrorBannerCard
 import com.example.ui.components.LoadingStateBox
 import com.example.ui.screens.AdminPortalScreen
 import com.example.ui.screens.AuthScreen
 import com.example.ui.screens.ConversationsScreen
+import com.example.ui.screens.EmailVerificationScreen
 import com.example.ui.screens.LandlordDashboardScreen
 import com.example.ui.screens.LandlordFinanceScreen
 import com.example.ui.screens.LandlordOperationsScreen
@@ -115,7 +130,17 @@ private data class NavItem(
 @Composable
 fun RentFlowApp(
     currentTheme: ThemeMode,
-    onThemeChange: (ThemeMode) -> Unit
+    onThemeChange: (ThemeMode) -> Unit,
+    pendingPushRoute: String? = null,
+    onConsumePushRoute: () -> Unit = {},
+    securityPrefs: SecurityPreferences = SecurityPreferences(),
+    biometricAvailability: BiometricAvailability = BiometricAvailability.AVAILABLE,
+    isAppLocked: Boolean = false,
+    lockError: String? = null,
+    onUnlockRequested: () -> Unit = {},
+    onToggleBiometricLock: (Boolean) -> Unit = {},
+    onSessionTimeoutChange: (Int) -> Unit = {},
+    onClearAppLockOnSignOut: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val userRepository = remember(context) { UserRepository(context) }
@@ -133,6 +158,10 @@ fun RentFlowApp(
 
     val authSessionState by sessionAuthViewModel.authSessionState.collectAsStateWithLifecycle()
     val firebaseUser by sessionAuthViewModel.currentUser.collectAsStateWithLifecycle()
+    val isEmailVerified by sessionAuthViewModel.isEmailVerified.collectAsStateWithLifecycle()
+    val authInfoMessage by sessionAuthViewModel.authInfoMessage.collectAsStateWithLifecycle()
+    val verificationBusy by sessionAuthViewModel.busy.collectAsStateWithLifecycle()
+    val verificationError by sessionAuthViewModel.authError.collectAsStateWithLifecycle()
     var browsingPublicListings by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -165,13 +194,38 @@ fun RentFlowApp(
                 onBrowsePublicListings = { browsingPublicListings = true },
                 isSigningIn = authSessionState is AuthSessionState.SigningIn,
                 externalError = (authSessionState as? AuthSessionState.Error)?.message,
+                infoMessage = authInfoMessage,
                 onSignInClick = {
                     sessionAuthViewModel.signInWithGoogle(context) {
                         browsingPublicListings = false
                     }
-                }
+                },
+                onEmailSignIn = { email, password ->
+                    sessionAuthViewModel.signInWithEmail(email, password) {
+                        browsingPublicListings = false
+                    }
+                },
+                onEmailRegister = { fullName, email, password ->
+                    sessionAuthViewModel.registerWithEmail(fullName, email, password) {
+                        browsingPublicListings = false
+                    }
+                },
+                onSendPasswordReset = { email ->
+                    sessionAuthViewModel.sendPasswordReset(email)
+                },
+                onClearMessages = { sessionAuthViewModel.clearAuthMessages() }
             )
         }
+    } else if (!isEmailVerified) {
+        EmailVerificationScreen(
+            email = user.email.orEmpty(),
+            isBusy = verificationBusy,
+            errorText = verificationError,
+            infoText = authInfoMessage,
+            onCheckVerified = { sessionAuthViewModel.refreshEmailVerification() },
+            onResendEmail = { sessionAuthViewModel.resendVerificationEmail() },
+            onSignOut = { sessionAuthViewModel.signOut(context) }
+        )
     } else {
         key(user.uid) {
             AuthenticatedRentFlowShell(
@@ -180,7 +234,19 @@ fun RentFlowApp(
                 userOrgRepo = userOrgRepo,
                 currentTheme = currentTheme,
                 onThemeChange = onThemeChange,
-                onSignOut = { sessionAuthViewModel.signOut(context) }
+                pendingPushRoute = pendingPushRoute,
+                onConsumePushRoute = onConsumePushRoute,
+                securityPrefs = securityPrefs,
+                biometricAvailability = biometricAvailability,
+                isAppLocked = isAppLocked,
+                lockError = lockError,
+                onUnlockRequested = onUnlockRequested,
+                onToggleBiometricLock = onToggleBiometricLock,
+                onSessionTimeoutChange = onSessionTimeoutChange,
+                onSignOut = {
+                    onClearAppLockOnSignOut()
+                    sessionAuthViewModel.signOut(context)
+                }
             )
         }
     }
@@ -193,6 +259,15 @@ private fun AuthenticatedRentFlowShell(
     userOrgRepo: UserOrgRepository,
     currentTheme: ThemeMode,
     onThemeChange: (ThemeMode) -> Unit,
+    pendingPushRoute: String?,
+    onConsumePushRoute: () -> Unit,
+    securityPrefs: SecurityPreferences,
+    biometricAvailability: BiometricAvailability,
+    isAppLocked: Boolean,
+    lockError: String?,
+    onUnlockRequested: () -> Unit,
+    onToggleBiometricLock: (Boolean) -> Unit,
+    onSessionTimeoutChange: (Int) -> Unit,
     onSignOut: () -> Unit
 ) {
     val context = LocalContext.current
@@ -213,6 +288,7 @@ private fun AuthenticatedRentFlowShell(
 
     val profileState by authViewModel.userProfile.collectAsStateWithLifecycle()
     val orgsState by authViewModel.organizations.collectAsStateWithLifecycle()
+    val incomingInvitesState by authViewModel.incomingInvites.collectAsStateWithLifecycle()
     val busy by authViewModel.busy.collectAsStateWithLifecycle()
     val authFeedback by authViewModel.feedback.collectAsStateWithLifecycle()
 
@@ -233,11 +309,13 @@ private fun AuthenticatedRentFlowShell(
         is UiState.Success -> {
             val profile = st.data
             if (profile == null) {
+                val detectedInvites = (incomingInvitesState as? UiState.Success)?.data ?: emptyList()
                 RoleOnboardingScreen(
                     isBusy = busy,
                     errorText = authFeedback,
-                    onSubmit = { name, email, phone, roles, activeRole, orgName ->
-                        authViewModel.completeOnboarding(name, email, phone, roles, activeRole, orgName)
+                    pendingInvites = detectedInvites,
+                    onSubmit = { name, email, phone, roles, activeRole, orgName, invitesToAccept ->
+                        authViewModel.completeOnboarding(name, email, phone, roles, activeRole, orgName, invitesToAccept)
                     },
                     onSignOut = onSignOut
                 )
@@ -252,19 +330,35 @@ private fun AuthenticatedRentFlowShell(
                 }
             } else {
                 val organizations = (orgsState as? UiState.Success)?.data ?: emptyList()
-                RoleRoutedWorkspace(
-                    uid = uid,
-                    profile = profile,
-                    organizations = organizations,
-                    authViewModel = authViewModel,
-                    userOrgRepo = userOrgRepo,
-                    propertyRepo = propertyRepo,
-                    financeRepo = financeRepo,
-                    opsRepo = opsRepo,
-                    currentTheme = currentTheme,
-                    onThemeChange = onThemeChange,
-                    onSignOut = onSignOut
-                )
+                Box(modifier = Modifier.fillMaxSize()) {
+                    RoleRoutedWorkspace(
+                        uid = uid,
+                        profile = profile,
+                        organizations = organizations,
+                        authViewModel = authViewModel,
+                        userOrgRepo = userOrgRepo,
+                        propertyRepo = propertyRepo,
+                        financeRepo = financeRepo,
+                        opsRepo = opsRepo,
+                        currentTheme = currentTheme,
+                        onThemeChange = onThemeChange,
+                        pendingPushRoute = pendingPushRoute,
+                        onConsumePushRoute = onConsumePushRoute,
+                        securityPrefs = securityPrefs,
+                        biometricAvailability = biometricAvailability,
+                        onToggleBiometricLock = onToggleBiometricLock,
+                        onSessionTimeoutChange = onSessionTimeoutChange,
+                        onSignOut = onSignOut
+                    )
+                    if (isAppLocked) {
+                        BiometricAppLockOverlay(
+                            userName = profile.fullName,
+                            lockError = lockError,
+                            onUnlockClick = onUnlockRequested,
+                            onSignOutClick = onSignOut
+                        )
+                    }
+                }
             }
         }
     }
@@ -283,6 +377,12 @@ private fun RoleRoutedWorkspace(
     opsRepo: OperationsRepository,
     currentTheme: ThemeMode,
     onThemeChange: (ThemeMode) -> Unit,
+    pendingPushRoute: String?,
+    onConsumePushRoute: () -> Unit,
+    securityPrefs: SecurityPreferences,
+    biometricAvailability: BiometricAvailability,
+    onToggleBiometricLock: (Boolean) -> Unit,
+    onSessionTimeoutChange: (Int) -> Unit,
     onSignOut: () -> Unit
 ) {
     val discoveryVm: DiscoveryViewModel = viewModel(
@@ -309,6 +409,9 @@ private fun RoleRoutedWorkspace(
     val activeOrgId by landlordVm.activeOrgId.collectAsStateWithLifecycle()
     val activeOrganization = remember(activeOrgId, organizations) {
         organizations.firstOrNull { it.id == activeOrgId } ?: organizations.firstOrNull()
+    }
+    LaunchedEffect(activeOrganization?.id) {
+        authViewModel.setActiveInviteOrgId(activeOrganization?.id)
     }
     val tenantVm: TenantViewModel = viewModel(
         key = "tenant_$uid",
@@ -372,6 +475,100 @@ private fun RoleRoutedWorkspace(
     var moreSubTab by remember { mutableStateOf(0) } // 0=Profile, 1=Discover, 2=Messages
     var tenantAccountSubTab by remember { mutableStateOf(0) } // 0=Profile, 1=Messages
 
+    val context = LocalContext.current
+    val fcmTokenRepo = remember(context) { FcmTokenRepository(context.applicationContext) }
+    var requestedNotificationPermission by remember(uid) { mutableStateOf(false) }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { /* Permission status updates reactively via NotificationHelper.hasNotificationPermission */ }
+
+    LaunchedEffect(uid, profile.notifyMaintenance) {
+        NotificationHelper.ensureChannels(context)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            profile.notifyMaintenance &&
+            !requestedNotificationPermission &&
+            !NotificationHelper.hasNotificationPermission(context)
+        ) {
+            requestedNotificationPermission = true
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    LaunchedEffect(uid, profile.notifyMaintenance, profile.activeRole) {
+        fcmTokenRepo.syncCurrentToken(profile)
+    }
+
+    LaunchedEffect(pendingPushRoute, activeRole) {
+        val route = pendingPushRoute?.trim().orEmpty()
+        if (route.isNotBlank()) {
+            when (route) {
+                NotificationHelper.ROUTE_NOTIFICATIONS -> showNotificationsOverlay = true
+                NotificationHelper.ROUTE_TENANT_PAY -> {
+                    showNotificationsOverlay = false
+                    if (activeRole == UserRole.TENANT) currentRoute = "tenant_pay"
+                }
+                NotificationHelper.ROUTE_LANDLORD_FINANCE -> {
+                    showNotificationsOverlay = false
+                    if (activeRole == UserRole.LANDLORD || activeRole == UserRole.PROPERTY_MANAGER) {
+                        currentRoute = "finance"
+                    }
+                }
+                NotificationHelper.ROUTE_TENANT_REPAIRS,
+                NotificationHelper.ROUTE_LANDLORD_OPERATIONS,
+                NotificationHelper.ROUTE_STAFF_JOBS -> {
+                    showNotificationsOverlay = false
+                    currentRoute = when (activeRole) {
+                        UserRole.TENANT -> "tenant_repairs"
+                        UserRole.LANDLORD, UserRole.PROPERTY_MANAGER -> "operations"
+                        UserRole.MAINTENANCE_STAFF -> "staff_jobs"
+                        UserRole.ADMIN -> "admin_hub"
+                    }
+                }
+            }
+            onConsumePushRoute()
+        }
+    }
+
+    val notificationsState by opsVm.notifications.collectAsStateWithLifecycle()
+    var initializedNotifSnapshot by remember(uid) { mutableStateOf(false) }
+    val seenNotifIds = remember(uid) { mutableSetOf<String>() }
+
+    LaunchedEffect(notificationsState, profile.notifyMaintenance, activeRole) {
+        val items = (notificationsState as? UiState.Success)?.data ?: return@LaunchedEffect
+        if (!initializedNotifSnapshot) {
+            seenNotifIds.addAll(items.map { it.id })
+            initializedNotifSnapshot = true
+            return@LaunchedEffect
+        }
+        val newlyArrived = items.filter { it.id !in seenNotifIds }
+        seenNotifIds.addAll(items.map { it.id })
+        if (!profile.notifyMaintenance) return@LaunchedEffect
+
+        val roleMaintenanceRoute = when (activeRole) {
+            UserRole.TENANT -> NotificationHelper.ROUTE_TENANT_REPAIRS
+            UserRole.LANDLORD, UserRole.PROPERTY_MANAGER -> NotificationHelper.ROUTE_LANDLORD_OPERATIONS
+            UserRole.MAINTENANCE_STAFF -> NotificationHelper.ROUTE_STAFF_JOBS
+            UserRole.ADMIN -> NotificationHelper.ROUTE_NOTIFICATIONS
+        }
+        newlyArrived
+            .filter { !it.read && it.typeEnum() == NotificationType.MAINTENANCE }
+            .forEach { notif ->
+                val dedupKey = NotificationHelper.buildMaintenanceDedupKey(
+                    requestId = notif.relatedEntityId,
+                    title = notif.title,
+                    fallbackId = notif.id
+                )
+                NotificationHelper.showMaintenancePushNotification(
+                    context = context,
+                    title = notif.title,
+                    body = notif.body,
+                    requestId = notif.relatedEntityId,
+                    targetRoute = roleMaintenanceRoute,
+                    dedupKey = dedupKey
+                )
+            }
+    }
+
     val unreadCount by opsVm.unreadNotificationCount.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -406,15 +603,18 @@ private fun RoleRoutedWorkspace(
         else -> (landlordLeases as? UiState.Success)?.data ?: emptyList()
     }
 
-    val availableRoles = remember(profile.roles, authViewModel.isBootstrappedAdmin) {
-        buildList {
-            add(UserRole.LANDLORD)
-            add(UserRole.PROPERTY_MANAGER)
-            add(UserRole.TENANT)
-            add(UserRole.MAINTENANCE_STAFF)
-            if (UserRole.ADMIN.name in profile.roles || authViewModel.isBootstrappedAdmin) add(UserRole.ADMIN)
-        }
+    val incomingInvitesState by authViewModel.incomingInvites.collectAsStateWithLifecycle()
+    val orgInvitesState by authViewModel.orgInvites.collectAsStateWithLifecycle()
+    val incomingInvites = (incomingInvitesState as? UiState.Success)?.data ?: emptyList()
+    val orgInvites = (orgInvitesState as? UiState.Success)?.data ?: emptyList()
+    val pendingInviteCount = remember(incomingInvites) {
+        incomingInvites.count { it.statusEnum() == InviteStatus.PENDING }
     }
+
+    val availableRoles = remember(profile, authViewModel.isBootstrappedAdmin) {
+        PermissionPolicy.assignableRolesForProfile(profile, authViewModel.isBootstrappedAdmin)
+    }
+    val canCreateProperty = activeRole == UserRole.LANDLORD || activeRole == UserRole.ADMIN
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val useRail = maxWidth >= 600.dp
@@ -444,17 +644,66 @@ private fun RoleRoutedWorkspace(
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
                     actions = {
                         Box {
-                            TextButton(onClick = { roleMenuExpanded = true }) {
-                                Text("Switch Role", maxLines = 1)
+                            TextButton(
+                                onClick = { roleMenuExpanded = true },
+                                modifier = Modifier.testTag("switch_role_button")
+                            ) {
+                                BadgedBox(
+                                    badge = {
+                                        if (pendingInviteCount > 0) {
+                                            Badge { Text(pendingInviteCount.toString()) }
+                                        }
+                                    }
+                                ) {
+                                    Text("Switch Role", maxLines = 1)
+                                }
                             }
                             DropdownMenu(expanded = roleMenuExpanded, onDismissRequest = { roleMenuExpanded = false }) {
                                 availableRoles.forEach { role ->
                                     DropdownMenuItem(
-                                        text = { Text(role.label) },
+                                        text = {
+                                            Text(
+                                                if (role == activeRole) "${role.label} (Active)" else role.label
+                                            )
+                                        },
                                         onClick = {
                                             roleMenuExpanded = false
                                             showNotificationsOverlay = false
-                                            authViewModel.switchRole(role, profile.roles)
+                                            authViewModel.switchRole(role, profile.roles, profile.fullName)
+                                        }
+                                    )
+                                }
+                                if (availableRoles.size <= 1) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                "New roles require an invite or Admin grant",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        },
+                                        enabled = false,
+                                        onClick = {}
+                                    )
+                                }
+                                if (pendingInviteCount > 0) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                "Review $pendingInviteCount pending invite(s) in Profile",
+                                                color = MaterialTheme.colorScheme.secondary
+                                            )
+                                        },
+                                        onClick = {
+                                            roleMenuExpanded = false
+                                            showNotificationsOverlay = false
+                                            moreSubTab = 0
+                                            tenantAccountSubTab = 0
+                                            currentRoute = when (activeRole) {
+                                                UserRole.LANDLORD, UserRole.PROPERTY_MANAGER -> "more"
+                                                UserRole.TENANT -> "inbox_profile"
+                                                UserRole.MAINTENANCE_STAFF, UserRole.ADMIN -> "profile"
+                                            }
                                         }
                                     )
                                 }
@@ -522,14 +771,16 @@ private fun RoleRoutedWorkspace(
                                     onNavigatePortfolio = { currentRoute = "portfolio" },
                                     onNavigateFinance = { currentRoute = "finance" },
                                     onNavigateOperations = { currentRoute = "operations" },
-                                    onOpenCreateOrg = { showCreateOrgDialog = true },
+                                    onOpenCreateOrg = { if (canCreateProperty) showCreateOrgDialog = true else currentRoute = "portfolio" },
                                     onOpenAddProperty = {
-                                        if (organizations.isEmpty()) showCreateOrgDialog = true
+                                        if (!canCreateProperty) currentRoute = "portfolio"
+                                        else if (organizations.isEmpty()) showCreateOrgDialog = true
                                         else {
                                             triggerAddProperty = true
                                             currentRoute = "portfolio"
                                         }
-                                    }
+                                    },
+                                    canCreateProperty = canCreateProperty
                                 )
                                 "portfolio" -> LandlordPortfolioScreen(
                                     viewModel = landlordVm,
@@ -537,9 +788,31 @@ private fun RoleRoutedWorkspace(
                                     organizations = organizations,
                                     onCreateOrgRequest = { showCreateOrgDialog = true },
                                     openAddPropertyImmediately = triggerAddProperty,
-                                    onConsumeAddPropertyTrigger = { triggerAddProperty = false }
+                                    onConsumeAddPropertyTrigger = { triggerAddProperty = false },
+                                    activeOrganization = activeOrganization,
+                                    orgInvites = orgInvites,
+                                    onCreateRoleInvite = { org, email, role, propertyIds, onSuccess ->
+                                        authViewModel.createRoleInvite(
+                                            org = org,
+                                            inviteeEmail = email,
+                                            role = role,
+                                            inviterName = profile.fullName,
+                                            propertyIds = propertyIds,
+                                            onSuccess = onSuccess
+                                        )
+                                    },
+                                    onRevokeRoleInvite = { invite ->
+                                        authViewModel.revokeRoleInvite(invite, profile.fullName)
+                                    },
+                                    isRecentlyAuthenticated = { authViewModel.isRecentlySignedIn() },
+                                    onReauthenticate = { ctx -> authViewModel.verifyRecentGoogleAuth(ctx) }
                                 )
-                                "finance" -> LandlordFinanceScreen(viewModel = landlordVm, currentUser = profile)
+                                "finance" -> LandlordFinanceScreen(
+                                    viewModel = landlordVm,
+                                    currentUser = profile,
+                                    isRecentlyAuthenticated = { authViewModel.isRecentlySignedIn() },
+                                    onReauthenticate = { ctx -> authViewModel.verifyRecentGoogleAuth(ctx) }
+                                )
                                 "operations" -> LandlordOperationsScreen(
                                     landlordViewModel = landlordVm,
                                     opsViewModel = opsVm,
@@ -560,7 +833,14 @@ private fun RoleRoutedWorkspace(
                                             currentUser = profile,
                                             currentTheme = currentTheme,
                                             onThemeChange = onThemeChange,
-                                            onSignOut = onSignOut
+                                            onSignOut = onSignOut,
+                                            incomingInvites = incomingInvites,
+                                            onAcceptInvite = { invite -> authViewModel.acceptRoleInvite(invite, profile) },
+                                            onDeclineInvite = { invite -> authViewModel.declineRoleInvite(invite, profile.fullName) },
+                                            securityPrefs = securityPrefs,
+                                            biometricAvailability = biometricAvailability,
+                                            onToggleBiometricLock = onToggleBiometricLock,
+                                            onSessionTimeoutChange = onSessionTimeoutChange
                                         )
                                     } else {
                                         PropertyDiscoveryScreen(viewModel = discoveryVm, currentUser = profile, isPublicMode = false)
@@ -575,7 +855,7 @@ private fun RoleRoutedWorkspace(
                                     onNavigateDiscovery = { currentRoute = "discover" }
                                 )
                                 "tenant_pay" -> TenantPaymentsScreen(viewModel = tenantVm, currentUser = profile)
-                                "tenant_repairs" -> TenantMaintenanceScreen(viewModel = tenantVm)
+                                "tenant_repairs" -> TenantMaintenanceScreen(viewModel = tenantVm, currentUser = profile)
                                 "discover" -> PropertyDiscoveryScreen(viewModel = discoveryVm, currentUser = profile, isPublicMode = false)
                                 "inbox_profile" -> Column(modifier = Modifier.fillMaxSize()) {
                                     Row(
@@ -592,7 +872,14 @@ private fun RoleRoutedWorkspace(
                                             currentUser = profile,
                                             currentTheme = currentTheme,
                                             onThemeChange = onThemeChange,
-                                            onSignOut = onSignOut
+                                            onSignOut = onSignOut,
+                                            incomingInvites = incomingInvites,
+                                            onAcceptInvite = { invite -> authViewModel.acceptRoleInvite(invite, profile) },
+                                            onDeclineInvite = { invite -> authViewModel.declineRoleInvite(invite, profile.fullName) },
+                                            securityPrefs = securityPrefs,
+                                            biometricAvailability = biometricAvailability,
+                                            onToggleBiometricLock = onToggleBiometricLock,
+                                            onSessionTimeoutChange = onSessionTimeoutChange
                                         )
                                     } else {
                                         ConversationsScreen(opsViewModel = opsVm, currentUser = profile, knownLeases = knownLeases)
@@ -608,12 +895,37 @@ private fun RoleRoutedWorkspace(
                                     currentUser = profile,
                                     currentTheme = currentTheme,
                                     onThemeChange = onThemeChange,
-                                    onSignOut = onSignOut
+                                    onSignOut = onSignOut,
+                                    incomingInvites = incomingInvites,
+                                    onAcceptInvite = { invite -> authViewModel.acceptRoleInvite(invite, profile) },
+                                    onDeclineInvite = { invite -> authViewModel.declineRoleInvite(invite, profile.fullName) },
+                                    securityPrefs = securityPrefs,
+                                    biometricAvailability = biometricAvailability,
+                                    onToggleBiometricLock = onToggleBiometricLock,
+                                    onSessionTimeoutChange = onSessionTimeoutChange
                                 )
 
-                                "admin_hub" -> AdminPortalScreen(adminViewModel = adminVm, initialSection = 0)
-                                "admin_issues" -> AdminPortalScreen(adminViewModel = adminVm, initialSection = 2)
-                                "admin_audit" -> AdminPortalScreen(adminViewModel = adminVm, initialSection = 3)
+                                "admin_hub" -> AdminPortalScreen(
+                                    adminViewModel = adminVm,
+                                    initialSection = 0,
+                                    actorName = profile.fullName,
+                                    isRecentlyAuthenticated = { authViewModel.isRecentlySignedIn() },
+                                    onReauthenticate = { ctx -> authViewModel.verifyRecentGoogleAuth(ctx) }
+                                )
+                                "admin_issues" -> AdminPortalScreen(
+                                    adminViewModel = adminVm,
+                                    initialSection = 2,
+                                    actorName = profile.fullName,
+                                    isRecentlyAuthenticated = { authViewModel.isRecentlySignedIn() },
+                                    onReauthenticate = { ctx -> authViewModel.verifyRecentGoogleAuth(ctx) }
+                                )
+                                "admin_audit" -> AdminPortalScreen(
+                                    adminViewModel = adminVm,
+                                    initialSection = 3,
+                                    actorName = profile.fullName,
+                                    isRecentlyAuthenticated = { authViewModel.isRecentlySignedIn() },
+                                    onReauthenticate = { ctx -> authViewModel.verifyRecentGoogleAuth(ctx) }
+                                )
                             }
                         }
                     }
@@ -664,3 +976,66 @@ private fun RoleRoutedWorkspace(
 private fun opsViewModelClear(opsVm: OperationsViewModel) {
     opsVm.clearFeedback()
 }
+
+@Composable
+fun BiometricAppLockOverlay(
+    userName: String,
+    lockError: String?,
+    onUnlockClick: () -> Unit,
+    onSignOutClick: () -> Unit
+) {
+    LaunchedEffect(Unit) {
+        onUnlockClick()
+    }
+    Surface(
+        modifier = Modifier.fillMaxSize().testTag("biometric_lock_overlay"),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp, vertical = 32.dp)
+                .widthIn(max = 420.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Lock,
+                contentDescription = "RentFlow locked",
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = "RentFlow is Locked",
+                style = MaterialTheme.typography.headlineSmall
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Verify your fingerprint, face, or device PIN to resume as $userName.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (!lockError.isNullOrBlank()) {
+                Spacer(Modifier.height(12.dp))
+                ErrorBannerCard(lockError)
+            }
+            Spacer(Modifier.height(24.dp))
+            Button(
+                onClick = onUnlockClick,
+                modifier = Modifier.fillMaxWidth().testTag("biometric_unlock_button")
+            ) {
+                Icon(Icons.Filled.Fingerprint, contentDescription = null)
+                Spacer(Modifier.padding(horizontal = 4.dp))
+                Text("Unlock RentFlow")
+            }
+            Spacer(Modifier.height(10.dp))
+            OutlinedButton(
+                onClick = onSignOutClick,
+                modifier = Modifier.fillMaxWidth().testTag("biometric_sign_out_button")
+            ) {
+                Text("Sign Out Instead")
+            }
+        }
+    }
+}
+
