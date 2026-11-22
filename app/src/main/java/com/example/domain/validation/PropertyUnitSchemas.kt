@@ -31,7 +31,12 @@ object PropertyUnitSchemas {
         val electricityMeterNumber: String? = null,
         val notes: String? = null,
         val imageRefs: List<String> = emptyList(),
-        val archived: Boolean = false
+        val archived: Boolean = false,
+        val latitude: Double? = null,
+        val longitude: Double? = null,
+        val formattedAddress: String? = null,
+        val placeId: String? = null,
+        val locationVerified: Boolean = false
     )
 
     data class RentalUnitUpdateInput(
@@ -124,6 +129,30 @@ object PropertyUnitSchemas {
             message = "Occupied units count cannot exceed total units count"
         )
 
+        val lat = prop.latitude
+        val lng = prop.longitude
+        val coordsPaired = (lat == null) == (lng == null)
+        refine(
+            field = "latitude",
+            condition = coordsPaired,
+            message = "Both latitude and longitude must be provided together"
+        )
+        if (lat != null && lng != null) {
+            refine(
+                field = "latitude",
+                condition = lat.isFinite() && lat in -90.0..90.0 && !(lat == 0.0 && lng == 0.0),
+                message = "Latitude must be a valid coordinate between -90 and 90"
+            )
+            refine(
+                field = "longitude",
+                condition = lng.isFinite() && lng in -180.0..180.0 && !(lat == 0.0 && lng == 0.0),
+                message = "Longitude must be a valid coordinate between -180 and 180"
+            )
+        }
+        val cleanFormattedAddress = optionalStringField("formattedAddress", prop.formattedAddress, maxLen = 200, label = "Formatted address")
+        val cleanPlaceId = optionalStringField("placeId", prop.placeId, maxLen = 160, label = "Place ID")
+        val hasValidCoords = lat != null && lng != null
+
         prop.copy(
             orgId = cleanOrgId,
             ownerUid = cleanOwnerUid,
@@ -139,7 +168,12 @@ object PropertyUnitSchemas {
             waterMeterNumber = cleanWaterMeter,
             electricityMeterNumber = cleanElecMeter,
             notes = cleanNotes,
-            imageRefs = cleanImages
+            imageRefs = cleanImages,
+            latitude = lat,
+            longitude = lng,
+            formattedAddress = cleanFormattedAddress,
+            placeId = cleanPlaceId,
+            locationVerified = prop.locationVerified && hasValidCoords
         )
     }
 
@@ -184,6 +218,30 @@ object PropertyUnitSchemas {
         val cleanNotes = optionalStringField("notes", input.notes, maxLen = 1000, label = "Notes")
         val cleanImages = stringList("imageRefs", input.imageRefs, minSize = 0, maxSize = 6, itemMaxLen = 500, label = "Images")
 
+        val lat = input.latitude
+        val lng = input.longitude
+        val coordsPaired = (lat == null) == (lng == null)
+        refine(
+            field = "latitude",
+            condition = coordsPaired,
+            message = "Both latitude and longitude must be provided together"
+        )
+        if (lat != null && lng != null) {
+            refine(
+                field = "latitude",
+                condition = lat.isFinite() && lat in -90.0..90.0 && !(lat == 0.0 && lng == 0.0),
+                message = "Latitude must be a valid coordinate between -90 and 90"
+            )
+            refine(
+                field = "longitude",
+                condition = lng.isFinite() && lng in -180.0..180.0 && !(lat == 0.0 && lng == 0.0),
+                message = "Longitude must be a valid coordinate between -180 and 180"
+            )
+        }
+        val cleanFormattedAddress = optionalStringField("formattedAddress", input.formattedAddress, maxLen = 200, label = "Formatted address")
+        val cleanPlaceId = optionalStringField("placeId", input.placeId, maxLen = 160, label = "Place ID")
+        val hasValidCoords = lat != null && lng != null
+
         input.copy(
             propertyId = cleanId,
             name = cleanName,
@@ -196,7 +254,12 @@ object PropertyUnitSchemas {
             waterMeterNumber = cleanWaterMeter,
             electricityMeterNumber = cleanElecMeter,
             notes = cleanNotes,
-            imageRefs = cleanImages
+            imageRefs = cleanImages,
+            latitude = lat,
+            longitude = lng,
+            formattedAddress = cleanFormattedAddress,
+            placeId = cleanPlaceId,
+            locationVerified = input.locationVerified && hasValidCoords
         )
     }
 

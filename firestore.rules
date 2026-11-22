@@ -57,6 +57,10 @@ service cloud.firestore {
       return !(key in d) || (d[key] is int && d[key] >= minVal && d[key] <= maxVal);
     }
 
+    function isOptionalNumberRange(d, key, minVal, maxVal) {
+      return !(key in d) || ((d[key] is float || d[key] is int) && d[key] >= minVal && d[key] <= maxVal);
+    }
+
     function isStringList(val, minSize, maxSize) {
       let v = val;
       return v is list && v.size() >= minSize && v.size() <= maxSize && (v.size() == 0 || v[0] is string);
@@ -189,6 +193,7 @@ service cloud.firestore {
              isBoundedString(d.token, 10, 512) &&
              d.platform == 'ANDROID' &&
              d.notifyMaintenance is bool &&
+             (!('notifyRentDue' in d) || d.notifyRentDue is bool) &&
              d.activeRole in ['LANDLORD', 'PROPERTY_MANAGER', 'TENANT', 'MAINTENANCE_STAFF', 'ADMIN'] &&
              isOptionalString(d, 'appVersion', 40) &&
              isValidTimestamp(d.createdAt) &&
@@ -203,6 +208,64 @@ service cloud.firestore {
              isBoundedString(d.unitNumber, 1, 40) &&
              d.rentCents is int && d.rentCents > 0 && d.rentCents <= 1000000000 &&
              isValidTimestamp(d.savedAt);
+    }
+
+    function isValidSavedPaymentMethod(data) {
+      let d = data;
+      return isBoundedString(d.userId, 1, 128) &&
+             isBoundedString(d.label, 2, 60) &&
+             d.channelType in ['MPESA_PAYBILL', 'MPESA_TILL', 'MPESA_STK', 'BANK_TRANSFER', 'CASH'] &&
+             d.roleScope in ['ALL', 'TENANT', 'LANDLORD'] &&
+             isOptionalString(d, 'paybillNumber', 20) &&
+             isOptionalString(d, 'accountReference', 24) &&
+             isOptionalString(d, 'tillNumber', 20) &&
+             isOptionalString(d, 'phoneNumber', 20) &&
+             isOptionalString(d, 'bankName', 60) &&
+             isOptionalString(d, 'bankAccountNumber', 30) &&
+             isOptionalString(d, 'smsSampleRef', 30) &&
+             (
+               d.channelType != 'MPESA_PAYBILL' ||
+               ('paybillNumber' in d && d.paybillNumber is string && d.paybillNumber.matches('^[1-9][0-9]{4,6}$') &&
+                'accountReference' in d && isBoundedString(d.accountReference, 1, 24))
+             ) &&
+             (
+               d.channelType != 'MPESA_TILL' ||
+               ('tillNumber' in d && d.tillNumber is string && d.tillNumber.matches('^[1-9][0-9]{4,6}$'))
+             ) &&
+             (
+               d.channelType != 'MPESA_STK' ||
+               ('phoneNumber' in d && d.phoneNumber is string && d.phoneNumber.matches('^(\\+254|254|0)[17][0-9]{8}$'))
+             ) &&
+             (
+               d.channelType != 'BANK_TRANSFER' ||
+               ('bankName' in d && isBoundedString(d.bankName, 2, 60) &&
+                'bankAccountNumber' in d && isBoundedString(d.bankAccountNumber, 6, 30))
+             ) &&
+             d.defaultMethod is bool &&
+             d.smsVerified is bool &&
+             isValidTimestamp(d.createdAt) &&
+             isValidTimestamp(d.updatedAt);
+    }
+
+    function isValidMpesaReceipt(data) {
+      let d = data;
+      return isBoundedString(d.userId, 1, 128) &&
+             d.transactionCode is string &&
+             d.transactionCode.matches('^[A-Z0-9]{10}$') &&
+             d.amountCents is int && d.amountCents > 0 && d.amountCents <= 1000000000 &&
+             d.direction in ['INCOMING_RECEIVED', 'OUTGOING_SENT', 'UNKNOWN'] &&
+             isOptionalString(d, 'counterpartyName', 100) &&
+             isOptionalString(d, 'counterpartyPhone', 24) &&
+             isOptionalString(d, 'accountReference', 40) &&
+             isOptionalString(d, 'shortcode', 24) &&
+             d.captureSource in ['NOTIFICATION', 'SHARE_INTENT', 'MANUAL_PASTE'] &&
+             d.status in ['STAGED', 'RECONCILED', 'DISMISSED'] &&
+             isOptionalString(d, 'matchedPaymentId', 128) &&
+             isOptionalString(d, 'matchedLeaseId', 128) &&
+             isBoundedString(d.rawSnippet, 4, 240) &&
+             d.transactionTimestampMs is int && d.transactionTimestampMs > 0 &&
+             isValidTimestamp(d.createdAt) &&
+             isValidTimestamp(d.updatedAt);
     }
 
     function isValidRoleInvite(data) {
@@ -315,6 +378,13 @@ service cloud.firestore {
              isOptionalString(d, 'mpesaPaybill', 20) &&
              isOptionalString(d, 'mpesaTill', 20) &&
              isOptionalString(d, 'mpesaAccountPrefix', 24) &&
+             isOptionalNumberRange(d, 'latitude', -90.0, 90.0) &&
+             isOptionalNumberRange(d, 'longitude', -180.0, 180.0) &&
+             (('latitude' in d) == ('longitude' in d)) &&
+             (!('latitude' in d) || !(d.latitude == 0 && d.longitude == 0)) &&
+             isOptionalString(d, 'formattedAddress', 200) &&
+             isOptionalString(d, 'placeId', 160) &&
+             isOptionalBool(d, 'locationVerified') &&
              isValidTimestamp(d.createdAt) &&
              isValidTimestamp(d.updatedAt);
     }
@@ -345,6 +415,12 @@ service cloud.firestore {
              isOptionalString(d, 'mpesaPaybill', 20) &&
              isOptionalString(d, 'mpesaTill', 20) &&
              isOptionalString(d, 'mpesaAccountPrefix', 24) &&
+             isOptionalNumberRange(d, 'latitude', -90.0, 90.0) &&
+             isOptionalNumberRange(d, 'longitude', -180.0, 180.0) &&
+             (('latitude' in d) == ('longitude' in d)) &&
+             (!('latitude' in d) || !(d.latitude == 0 && d.longitude == 0)) &&
+             isOptionalString(d, 'formattedAddress', 200) &&
+             isOptionalBool(d, 'locationVerified') &&
              isValidTimestamp(d.createdAt) &&
              isValidTimestamp(d.updatedAt);
     }
@@ -446,6 +522,9 @@ service cloud.firestore {
              isBoundedString(d.tenantName, 1, 100) &&
              d.amountCents is int && d.amountCents > 0 && d.amountCents <= 1000000000 &&
              d.method in ['MPESA', 'BANK_TRANSFER', 'CASH'] &&
+             isOptionalString(d, 'paymentMethodId', 128) &&
+             (!('paymentChannelType' in d) || d.paymentChannelType in ['MPESA_PAYBILL', 'MPESA_TILL', 'MPESA_STK', 'BANK_TRANSFER', 'CASH']) &&
+             isOptionalString(d, 'paymentShortcode', 40) &&
              d.simulatedCheckout is bool &&
              d.paymentDateEpochMs is int && d.paymentDateEpochMs > 0 &&
              d.status in ['PENDING_VERIFICATION', 'VERIFIED', 'REJECTED', 'REVERSED'] &&
@@ -455,6 +534,8 @@ service cloud.firestore {
              isOptionalString(d, 'reversalReason', 400) &&
              isOptionalString(d, 'allocationsSummary', 600) &&
              isOptionalString(d, 'receiptNumber', 60) &&
+             (!('verificationSource' in d) || d.verificationSource in ['MANUAL', 'MPESA_SMS_MATCH']) &&
+             isOptionalString(d, 'matchedReceiptId', 128) &&
              isValidTimestamp(d.createdAt) &&
              isValidTimestamp(d.updatedAt);
     }
@@ -586,6 +667,254 @@ service cloud.firestore {
              isValidTimestamp(d.updatedAt);
     }
 
+    function isValidMoveInChecklistUpdate(d) {
+      return d.propertyName is string && d.propertyName.size() > 0 && d.propertyName.size() <= 120 &&
+             d.unitNumber is string && d.unitNumber.size() > 0 && d.unitNumber.size() <= 40 &&
+             d.managerUids is list && d.managerUids.size() <= 15 &&
+             d.authorizedUids is list && d.authorizedUids.size() >= 1 && d.authorizedUids.size() <= 20 &&
+             d.ownerUid in d.authorizedUids &&
+             d.tenantName is string && d.tenantName.size() > 0 && d.tenantName.size() <= 100 &&
+             d.status in ['DRAFT', 'PENDING_TENANT_REVIEW', 'ACKNOWLEDGED', 'DISPUTED'] &&
+             d.inspectionDateEpochMs is int && d.inspectionDateEpochMs > 0 &&
+             (!('waterMeterReading' in d) || (d.waterMeterReading is string && d.waterMeterReading.size() <= 40)) &&
+             (!('electricityMeterReading' in d) || (d.electricityMeterReading is string && d.electricityMeterReading.size() <= 40)) &&
+             d.keysHandedOverCount is int && d.keysHandedOverCount >= 0 && d.keysHandedOverCount <= 50 &&
+             d.items is list && d.items.size() >= 1 && d.items.size() <= 30 && d.items[0] is map &&
+             d.imageRefs is list && d.imageRefs.size() <= 4 &&
+             (!('landlordNotes' in d) || (d.landlordNotes is string && d.landlordNotes.size() <= 800)) &&
+             (!('tenantResponseNote' in d) || (d.tenantResponseNote is string && d.tenantResponseNote.size() <= 800)) &&
+             (!('acknowledgedAtEpochMs' in d) || (d.acknowledgedAtEpochMs is int && d.acknowledgedAtEpochMs >= 0)) &&
+             (!('acknowledgedByUid' in d) || (d.acknowledgedByUid is string && d.acknowledgedByUid.size() <= 128)) &&
+             d.updatedAt is timestamp && d.updatedAt <= request.time;
+    }
+
+    function isValidMoveInChecklist(d) {
+      return d.leaseId is string && d.leaseId.size() > 0 &&
+             d.orgId is string && d.orgId.size() > 0 &&
+             d.propertyId is string && d.propertyId.size() > 0 &&
+             d.unitId is string && d.unitId.size() > 0 &&
+             d.ownerUid is string && d.ownerUid.size() > 0 &&
+             d.tenantUid is string && d.tenantUid.size() > 0 &&
+             d.createdByUid is string && d.createdByUid.size() > 0 &&
+             d.createdAt is timestamp && d.createdAt <= request.time &&
+             isValidMoveInChecklistUpdate(d);
+    }
+
+    function isValidDepositSettlementUpdate(d) {
+      return d.propertyName is string && d.propertyName.size() > 0 && d.propertyName.size() <= 120 &&
+             d.unitNumber is string && d.unitNumber.size() > 0 && d.unitNumber.size() <= 40 &&
+             d.managerUids is list && d.managerUids.size() <= 15 &&
+             d.authorizedUids is list && d.authorizedUids.size() >= 1 && d.authorizedUids.size() <= 20 &&
+             d.ownerUid in d.authorizedUids &&
+             d.tenantName is string && d.tenantName.size() > 0 && d.tenantName.size() <= 100 &&
+             d.depositHeldCents is int && d.depositHeldCents >= 0 && d.depositHeldCents <= 1000000000 &&
+             d.arrearsIncludedCents is int && d.arrearsIncludedCents >= 0 && d.arrearsIncludedCents <= 1000000000 &&
+             d.creditAppliedCents is int && d.creditAppliedCents >= 0 && d.creditAppliedCents <= 1000000000 &&
+             d.deductions is list && d.deductions.size() <= 30 && (d.deductions.size() == 0 || d.deductions[0] is map) &&
+             d.deductionsTotalCents is int && d.deductionsTotalCents >= 0 && d.deductionsTotalCents <= 1000000000 &&
+             d.netRefundCents is int && d.netRefundCents >= 0 && d.netRefundCents <= 2000000000 &&
+             d.balanceOwedCents is int && d.balanceOwedCents >= 0 && d.balanceOwedCents <= 2000000000 &&
+             (d.netRefundCents == 0 || d.balanceOwedCents == 0) &&
+             (d.depositHeldCents + d.creditAppliedCents) - (d.deductionsTotalCents + d.arrearsIncludedCents) == d.netRefundCents - d.balanceOwedCents &&
+             d.moveOutDateEpochMs is int && d.moveOutDateEpochMs > 0 &&
+             (!('waterMeterFinal' in d) || (d.waterMeterFinal is string && d.waterMeterFinal.size() <= 40)) &&
+             (!('electricityMeterFinal' in d) || (d.electricityMeterFinal is string && d.electricityMeterFinal.size() <= 40)) &&
+             d.keysReturnedCount is int && d.keysReturnedCount >= 0 && d.keysReturnedCount <= 50 &&
+             d.imageRefs is list && d.imageRefs.size() <= 4 &&
+             d.status in ['DRAFT', 'ISSUED', 'DISPUTED', 'APPROVED', 'SETTLED'] &&
+             (!('landlordNotes' in d) || (d.landlordNotes is string && d.landlordNotes.size() <= 800)) &&
+             (!('tenantResponseNote' in d) || (d.tenantResponseNote is string && d.tenantResponseNote.size() <= 800)) &&
+             d.refundMethod in ['MPESA', 'BANK_TRANSFER', 'CASH', 'NONE'] &&
+             (!('refundReferenceCode' in d) || (d.refundReferenceCode is string && d.refundReferenceCode.size() <= 60)) &&
+             (!('settledAtEpochMs' in d) || (d.settledAtEpochMs is int && d.settledAtEpochMs >= 0)) &&
+             (!('settledByUid' in d) || (d.settledByUid is string && d.settledByUid.size() <= 128)) &&
+             d.updatedAt is timestamp && d.updatedAt <= request.time;
+    }
+
+    function isValidDepositSettlement(d) {
+      return d.leaseId is string && d.leaseId.size() > 0 &&
+             d.orgId is string && d.orgId.size() > 0 &&
+             d.propertyId is string && d.propertyId.size() > 0 &&
+             d.unitId is string && d.unitId.size() > 0 &&
+             d.ownerUid is string && d.ownerUid.size() > 0 &&
+             d.tenantUid is string && d.tenantUid.size() > 0 &&
+             d.createdByUid is string && d.createdByUid.size() > 0 &&
+             d.createdAt is timestamp && d.createdAt <= request.time &&
+             isValidDepositSettlementUpdate(d);
+    }
+
+    function canCreateMoveInChecklist(checklistId) {
+      let d = request.resource.data;
+      let uid = request.auth.uid;
+      let lPath = /databases/$(database)/documents/leases/$(d.leaseId);
+      let l = exists(lPath) ? get(lPath).data : null;
+      return isValidId(checklistId) &&
+             isValidMoveInChecklist(d) &&
+             d.createdByUid == uid &&
+             d.status in ['DRAFT', 'PENDING_TENANT_REVIEW'] &&
+             !('acknowledgedAtEpochMs' in d) &&
+             !('acknowledgedByUid' in d) &&
+             d.keys().hasOnly(['leaseId', 'orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'status', 'inspectionDateEpochMs', 'waterMeterReading', 'electricityMeterReading', 'keysHandedOverCount', 'items', 'imageRefs', 'landlordNotes', 'tenantResponseNote', 'acknowledgedAtEpochMs', 'acknowledgedByUid', 'createdByUid', 'createdAt', 'updatedAt']) &&
+             l != null &&
+             l.orgId == d.orgId &&
+             l.propertyId == d.propertyId &&
+             l.unitId == d.unitId &&
+             l.ownerUid == d.ownerUid &&
+             l.tenantUid == d.tenantUid &&
+             d.authorizedUids == l.authorizedUids &&
+             (
+               isAdmin() ||
+               (
+                 hasAnyVerifiedRole(['LANDLORD', 'PROPERTY_MANAGER']) &&
+                 uid in d.authorizedUids &&
+                 isActiveOrgMember(d.orgId)
+               )
+             );
+    }
+
+    function canUpdateMoveInChecklist(checklistId) {
+      let d = request.resource.data;
+      let e = resource.data;
+      let uid = request.auth.uid;
+      let u = loadActiveUser();
+      let changed = d.diff(e).affectedKeys();
+      return isValidId(checklistId) &&
+             isValidMoveInChecklistUpdate(d) &&
+             d.leaseId == e.leaseId &&
+             d.orgId == e.orgId &&
+             d.propertyId == e.propertyId &&
+             d.unitId == e.unitId &&
+             d.ownerUid == e.ownerUid &&
+             d.tenantUid == e.tenantUid &&
+             d.createdByUid == e.createdByUid &&
+             d.createdAt == e.createdAt &&
+             (
+               isAdmin() ||
+               (
+                 e.status != 'ACKNOWLEDGED' &&
+                 isVerifiedEmail() &&
+                 isActiveUserDoc(u) &&
+                 (
+                   (
+                     u.roles.hasAny(['LANDLORD', 'PROPERTY_MANAGER']) &&
+                     uid in e.authorizedUids &&
+                     isActiveOrgMember(e.orgId) &&
+                     e.status in ['DRAFT', 'PENDING_TENANT_REVIEW', 'DISPUTED'] &&
+                     d.status in ['DRAFT', 'PENDING_TENANT_REVIEW'] &&
+                     d.managerUids == e.managerUids &&
+                     d.authorizedUids == e.authorizedUids &&
+                     !('acknowledgedAtEpochMs' in d) &&
+                     !('acknowledgedByUid' in d) &&
+                     changed.hasOnly(['inspectionDateEpochMs', 'waterMeterReading', 'electricityMeterReading', 'keysHandedOverCount', 'items', 'imageRefs', 'landlordNotes', 'status', 'updatedAt'])
+                   ) ||
+                   (
+                     'TENANT' in u.roles &&
+                     e.tenantUid == uid &&
+                     e.status == 'PENDING_TENANT_REVIEW' &&
+                     d.status in ['ACKNOWLEDGED', 'DISPUTED'] &&
+                     changed.hasOnly(['status', 'tenantResponseNote', 'acknowledgedAtEpochMs', 'acknowledgedByUid', 'updatedAt']) &&
+                     (
+                       (d.status == 'ACKNOWLEDGED' && d.acknowledgedByUid == uid && d.acknowledgedAtEpochMs is int && d.acknowledgedAtEpochMs > 0) ||
+                       (d.status == 'DISPUTED' && 'tenantResponseNote' in d && d.tenantResponseNote is string && d.tenantResponseNote.size() >= 3 && d.tenantResponseNote.size() <= 800 && !('acknowledgedAtEpochMs' in d) && !('acknowledgedByUid' in d))
+                     )
+                   )
+                 )
+               )
+             );
+    }
+
+    function canCreateDepositSettlement(settlementId) {
+      let d = request.resource.data;
+      let uid = request.auth.uid;
+      let lPath = /databases/$(database)/documents/leases/$(d.leaseId);
+      let l = exists(lPath) ? get(lPath).data : null;
+      return isValidId(settlementId) &&
+             isValidDepositSettlement(d) &&
+             d.createdByUid == uid &&
+             d.status in ['DRAFT', 'ISSUED'] &&
+             !('settledAtEpochMs' in d) &&
+             !('settledByUid' in d) &&
+             d.keys().hasOnly(['leaseId', 'orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'depositHeldCents', 'arrearsIncludedCents', 'creditAppliedCents', 'deductions', 'deductionsTotalCents', 'netRefundCents', 'balanceOwedCents', 'moveOutDateEpochMs', 'waterMeterFinal', 'electricityMeterFinal', 'keysReturnedCount', 'imageRefs', 'status', 'landlordNotes', 'tenantResponseNote', 'refundMethod', 'refundReferenceCode', 'settledAtEpochMs', 'settledByUid', 'createdByUid', 'createdAt', 'updatedAt']) &&
+             l != null &&
+             l.orgId == d.orgId &&
+             l.propertyId == d.propertyId &&
+             l.unitId == d.unitId &&
+             l.ownerUid == d.ownerUid &&
+             l.tenantUid == d.tenantUid &&
+             d.authorizedUids == l.authorizedUids &&
+             (
+               isAdmin() ||
+               (
+                 hasAnyVerifiedRole(['LANDLORD', 'PROPERTY_MANAGER']) &&
+                 uid in d.authorizedUids &&
+                 isActiveOrgMember(d.orgId)
+               )
+             );
+    }
+
+    function canUpdateDepositSettlement(settlementId) {
+      let d = request.resource.data;
+      let e = resource.data;
+      let uid = request.auth.uid;
+      let u = loadActiveUser();
+      let changed = d.diff(e).affectedKeys();
+      return isValidId(settlementId) &&
+             isValidDepositSettlementUpdate(d) &&
+             d.leaseId == e.leaseId &&
+             d.orgId == e.orgId &&
+             d.propertyId == e.propertyId &&
+             d.unitId == e.unitId &&
+             d.ownerUid == e.ownerUid &&
+             d.tenantUid == e.tenantUid &&
+             d.createdByUid == e.createdByUid &&
+             d.createdAt == e.createdAt &&
+             (
+               isAdmin() ||
+               (
+                 e.status != 'SETTLED' &&
+                 isVerifiedEmail() &&
+                 isActiveUserDoc(u) &&
+                 (
+                   (
+                     u.roles.hasAny(['LANDLORD', 'PROPERTY_MANAGER']) &&
+                     uid in e.authorizedUids &&
+                     isActiveOrgMember(e.orgId) &&
+                     e.status in ['DRAFT', 'ISSUED', 'DISPUTED', 'APPROVED'] &&
+                     d.status in ['DRAFT', 'ISSUED', 'SETTLED'] &&
+                     d.managerUids == e.managerUids &&
+                     d.authorizedUids == e.authorizedUids &&
+                     changed.hasOnly(['depositHeldCents', 'arrearsIncludedCents', 'creditAppliedCents', 'deductions', 'deductionsTotalCents', 'netRefundCents', 'balanceOwedCents', 'moveOutDateEpochMs', 'waterMeterFinal', 'electricityMeterFinal', 'keysReturnedCount', 'imageRefs', 'landlordNotes', 'status', 'refundMethod', 'refundReferenceCode', 'settledAtEpochMs', 'settledByUid', 'updatedAt']) &&
+                     (
+                       (
+                         d.status == 'SETTLED' &&
+                         d.settledByUid == uid &&
+                         d.settledAtEpochMs is int &&
+                         d.settledAtEpochMs > 0 &&
+                         (d.netRefundCents == 0 || (d.refundMethod in ['MPESA', 'BANK_TRANSFER', 'CASH'] && 'refundReferenceCode' in d && d.refundReferenceCode is string && d.refundReferenceCode.size() >= 3 && d.refundReferenceCode.size() <= 60))
+                       ) ||
+                       (
+                         d.status != 'SETTLED' &&
+                         !('settledAtEpochMs' in d) &&
+                         !('settledByUid' in d)
+                       )
+                     )
+                   ) ||
+                   (
+                     'TENANT' in u.roles &&
+                     e.tenantUid == uid &&
+                     e.status == 'ISSUED' &&
+                     d.status in ['APPROVED', 'DISPUTED'] &&
+                     changed.hasOnly(['status', 'tenantResponseNote', 'updatedAt']) &&
+                     (
+                       d.status == 'APPROVED' ||
+                       (d.status == 'DISPUTED' && 'tenantResponseNote' in d && d.tenantResponseNote is string && d.tenantResponseNote.size() >= 3 && d.tenantResponseNote.size() <= 800)
+                     )
+                   )
+                 )
+               )
+             );
+    }
+
     // 4. Consolidated Single-Lookup Mutation Helpers (prevents >1000 CEL expression bloat)
     function canUpdateProperty(propertyId) {
       let d = request.resource.data;
@@ -612,7 +941,7 @@ service cloud.firestore {
                      'LANDLORD' in u.roles &&
                      e.ownerUid == uid &&
                      o.ownerUid == uid &&
-                     changed.hasOnly(['name', 'category', 'city', 'county', 'neighborhood', 'addressLine', 'description', 'waterMeterNumber', 'electricityMeterNumber', 'notes', 'imageRefs', 'managerUids', 'authorizedUids', 'archived', 'hasPublishedUnits', 'totalUnitsCount', 'occupiedUnitsCount', 'landlordVerified', 'mpesaPaybill', 'mpesaTill', 'mpesaAccountPrefix', 'updatedAt'])
+                     changed.hasOnly(['name', 'category', 'city', 'county', 'neighborhood', 'addressLine', 'description', 'waterMeterNumber', 'electricityMeterNumber', 'notes', 'imageRefs', 'managerUids', 'authorizedUids', 'archived', 'hasPublishedUnits', 'totalUnitsCount', 'occupiedUnitsCount', 'landlordVerified', 'mpesaPaybill', 'mpesaTill', 'mpesaAccountPrefix', 'latitude', 'longitude', 'formattedAddress', 'placeId', 'locationVerified', 'updatedAt'])
                    ) ||
                    (
                      u.roles.hasAny(['LANDLORD', 'PROPERTY_MANAGER']) &&
@@ -652,7 +981,7 @@ service cloud.firestore {
                      'LANDLORD' in u.roles &&
                      e.ownerUid == uid &&
                      o.ownerUid == uid &&
-                     changed.hasOnly(['unitNumber', 'unitType', 'rentCents', 'depositCents', 'status', 'amenities', 'description', 'imageRefs', 'published', 'currentTenantUid', 'currentLeaseId', 'managerUids', 'authorizedUids', 'propertyName', 'propertyCity', 'propertyCategory', 'landlordVerified', 'mpesaPaybill', 'mpesaTill', 'mpesaAccountPrefix', 'updatedAt'])
+                     changed.hasOnly(['unitNumber', 'unitType', 'rentCents', 'depositCents', 'status', 'amenities', 'description', 'imageRefs', 'published', 'currentTenantUid', 'currentLeaseId', 'managerUids', 'authorizedUids', 'propertyName', 'propertyCity', 'propertyCategory', 'landlordVerified', 'mpesaPaybill', 'mpesaTill', 'mpesaAccountPrefix', 'latitude', 'longitude', 'formattedAddress', 'locationVerified', 'updatedAt'])
                    ) ||
                    (
                      u.roles.hasAny(['LANDLORD', 'PROPERTY_MANAGER']) &&
@@ -800,7 +1129,7 @@ service cloud.firestore {
              o != null &&
              o.suspended == false &&
              d.keys().hasAll(['referenceCode', 'leaseId', 'orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'amountCents', 'method', 'simulatedCheckout', 'paymentDateEpochMs', 'status', 'recordedByUid', 'createdAt', 'updatedAt']) &&
-             d.keys().hasOnly(['referenceCode', 'leaseId', 'invoiceId', 'orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'amountCents', 'method', 'simulatedCheckout', 'paymentDateEpochMs', 'status', 'recordedByUid', 'verifiedByUid', 'verificationNotes', 'reversalReason', 'allocationsSummary', 'receiptNumber', 'createdAt', 'updatedAt']) &&
+             d.keys().hasOnly(['referenceCode', 'leaseId', 'invoiceId', 'orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'amountCents', 'method', 'paymentMethodId', 'paymentChannelType', 'paymentShortcode', 'simulatedCheckout', 'paymentDateEpochMs', 'status', 'recordedByUid', 'verifiedByUid', 'verificationNotes', 'reversalReason', 'allocationsSummary', 'receiptNumber', 'verificationSource', 'matchedReceiptId', 'createdAt', 'updatedAt']) &&
              lease != null &&
              lease.orgId == d.orgId &&
              lease.propertyId == d.propertyId &&
@@ -857,7 +1186,7 @@ service cloud.firestore {
                      e.ownerUid == uid &&
                      o.ownerUid == uid &&
                      e.status != 'REVERSED' &&
-                     changed.hasOnly(['status', 'verifiedByUid', 'verificationNotes', 'reversalReason', 'allocationsSummary', 'receiptNumber', 'updatedAt'])
+                     changed.hasOnly(['status', 'verifiedByUid', 'verificationNotes', 'reversalReason', 'allocationsSummary', 'receiptNumber', 'verificationSource', 'matchedReceiptId', 'updatedAt'])
                    ) ||
                    (
                      u.roles.hasAny(['LANDLORD', 'PROPERTY_MANAGER']) &&
@@ -865,7 +1194,7 @@ service cloud.firestore {
                      (o.ownerUid == uid || uid in o.memberUids) &&
                      e.status == 'PENDING_VERIFICATION' &&
                      d.status in ['VERIFIED', 'REJECTED'] &&
-                     changed.hasOnly(['status', 'verifiedByUid', 'verificationNotes', 'allocationsSummary', 'receiptNumber', 'updatedAt'])
+                     changed.hasOnly(['status', 'verifiedByUid', 'verificationNotes', 'allocationsSummary', 'receiptNumber', 'verificationSource', 'matchedReceiptId', 'updatedAt'])
                    )
                  )
                )
@@ -1043,7 +1372,7 @@ service cloud.firestore {
                          isValidFcmToken(request.resource.data) &&
                          request.resource.data.userId == request.auth.uid &&
                          request.resource.data.keys().hasAll(['userId', 'token', 'platform', 'notifyMaintenance', 'activeRole', 'createdAt', 'updatedAt']) &&
-                         request.resource.data.keys().hasOnly(['userId', 'token', 'platform', 'notifyMaintenance', 'activeRole', 'appVersion', 'createdAt', 'updatedAt']);
+                         request.resource.data.keys().hasOnly(['userId', 'token', 'platform', 'notifyMaintenance', 'notifyRentDue', 'activeRole', 'appVersion', 'createdAt', 'updatedAt']);
         allow update: if isSignedIn() &&
                          isValidId(userId) &&
                          isValidId(tokenId) &&
@@ -1055,7 +1384,7 @@ service cloud.firestore {
                            (
                              isVerifiedEmail() &&
                              request.auth.uid == userId &&
-                             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['token', 'platform', 'notifyMaintenance', 'activeRole', 'appVersion', 'updatedAt'])
+                             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['token', 'platform', 'notifyMaintenance', 'notifyRentDue', 'activeRole', 'appVersion', 'updatedAt'])
                            )
                          );
         allow delete: if isSignedIn() && isValidId(userId) && isValidId(tokenId) && ((isVerifiedEmail() && request.auth.uid == userId) || isAdmin());
@@ -1074,6 +1403,64 @@ service cloud.firestore {
                          request.resource.data.keys().hasOnly(['unitId', 'propertyId', 'propertyName', 'unitNumber', 'rentCents', 'savedAt']);
         allow update: if false;
         allow delete: if isSignedIn() && isValidId(userId) && isValidId(unitId) && ((isVerifiedEmail() && request.auth.uid == userId) || isAdmin());
+      }
+
+      match /payment_methods/{methodId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(methodId) && ((isVerifiedEmail() && request.auth.uid == userId) || isAdmin());
+        allow list: if isSignedIn() && isValidId(userId) && ((isVerifiedEmail() && request.auth.uid == userId) || isAdmin());
+        allow create: if isVerifiedEmail() &&
+                         isValidId(userId) &&
+                         isValidId(methodId) &&
+                         request.auth.uid == userId &&
+                         isValidSavedPaymentMethod(request.resource.data) &&
+                         request.resource.data.userId == request.auth.uid &&
+                         request.resource.data.keys().hasAll(['userId', 'label', 'channelType', 'roleScope', 'defaultMethod', 'smsVerified', 'createdAt', 'updatedAt']) &&
+                         request.resource.data.keys().hasOnly(['userId', 'label', 'channelType', 'roleScope', 'paybillNumber', 'accountReference', 'tillNumber', 'phoneNumber', 'bankName', 'bankAccountNumber', 'defaultMethod', 'smsVerified', 'smsSampleRef', 'createdAt', 'updatedAt']);
+        allow update: if isSignedIn() &&
+                         isValidId(userId) &&
+                         isValidId(methodId) &&
+                         isValidSavedPaymentMethod(request.resource.data) &&
+                         request.resource.data.userId == resource.data.userId &&
+                         request.resource.data.createdAt == resource.data.createdAt &&
+                         (
+                           isAdmin() ||
+                           (
+                             isVerifiedEmail() &&
+                             request.auth.uid == userId &&
+                             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['label', 'channelType', 'roleScope', 'paybillNumber', 'accountReference', 'tillNumber', 'phoneNumber', 'bankName', 'bankAccountNumber', 'defaultMethod', 'smsVerified', 'smsSampleRef', 'updatedAt'])
+                           )
+                         );
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(methodId) && ((isVerifiedEmail() && request.auth.uid == userId) || isAdmin());
+      }
+
+      match /mpesa_receipts/{receiptId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(receiptId) && ((isVerifiedEmail() && request.auth.uid == userId) || isAdmin());
+        allow list: if isSignedIn() && isValidId(userId) && ((isVerifiedEmail() && request.auth.uid == userId) || isAdmin());
+        allow create: if isVerifiedEmail() &&
+                         isValidId(userId) &&
+                         isValidId(receiptId) &&
+                         request.auth.uid == userId &&
+                         isValidMpesaReceipt(request.resource.data) &&
+                         request.resource.data.userId == request.auth.uid &&
+                         request.resource.data.keys().hasAll(['userId', 'transactionCode', 'amountCents', 'direction', 'captureSource', 'status', 'rawSnippet', 'transactionTimestampMs', 'createdAt', 'updatedAt']) &&
+                         request.resource.data.keys().hasOnly(['userId', 'transactionCode', 'amountCents', 'direction', 'counterpartyName', 'counterpartyPhone', 'accountReference', 'shortcode', 'captureSource', 'status', 'matchedPaymentId', 'matchedLeaseId', 'rawSnippet', 'transactionTimestampMs', 'createdAt', 'updatedAt']);
+        allow update: if isSignedIn() &&
+                         isValidId(userId) &&
+                         isValidId(receiptId) &&
+                         isValidMpesaReceipt(request.resource.data) &&
+                         request.resource.data.userId == resource.data.userId &&
+                         request.resource.data.transactionCode == resource.data.transactionCode &&
+                         request.resource.data.amountCents == resource.data.amountCents &&
+                         request.resource.data.createdAt == resource.data.createdAt &&
+                         (
+                           isAdmin() ||
+                           (
+                             isVerifiedEmail() &&
+                             request.auth.uid == userId &&
+                             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'matchedPaymentId', 'matchedLeaseId', 'captureSource', 'direction', 'counterpartyName', 'counterpartyPhone', 'accountReference', 'shortcode', 'rawSnippet', 'transactionTimestampMs', 'updatedAt'])
+                           )
+                         );
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(receiptId) && ((isVerifiedEmail() && request.auth.uid == userId) || isAdmin());
       }
     }
 
@@ -1194,7 +1581,7 @@ service cloud.firestore {
                        request.resource.data.ownerUid == request.auth.uid &&
                        request.auth.uid in request.resource.data.authorizedUids &&
                        request.resource.data.keys().hasAll(['orgId', 'ownerUid', 'managerUids', 'authorizedUids', 'name', 'category', 'city', 'neighborhood', 'addressLine', 'description', 'imageRefs', 'archived', 'hasPublishedUnits', 'totalUnitsCount', 'occupiedUnitsCount', 'createdAt', 'updatedAt']) &&
-                       request.resource.data.keys().hasOnly(['orgId', 'ownerUid', 'managerUids', 'authorizedUids', 'name', 'category', 'city', 'county', 'neighborhood', 'addressLine', 'description', 'waterMeterNumber', 'electricityMeterNumber', 'notes', 'imageRefs', 'archived', 'hasPublishedUnits', 'totalUnitsCount', 'occupiedUnitsCount', 'landlordVerified', 'mpesaPaybill', 'mpesaTill', 'mpesaAccountPrefix', 'createdAt', 'updatedAt']) &&
+                       request.resource.data.keys().hasOnly(['orgId', 'ownerUid', 'managerUids', 'authorizedUids', 'name', 'category', 'city', 'county', 'neighborhood', 'addressLine', 'description', 'waterMeterNumber', 'electricityMeterNumber', 'notes', 'imageRefs', 'archived', 'hasPublishedUnits', 'totalUnitsCount', 'occupiedUnitsCount', 'landlordVerified', 'mpesaPaybill', 'mpesaTill', 'mpesaAccountPrefix', 'latitude', 'longitude', 'formattedAddress', 'placeId', 'locationVerified', 'createdAt', 'updatedAt']) &&
                        (isAdmin() || (hasVerifiedRole('LANDLORD') && isActiveOrgOwner(request.resource.data.orgId) && (!('landlordVerified' in request.resource.data) || request.resource.data.landlordVerified == false || loadOrg(request.resource.data.orgId).get('verified', false) == true)));
       allow update: if canUpdateProperty(propertyId);
       allow delete: if isSignedIn() && isValidId(propertyId) && (
@@ -1215,7 +1602,7 @@ service cloud.firestore {
                        isValidUnit(request.resource.data) &&
                        request.auth.uid in request.resource.data.authorizedUids &&
                        request.resource.data.keys().hasAll(['propertyId', 'propertyName', 'propertyCity', 'propertyCategory', 'orgId', 'ownerUid', 'managerUids', 'authorizedUids', 'unitNumber', 'unitType', 'rentCents', 'depositCents', 'status', 'amenities', 'description', 'imageRefs', 'published', 'createdAt', 'updatedAt']) &&
-                       request.resource.data.keys().hasOnly(['propertyId', 'propertyName', 'propertyCity', 'propertyCategory', 'orgId', 'ownerUid', 'managerUids', 'authorizedUids', 'unitNumber', 'unitType', 'rentCents', 'depositCents', 'status', 'amenities', 'description', 'imageRefs', 'published', 'currentTenantUid', 'currentLeaseId', 'landlordVerified', 'mpesaPaybill', 'mpesaTill', 'mpesaAccountPrefix', 'createdAt', 'updatedAt']) &&
+                       request.resource.data.keys().hasOnly(['propertyId', 'propertyName', 'propertyCity', 'propertyCategory', 'orgId', 'ownerUid', 'managerUids', 'authorizedUids', 'unitNumber', 'unitType', 'rentCents', 'depositCents', 'status', 'amenities', 'description', 'imageRefs', 'published', 'currentTenantUid', 'currentLeaseId', 'landlordVerified', 'mpesaPaybill', 'mpesaTill', 'mpesaAccountPrefix', 'latitude', 'longitude', 'formattedAddress', 'locationVerified', 'createdAt', 'updatedAt']) &&
                        (isAdmin() || (hasVerifiedRole('LANDLORD') && request.resource.data.ownerUid == request.auth.uid && isActiveOrgOwner(request.resource.data.orgId) && (!('landlordVerified' in request.resource.data) || request.resource.data.landlordVerified == false || loadOrg(request.resource.data.orgId).get('verified', false) == true))) &&
                        exists(/databases/$(database)/documents/properties/$(request.resource.data.propertyId)) &&
                        get(/databases/$(database)/documents/properties/$(request.resource.data.propertyId)).data.orgId == request.resource.data.orgId &&
@@ -1277,6 +1664,40 @@ service cloud.firestore {
                        request.auth.uid in get(/databases/$(database)/documents/units/$(request.resource.data.unitId)).data.authorizedUids;
       allow update: if canUpdateLease(leaseId);
       allow delete: if isAdmin() && isValidId(leaseId);
+    }
+
+    match /move_in_checklists/{checklistId} {
+      allow get: if isSignedIn() && isValidId(checklistId) && (
+        canReadTenantOrOrgRecord(resource.data, resource.data.tenantUid) ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        (isVerifiedEmail() && (resource.data.tenantUid == request.auth.uid || request.auth.uid in resource.data.authorizedUids)) ||
+        isAdmin()
+      );
+      allow create: if isSignedIn() && canCreateMoveInChecklist(checklistId);
+      allow update: if isSignedIn() && canUpdateMoveInChecklist(checklistId);
+      allow delete: if isSignedIn() && isValidId(checklistId) && (
+        isAdmin() ||
+        (hasVerifiedRole('LANDLORD') && resource.data.ownerUid == request.auth.uid && resource.data.status == 'DRAFT' && isActiveOrgOwner(resource.data.orgId))
+      );
+    }
+
+    match /deposit_settlements/{settlementId} {
+      allow get: if isSignedIn() && isValidId(settlementId) && (
+        canReadTenantOrOrgRecord(resource.data, resource.data.tenantUid) ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        (isVerifiedEmail() && (resource.data.tenantUid == request.auth.uid || request.auth.uid in resource.data.authorizedUids)) ||
+        isAdmin()
+      );
+      allow create: if isSignedIn() && canCreateDepositSettlement(settlementId);
+      allow update: if isSignedIn() && canUpdateDepositSettlement(settlementId);
+      allow delete: if isSignedIn() && isValidId(settlementId) && (
+        isAdmin() ||
+        (hasVerifiedRole('LANDLORD') && resource.data.ownerUid == request.auth.uid && resource.data.status == 'DRAFT' && isActiveOrgOwner(resource.data.orgId))
+      );
     }
 
     match /invoices/{invoiceId} {

@@ -18,8 +18,10 @@ import com.example.domain.model.Lease
 import com.example.domain.model.LeaseStatus
 import com.example.domain.model.NotificationType
 import com.example.domain.model.Payment
+import com.example.domain.model.PaymentChannelType
 import com.example.domain.model.PaymentMethod
 import com.example.domain.model.PaymentStatus
+import com.example.domain.model.PaymentVerificationSource
 import com.example.domain.model.Property
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
@@ -244,7 +246,12 @@ class FinanceRepository(
         referenceCode: String,
         amountCents: Long,
         method: PaymentMethod,
-        simulatedCheckout: Boolean
+        simulatedCheckout: Boolean,
+        paymentMethodId: String? = null,
+        paymentChannelType: PaymentChannelType? = null,
+        paymentShortcode: String? = null,
+        verificationSource: PaymentVerificationSource? = null,
+        matchedReceiptId: String? = null
     ): Result<String> {
         val docRef = db.collection("payments").document()
         return try {
@@ -271,10 +278,15 @@ class FinanceRepository(
                 tenantName = lease.tenantName,
                 amountCents = amountCents,
                 method = method.name,
+                paymentMethodId = paymentMethodId?.trim()?.take(128)?.takeIf { it.isNotBlank() },
+                paymentChannelType = paymentChannelType?.name,
+                paymentShortcode = paymentShortcode?.trim()?.take(40)?.takeIf { it.isNotBlank() },
                 simulatedCheckout = simulatedCheckout,
                 paymentDateEpochMs = System.currentTimeMillis(),
                 status = PaymentStatus.PENDING_VERIFICATION.name,
-                recordedByUid = uid
+                recordedByUid = uid,
+                verificationSource = verificationSource?.name,
+                matchedReceiptId = matchedReceiptId?.trim()?.take(128)?.takeIf { it.isNotBlank() }
             )
             docRef.set(payment.toCreateMap()).await()
 
@@ -306,7 +318,9 @@ class FinanceRepository(
         lease: Lease,
         leaseInvoices: List<Invoice>,
         verificationNotes: String,
-        actorName: String
+        actorName: String,
+        verificationSource: PaymentVerificationSource = PaymentVerificationSource.MANUAL,
+        matchedReceiptId: String? = null
     ): Result<String> {
         val paymentPath = "payments/${payment.id}"
         return try {
@@ -356,8 +370,12 @@ class FinanceRepository(
                     "verifiedByUid" to uid,
                     "receiptNumber" to receiptNum,
                     "allocationsSummary" to plan.summaryText.take(600),
+                    "verificationSource" to verificationSource.name,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
+                matchedReceiptId?.trim()?.take(128)?.takeIf { it.isNotBlank() }?.let { recId ->
+                    payUpdates["matchedReceiptId"] = recId
+                }
                 if (verificationNotes.isNotBlank()) {
                     payUpdates["verificationNotes"] = verificationNotes.trim().take(400)
                 }

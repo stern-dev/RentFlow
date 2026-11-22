@@ -3,6 +3,8 @@ package com.example.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.repository.PropertyRepository
+import com.example.domain.location.BuildingLocationResolver
+import com.example.domain.location.BuildingPinGroup
 import com.example.domain.model.Property
 import com.example.domain.model.RentalApplication
 import com.example.domain.model.RentalUnit
@@ -86,6 +88,19 @@ class DiscoveryViewModel(
             val matchSaved = !f.savedOnly || u.id in savedIds
             matchQuery && matchCity && matchCategory && matchRent && matchVerified && matchSaved
         }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+
+    val publishedPropertiesById: StateFlow<Map<String, Property>> = publishedProperties
+        .map { state ->
+            ((state as? UiState.Success)?.data ?: emptyList()).associateBy { it.id }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyMap())
+
+    val mapPinGroups: StateFlow<List<BuildingPinGroup>> = combine(
+        filteredUnits,
+        publishedPropertiesById
+    ) { units, propsById ->
+        BuildingLocationResolver.groupUnitsByBuilding(units, propsById)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
     private val _busy = MutableStateFlow(false)

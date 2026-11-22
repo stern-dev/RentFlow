@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -70,6 +71,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -86,27 +88,44 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.location.DirectionsLauncher
+import com.example.data.notifications.PushDeepLink
 import com.example.domain.finance.CurrencyUtils
 import com.example.domain.finance.MpesaSmsParser
 import com.example.domain.finance.RentReminderEngine
 import com.example.domain.finance.RentReminderUrgency
 import com.example.domain.finance.ReportExporter
+import com.example.domain.model.DepositSettlement
+import com.example.domain.model.DepositSettlementStatus
 import com.example.domain.model.Invoice
 import com.example.domain.model.InvoiceStatus
 import com.example.domain.model.Lease
 import com.example.domain.model.MaintenanceRequest
 import com.example.domain.model.MaintenanceStatus
+import com.example.domain.model.MoveInChecklist
+import com.example.domain.model.MpesaReceipt
 import com.example.domain.model.Payment
+import com.example.domain.model.PaymentChannelType
 import com.example.domain.model.PaymentMethod
 import com.example.domain.model.PaymentStatus
+import com.example.domain.model.PaymentVerificationSource
 import com.example.domain.model.RentalUnit
+import com.example.domain.model.SavedPaymentMethod
 import com.example.domain.model.UserProfile
+import com.example.ui.components.BuildingMapPreviewCard
+import com.example.ui.components.DepositSettlementSummaryCard
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.ErrorBannerCard
 import com.example.ui.components.LoadingStateBox
+import com.example.ui.components.MoveInChecklistSummaryCard
 import com.example.ui.components.PillTone
+import com.example.ui.components.RentPaymentTrendsCard
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusPill
+import com.example.ui.components.TenantDepositSettlementReviewDialog
+import com.example.ui.components.TenantMoveInChecklistReviewDialog
+import com.example.ui.components.exportDepositSettlementPdf
+import com.example.ui.components.exportMoveInChecklistPdf
 import com.example.ui.theme.EmeraldAccent
 import com.example.ui.theme.NavyPrimary
 import com.example.ui.theme.NavySecondary
@@ -117,6 +136,7 @@ import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.StatusWarningBg
 import com.example.ui.theme.TabularMoneyStyle
+import com.example.ui.viewmodel.PaymentMethodViewModel
 import com.example.ui.viewmodel.TenantViewModel
 import com.example.ui.viewmodel.UiState
 import java.util.UUID
@@ -127,22 +147,73 @@ fun TenantDashboardScreen(
     currentUser: UserProfile,
     onNavigatePayRent: () -> Unit,
     onNavigateMaintenance: () -> Unit,
-    onNavigateDiscovery: () -> Unit
+    onNavigateDiscovery: () -> Unit,
+    deepLinkTarget: PushDeepLink? = null,
+    onConsumeDeepLinkTarget: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val activeLease by viewModel.activeLease.collectAsStateWithLifecycle()
+    val leasesState by viewModel.leases.collectAsStateWithLifecycle()
+    val activeBuildingLocation by viewModel.activeBuildingLocation.collectAsStateWithLifecycle()
     val accountSummary by viewModel.accountSummary.collectAsStateWithLifecycle()
+    val paymentTrends by viewModel.paymentTrends.collectAsStateWithLifecycle()
     val invoicesState by viewModel.invoices.collectAsStateWithLifecycle()
     val paymentsState by viewModel.payments.collectAsStateWithLifecycle()
     val maintenanceState by viewModel.maintenanceRequests.collectAsStateWithLifecycle()
     val announcementsState by viewModel.announcements.collectAsStateWithLifecycle()
+    val checklistsState by viewModel.moveInChecklists.collectAsStateWithLifecycle()
+    val settlementsState by viewModel.depositSettlements.collectAsStateWithLifecycle()
+    val busy by viewModel.busy.collectAsStateWithLifecycle()
 
+    val tenantLeases = (leasesState as? UiState.Success)?.data ?: emptyList()
     val invoices = (invoicesState as? UiState.Success)?.data ?: emptyList()
     val payments = (paymentsState as? UiState.Success)?.data ?: emptyList()
     val tickets = (maintenanceState as? UiState.Success)?.data ?: emptyList()
     val announcements = (announcementsState as? UiState.Success)?.data ?: emptyList()
+    val checklists = (checklistsState as? UiState.Success)?.data ?: emptyList()
+    val settlements = (settlementsState as? UiState.Success)?.data ?: emptyList()
     val dueReminders = remember(invoices) {
         RentReminderEngine.evaluateInvoices(invoices, respectCooldown = false)
+    }
+
+    var checklistForReview by remember { mutableStateOf<MoveInChecklist?>(null) }
+    var settlementForReview by remember { mutableStateOf<DepositSettlement?>(null) }
+
+    LaunchedEffect(deepLinkTarget, checklists, settlements, checklistsState, settlementsState) {
+        val dl = deepLinkTarget ?: return@LaunchedEffect
+        val matchedChecklist = dl.checklistId?.let { cid -> checklists.firstOrNull { it.id == cid } }
+            ?: dl.leaseId?.takeIf { dl.settlementId == null }?.let { lid -> checklists.firstOrNull { it.leaseId == lid } }
+        val matchedSettlement = dl.settlementId?.let { sid -> settlements.firstOrNull { it.id == sid } }
+            ?: dl.leaseId?.takeIf { dl.checklistId == null }?.let { lid -> settlements.firstOrNull { it.leaseId == lid } }
+
+        if (matchedChecklist != null) {
+            checklistForReview = matchedChecklist
+            onConsumeDeepLinkTarget()
+        } else if (matchedSettlement != null) {
+            settlementForReview = matchedSettlement
+            onConsumeDeepLinkTarget()
+        } else if (checklistsState is UiState.Success && settlementsState is UiState.Success) {
+            onConsumeDeepLinkTarget()
+        }
+    }
+
+    val activeChecklist = remember(activeLease, checklists) {
+        activeLease?.let { lease -> checklists.firstOrNull { it.leaseId == lease.id } } ?: checklists.firstOrNull()
+    }
+    val primarySettlement = remember(activeLease, settlements) {
+        settlements.firstOrNull {
+            it.statusEnum() in listOf(
+                DepositSettlementStatus.ISSUED,
+                DepositSettlementStatus.DISPUTED,
+                DepositSettlementStatus.APPROVED,
+                DepositSettlementStatus.SETTLED
+            )
+        } ?: activeLease?.let { al -> settlements.firstOrNull { it.leaseId == al.id } }
+    }
+    val settlementLease = remember(primarySettlement, tenantLeases, activeLease) {
+        primarySettlement?.let { s ->
+            tenantLeases.firstOrNull { it.id == s.leaseId } ?: activeLease
+        } ?: activeLease
     }
 
     LazyColumn(
@@ -317,6 +388,10 @@ fun TenantDashboardScreen(
             }
         }
 
+        item {
+            RentPaymentTrendsCard(summary = paymentTrends)
+        }
+
         if (activeLease == null) {
             item {
                 EmptyStateCard(
@@ -387,6 +462,59 @@ fun TenantDashboardScreen(
                     }
                 }
             }
+
+            activeBuildingLocation?.let { buildingLoc ->
+                item {
+                    BuildingMapPreviewCard(
+                        buildingName = lease.propertyName,
+                        location = buildingLoc,
+                        onDirectionsClick = {
+                            DirectionsLauncher.openGoogleMapsDirections(
+                                context = context,
+                                latitude = buildingLoc.latitude,
+                                longitude = buildingLoc.longitude,
+                                label = lease.propertyName
+                            )
+                        },
+                        testTag = "tenant_building_location_card"
+                    )
+                }
+            }
+        }
+
+        if (activeLease != null || activeChecklist != null) {
+            item(key = "tenant_checklist_summary") {
+                val label = activeLease?.let { "${it.propertyName} • Unit ${it.unitNumber}" }
+                    ?: activeChecklist?.let { "${it.propertyName} • Unit ${it.unitNumber}" }
+                    ?: "Move-In Handover"
+                MoveInChecklistSummaryCard(
+                    checklist = activeChecklist,
+                    isTenantView = true,
+                    propertyUnitLabel = label,
+                    onOpenChecklist = {
+                        if (activeChecklist != null) {
+                            checklistForReview = activeChecklist
+                        }
+                    },
+                    onExportPdf = { cl -> exportMoveInChecklistPdf(context, cl) }
+                )
+            }
+        }
+
+        if (settlementLease != null && (primarySettlement != null || activeLease != null)) {
+            item(key = "tenant_deposit_settlement_summary") {
+                DepositSettlementSummaryCard(
+                    settlement = primarySettlement,
+                    lease = settlementLease,
+                    isTenantView = true,
+                    onOpenSettlement = {
+                        if (primarySettlement != null) {
+                            settlementForReview = primarySettlement
+                        }
+                    },
+                    onExportPdf = { ds -> exportDepositSettlementPdf(context, ds) }
+                )
+            }
         }
 
         if (announcements.isNotEmpty()) {
@@ -441,6 +569,40 @@ fun TenantDashboardScreen(
             }
         }
     }
+
+    checklistForReview?.let { cl ->
+        TenantMoveInChecklistReviewDialog(
+            checklist = cl,
+            isBusy = busy,
+            onDismiss = { checklistForReview = null },
+            onRespond = { acknowledge, note ->
+                viewModel.respondToMoveInChecklist(
+                    checklist = cl,
+                    acknowledge = acknowledge,
+                    responseNote = note,
+                    actorName = currentUser.fullName,
+                    onSuccess = { checklistForReview = null }
+                )
+            }
+        )
+    }
+
+    settlementForReview?.let { ds ->
+        TenantDepositSettlementReviewDialog(
+            settlement = ds,
+            isBusy = busy,
+            onDismiss = { settlementForReview = null },
+            onRespond = { approve, note ->
+                viewModel.respondToDepositSettlement(
+                    settlement = ds,
+                    approve = approve,
+                    responseNote = note,
+                    actorName = currentUser.fullName,
+                    onSuccess = { settlementForReview = null }
+                )
+            }
+        )
+    }
 }
 
 private enum class TenantInvoiceFilter(val label: String) {
@@ -461,7 +623,16 @@ private enum class TenantPaymentFilter(val label: String) {
 @Composable
 fun TenantPaymentsScreen(
     viewModel: TenantViewModel,
-    currentUser: UserProfile
+    currentUser: UserProfile,
+    paymentMethodViewModel: PaymentMethodViewModel? = null,
+    onOpenPaymentMethods: () -> Unit = {},
+    detectedMpesaReceipts: List<MpesaReceipt> = emptyList(),
+    initialPrefilledReceipt: MpesaReceipt? = null,
+    onConsumePrefilledReceipt: () -> Unit = {},
+    deepLinkTarget: PushDeepLink? = null,
+    onConsumeDeepLinkTarget: () -> Unit = {},
+    onReceiptSubmittedForPayment: (receipt: MpesaReceipt, paymentId: String, leaseId: String) -> Unit = { _, _, _ -> },
+    onDismissDetectedReceipt: (MpesaReceipt) -> Unit = {}
 ) {
     val context = LocalContext.current
     val activeLease by viewModel.activeLease.collectAsStateWithLifecycle()
@@ -470,6 +641,11 @@ fun TenantPaymentsScreen(
     val paymentsState by viewModel.payments.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
 
+    val savedMethodsState = paymentMethodViewModel?.methods?.collectAsStateWithLifecycle()
+    val effectiveSavedMethod = paymentMethodViewModel?.effectiveSelectedMethod?.collectAsStateWithLifecycle()
+    val savedMethods = (savedMethodsState?.value as? UiState.Success)?.data ?: emptyList()
+    val selectedSavedMethod = effectiveSavedMethod?.value
+
     val invoices = (invoicesState as? UiState.Success)?.data ?: emptyList()
     val payments = (paymentsState as? UiState.Success)?.data ?: emptyList()
 
@@ -477,25 +653,101 @@ fun TenantPaymentsScreen(
     var invoiceFilter by remember { mutableStateOf(TenantInvoiceFilter.ALL) }
     var paymentFilter by remember { mutableStateOf(TenantPaymentFilter.ALL) }
     var expandedInvoiceIds by remember { mutableStateOf(emptySet<String>()) }
+    var highlightedInvoiceId by remember { mutableStateOf<String?>(null) }
+    var highlightedPaymentId by remember { mutableStateOf<String?>(null) }
     var paymentTargetInvoice by remember { mutableStateOf<Invoice?>(null) }
+    var activePrefilledReceipt by remember { mutableStateOf<MpesaReceipt?>(null) }
     var showPayDialog by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(initialPrefilledReceipt) {
+        if (initialPrefilledReceipt != null) {
+            activePrefilledReceipt = initialPrefilledReceipt
+            paymentTargetInvoice = invoices.firstOrNull { it.outstandingCents > 0L }
+            showPayDialog = true
+            onConsumePrefilledReceipt()
+        }
+    }
+
+    LaunchedEffect(deepLinkTarget) {
+        if (deepLinkTarget != null) {
+            val resolvedTab = deepLinkTarget.targetTab ?: when {
+                !deepLinkTarget.paymentId.isNullOrBlank() -> 1
+                else -> 0
+            }
+            selectedTab = resolvedTab.coerceIn(0, 1)
+            if (!deepLinkTarget.invoiceId.isNullOrBlank()) {
+                invoiceFilter = TenantInvoiceFilter.ALL
+                highlightedInvoiceId = deepLinkTarget.invoiceId
+                highlightedPaymentId = null
+                expandedInvoiceIds = expandedInvoiceIds + deepLinkTarget.invoiceId
+            } else if (!deepLinkTarget.paymentId.isNullOrBlank()) {
+                paymentFilter = TenantPaymentFilter.ALL
+                highlightedPaymentId = deepLinkTarget.paymentId
+                highlightedInvoiceId = null
+            }
+            onConsumeDeepLinkTarget()
+        }
+    }
+
+    LaunchedEffect(highlightedInvoiceId, highlightedPaymentId, selectedTab, invoices.size, payments.size) {
+        val headerItems = (if (activeLease != null) {
+            1 + (if (detectedMpesaReceipts.isNotEmpty()) 1 else 0) +
+                (if (paymentMethodViewModel != null) 1 else 0) +
+                (if (activeUnit?.mpesaPaybill != null || activeUnit?.mpesaTill != null) 1 else 0)
+        } else 0) + 1 // +1 for filter row
+        if (selectedTab == 0 && !highlightedInvoiceId.isNullOrBlank()) {
+            val idx = invoices.indexOfFirst { it.id == highlightedInvoiceId }
+            if (idx >= 0) listState.animateScrollToItem(headerItems + idx)
+        } else if (selectedTab == 1 && !highlightedPaymentId.isNullOrBlank()) {
+            val idx = payments.indexOfFirst { it.id == highlightedPaymentId }
+            if (idx >= 0) listState.animateScrollToItem(headerItems + idx)
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         SecondaryTabRow(selectedTabIndex = selectedTab) {
-            Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }, text = { Text("Invoices (${invoices.size})") })
-            Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }, text = { Text("Payments (${payments.size})") })
+            Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0 },
+                text = { Text("Invoices (${invoices.size})") },
+                modifier = Modifier.testTag("tenant_invoices_tab")
+            )
+            Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1 },
+                text = { Text("Payments (${payments.size})") },
+                modifier = Modifier.testTag("tenant_payments_tab")
+            )
         }
 
         LazyColumn(
+            state = listState,
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             modifier = Modifier.fillMaxSize()
         ) {
             activeLease?.let { lease ->
+                if (detectedMpesaReceipts.isNotEmpty()) {
+                    val topDetected = detectedMpesaReceipts.first()
+                    item {
+                        DetectedMpesaReceiptCard(
+                            receipt = topDetected,
+                            extraCount = (detectedMpesaReceipts.size - 1).coerceAtLeast(0),
+                            onUseReceipt = {
+                                activePrefilledReceipt = topDetected
+                                paymentTargetInvoice = invoices.firstOrNull { it.outstandingCents > 0L }
+                                showPayDialog = true
+                            },
+                            onDismiss = { onDismissDetectedReceipt(topDetected) }
+                        )
+                    }
+                }
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         Button(
                             onClick = {
+                                activePrefilledReceipt = null
                                 paymentTargetInvoice = invoices.firstOrNull { it.outstandingCents > 0L }
                                 showPayDialog = true
                             },
@@ -515,6 +767,53 @@ fun TenantPaymentsScreen(
                             Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("Statement")
+                        }
+                    }
+                }
+                if (paymentMethodViewModel != null) {
+                    item {
+                        Card(
+                            shape = MaterialTheme.shapes.medium,
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("tenant_selected_method_card")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp)
+                            ) {
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(end = 8.dp)
+                                ) {
+                                    Text(
+                                        text = selectedSavedMethod?.let { "Payment Method: ${it.label}" }
+                                            ?: "Saved M-Pesa Paybill / Till",
+                                        style = MaterialTheme.typography.titleSmall
+                                    )
+                                    Text(
+                                        text = selectedSavedMethod?.summarySubtitle()
+                                            ?: "Add & validate a Paybill, Till, STK Phone, Bank, or Cash method",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                OutlinedButton(
+                                    onClick = onOpenPaymentMethods,
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("open_payment_method_selector")
+                                ) {
+                                    Text(if (selectedSavedMethod != null) "Change (${savedMethods.size})" else "Select / Add")
+                                }
+                            }
                         }
                     }
                 }
@@ -584,6 +883,7 @@ fun TenantPaymentsScreen(
                             } else {
                                 items(filteredInvoices, key = { it.id }) { inv ->
                                     val expanded = inv.id in expandedInvoiceIds
+                                    val isHighlighted = inv.id == highlightedInvoiceId
                                     val tone = when (inv.statusEnum()) {
                                         InvoiceStatus.PAID -> PillTone.SUCCESS
                                         InvoiceStatus.PARTIALLY_PAID -> PillTone.WARNING
@@ -593,13 +893,29 @@ fun TenantPaymentsScreen(
                                     }
                                     Card(
                                         shape = MaterialTheme.shapes.medium,
-                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = if (isHighlighted) {
+                                                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f)
+                                            } else {
+                                                MaterialTheme.colorScheme.surface
+                                            }
+                                        ),
+                                        border = BorderStroke(
+                                            width = if (isHighlighted) 2.dp else 1.dp,
+                                            color = if (isHighlighted) {
+                                                MaterialTheme.colorScheme.secondary
+                                            } else {
+                                                MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+                                            }
+                                        ),
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .animateContentSize()
                                             .clickable {
                                                 expandedInvoiceIds = if (expanded) expandedInvoiceIds - inv.id else expandedInvoiceIds + inv.id
+                                            }
+                                            .let { mod ->
+                                                if (isHighlighted) mod.testTag("highlighted_invoice_${inv.id}") else mod
                                             }
                                     ) {
                                         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -654,6 +970,7 @@ fun TenantPaymentsScreen(
                                             if (inv.outstandingCents > 0L && activeLease != null) {
                                                 OutlinedButton(
                                                     onClick = {
+                                                        activePrefilledReceipt = null
                                                         paymentTargetInvoice = inv
                                                         showPayDialog = true
                                                     },
@@ -724,9 +1041,13 @@ fun TenantPaymentsScreen(
                                 }
                             } else {
                                 items(filteredPayments, key = { it.id }) { pay ->
-                                    TenantPaymentCard(pay = pay, onDownloadReceipt = {
-                                        exportPaymentReceiptPdf(context, pay)
-                                    })
+                                    TenantPaymentCard(
+                                        pay = pay,
+                                        highlighted = pay.id == highlightedPaymentId,
+                                        onDownloadReceipt = {
+                                            exportPaymentReceiptPdf(context, pay)
+                                        }
+                                    )
                                 }
                             }
                         }
@@ -737,26 +1058,124 @@ fun TenantPaymentsScreen(
     }
 
     if (showPayDialog && activeLease != null) {
+        val currentLease = activeLease!!
+        val usedReceipt = activePrefilledReceipt
         TenantPaymentSubmissionDialog(
-            lease = activeLease!!,
+            lease = currentLease,
             unit = activeUnit,
             targetInvoice = paymentTargetInvoice,
-            defaultPhone = currentUser.phoneNumber ?: activeLease!!.tenantPhone,
+            defaultPhone = currentUser.phoneNumber ?: currentLease.tenantPhone,
             isBusy = busy,
-            onDismiss = { showPayDialog = false },
-            onSubmit = { invoiceId, refCode, amountCents, method, simulated ->
+            savedMethods = savedMethods,
+            selectedSavedMethod = selectedSavedMethod,
+            initialPrefilledReceipt = usedReceipt,
+            onSelectSavedMethod = { methodId -> paymentMethodViewModel?.selectMethod(methodId) },
+            onOpenPaymentMethodSelector = {
+                showPayDialog = false
+                onOpenPaymentMethods()
+            },
+            onDismiss = {
+                activePrefilledReceipt = null
+                showPayDialog = false
+            },
+            onSubmit = { invoiceId, refCode, amountCents, method, simulated, paymentMethodId, channelType, shortcode ->
                 viewModel.submitPayment(
-                    lease = activeLease!!,
+                    lease = currentLease,
                     invoiceId = invoiceId,
                     referenceCode = refCode,
                     amountCents = amountCents,
                     method = method,
-                    simulatedCheckout = simulated
+                    simulatedCheckout = simulated,
+                    paymentMethodId = paymentMethodId,
+                    paymentChannelType = channelType,
+                    paymentShortcode = shortcode,
+                    verificationSource = if (usedReceipt != null) PaymentVerificationSource.MPESA_SMS_MATCH else null,
+                    matchedReceiptId = usedReceipt?.id,
+                    onPaymentCreated = { paymentId ->
+                        if (usedReceipt != null) {
+                            onReceiptSubmittedForPayment(usedReceipt, paymentId, currentLease.id)
+                        }
+                    }
                 ) {
+                    activePrefilledReceipt = null
                     showPayDialog = false
                 }
             }
         )
+    }
+}
+
+@Composable
+fun DetectedMpesaReceiptCard(
+    receipt: MpesaReceipt,
+    extraCount: Int = 0,
+    onUseReceipt: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Card(
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.28f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("detected_mpesa_receipt_card")
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Filled.Sms, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+                    Column {
+                        Text(
+                            text = "M-Pesa Receipt Detected • ${receipt.transactionCode}",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(
+                            text = buildString {
+                                append(CurrencyUtils.formatKes(receipt.amountCents, true))
+                                if (!receipt.counterpartyName.isNullOrBlank()) {
+                                    append(" to ")
+                                    append(receipt.counterpartyName)
+                                }
+                                if (extraCount > 0) {
+                                    append(" (+$extraCount more)")
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                StatusPill("Auto-Fill Ready", PillTone.INFO)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = onUseReceipt,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .testTag("use_detected_receipt_button")
+                ) {
+                    Text("Use to Pay Rent")
+                }
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("dismiss_detected_receipt_button")
+                ) {
+                    Text("Dismiss")
+                }
+            }
+        }
     }
 }
 
@@ -836,7 +1255,11 @@ private fun TenantBreakdownRow(label: String, value: String, isError: Boolean = 
 }
 
 @Composable
-private fun TenantPaymentCard(pay: Payment, onDownloadReceipt: () -> Unit) {
+private fun TenantPaymentCard(
+    pay: Payment,
+    highlighted: Boolean = false,
+    onDownloadReceipt: () -> Unit
+) {
     val tone = when (pay.statusEnum()) {
         PaymentStatus.VERIFIED -> PillTone.SUCCESS
         PaymentStatus.PENDING_VERIFICATION -> PillTone.WARNING
@@ -844,9 +1267,26 @@ private fun TenantPaymentCard(pay: Payment, onDownloadReceipt: () -> Unit) {
     }
     Card(
         shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
-        modifier = Modifier.fillMaxWidth()
+        colors = CardDefaults.cardColors(
+            containerColor = if (highlighted) {
+                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f)
+            } else {
+                MaterialTheme.colorScheme.surface
+            }
+        ),
+        border = BorderStroke(
+            width = if (highlighted) 2.dp else 1.dp,
+            color = if (highlighted) {
+                MaterialTheme.colorScheme.secondary
+            } else {
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+            }
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .let { mod ->
+                if (highlighted) mod.testTag("highlighted_payment_${pay.id}") else mod
+            }
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
@@ -855,8 +1295,19 @@ private fun TenantPaymentCard(pay: Payment, onDownloadReceipt: () -> Unit) {
                         CurrencyUtils.formatKes(pay.amountCents, true),
                         style = TabularMoneyStyle.copy(fontSize = MaterialTheme.typography.titleMedium.fontSize)
                     )
+                    val channelDesc = buildString {
+                        append(pay.channelTypeEnum()?.label ?: pay.methodEnum().label)
+                        if (!pay.paymentShortcode.isNullOrBlank()) {
+                            append(" (")
+                            append(pay.paymentShortcode)
+                            append(")")
+                        }
+                        append(" • Ref: ")
+                        append(pay.referenceCode)
+                        if (pay.simulatedCheckout) append(" (Simulated Demo)")
+                    }
                     Text(
-                        "${pay.methodEnum().label} • Ref: ${pay.referenceCode}${if (pay.simulatedCheckout) " (Simulated Demo)" else ""}",
+                        channelDesc,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -866,7 +1317,12 @@ private fun TenantPaymentCard(pay: Payment, onDownloadReceipt: () -> Unit) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                StatusPill(pay.statusEnum().label, tone)
+                Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    StatusPill(pay.statusEnum().label, tone)
+                    if (pay.verificationSourceEnum() == PaymentVerificationSource.MPESA_SMS_MATCH) {
+                        StatusPill("SMS Matched", PillTone.INFO)
+                    }
+                }
             }
             if (!pay.allocationsSummary.isNullOrBlank()) {
                 Text("Allocated: ${pay.allocationsSummary}", style = MaterialTheme.typography.labelSmall, color = StatusSuccess)
@@ -918,19 +1374,87 @@ fun TenantPaymentSubmissionDialog(
     targetInvoice: Invoice?,
     defaultPhone: String,
     isBusy: Boolean,
+    savedMethods: List<SavedPaymentMethod> = emptyList(),
+    selectedSavedMethod: SavedPaymentMethod? = null,
+    initialPrefilledReceipt: MpesaReceipt? = null,
+    onSelectSavedMethod: (String?) -> Unit = {},
+    onOpenPaymentMethodSelector: (() -> Unit)? = null,
     onDismiss: () -> Unit,
-    onSubmit: (invoiceId: String?, refCode: String, amountCents: Long, method: PaymentMethod, simulated: Boolean) -> Unit
+    onSubmit: (
+        invoiceId: String?,
+        refCode: String,
+        amountCents: Long,
+        method: PaymentMethod,
+        simulated: Boolean,
+        paymentMethodId: String?,
+        channelType: PaymentChannelType?,
+        shortcode: String?
+    ) -> Unit
 ) {
-    var mode by remember { mutableIntStateOf(0) } // 0 = Manual Reference, 1 = Simulated M-Pesa STK
-    var method by remember { mutableStateOf(PaymentMethod.MPESA) }
+    val initialMode = if (initialPrefilledReceipt == null && selectedSavedMethod?.channelTypeEnum() == PaymentChannelType.MPESA_STK) 1 else 0
+    var mode by remember(selectedSavedMethod?.id, initialPrefilledReceipt?.id) { mutableIntStateOf(initialMode) } // 0 = Manual Reference, 1 = Simulated M-Pesa STK
+    var method by remember(selectedSavedMethod?.id, initialPrefilledReceipt?.id) {
+        mutableStateOf(
+            if (initialPrefilledReceipt != null) {
+                PaymentMethod.MPESA
+            } else {
+                selectedSavedMethod?.channelTypeEnum()?.baseMethod ?: PaymentMethod.MPESA
+            }
+        )
+    }
     var methodExpanded by remember { mutableStateOf(false) }
-    var smsPasteText by remember { mutableStateOf("") }
-    var smsParsedStatus by remember { mutableStateOf<String?>(null) }
-    var refCode by remember { mutableStateOf("") }
-    var mpesaPhone by remember { mutableStateOf(defaultPhone) }
-    val defaultAmount = targetInvoice?.outstandingCents?.takeIf { it > 0L } ?: lease.rentCents
-    var amountText by remember { mutableStateOf(CurrencyUtils.centsToInputString(defaultAmount)) }
+    var smsPasteText by remember(initialPrefilledReceipt?.id) {
+        mutableStateOf(initialPrefilledReceipt?.rawSnippet ?: "")
+    }
+    var smsParsedStatus by remember(initialPrefilledReceipt?.id) {
+        mutableStateOf(
+            initialPrefilledReceipt?.let {
+                "Auto-filled ${it.transactionCode} • ${CurrencyUtils.formatKes(it.amountCents, true)}"
+            }
+        )
+    }
+    var refCode by remember(initialPrefilledReceipt?.id) {
+        mutableStateOf(initialPrefilledReceipt?.transactionCode ?: "")
+    }
+    var mpesaPhone by remember(selectedSavedMethod?.id, defaultPhone) {
+        mutableStateOf(
+            if (selectedSavedMethod?.channelTypeEnum() == PaymentChannelType.MPESA_STK &&
+                !selectedSavedMethod.phoneNumber.isNullOrBlank()
+            ) {
+                selectedSavedMethod.phoneNumber
+            } else {
+                defaultPhone
+            }
+        )
+    }
+    val defaultAmount = initialPrefilledReceipt?.amountCents
+        ?: targetInvoice?.outstandingCents?.takeIf { it > 0L }
+        ?: lease.rentCents
+    var amountText by remember(initialPrefilledReceipt?.id, defaultAmount) {
+        mutableStateOf(CurrencyUtils.centsToInputString(defaultAmount))
+    }
     var err by remember { mutableStateOf<String?>(null) }
+
+    val displayPaybill = if (selectedSavedMethod?.channelTypeEnum() == PaymentChannelType.MPESA_PAYBILL) {
+        selectedSavedMethod.paybillNumber
+    } else {
+        unit?.mpesaPaybill
+    }
+    val displayTill = if (selectedSavedMethod?.channelTypeEnum() == PaymentChannelType.MPESA_TILL) {
+        selectedSavedMethod.tillNumber
+    } else {
+        unit?.mpesaTill
+    }
+    val displayAccountRef = if (selectedSavedMethod?.channelTypeEnum() == PaymentChannelType.MPESA_PAYBILL &&
+        !selectedSavedMethod.accountReference.isNullOrBlank()
+    ) {
+        selectedSavedMethod.accountReference
+    } else {
+        MpesaSmsParser.buildMpesaAccountReference(
+            prefix = unit?.mpesaAccountPrefix,
+            unitNumber = lease.unitNumber
+        )
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -940,6 +1464,50 @@ fun TenantPaymentSubmissionDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.verticalScroll(rememberScrollState())
             ) {
+                if (savedMethods.isNotEmpty() || onOpenPaymentMethodSelector != null) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Saved Kenya Channels", style = MaterialTheme.typography.labelMedium)
+                            if (onOpenPaymentMethodSelector != null) {
+                                TextButton(
+                                    onClick = onOpenPaymentMethodSelector,
+                                    modifier = Modifier.heightIn(min = 48.dp).testTag("dialog_manage_payment_methods_button")
+                                ) {
+                                    Text("Select / Add")
+                                }
+                            }
+                        }
+                        if (savedMethods.isNotEmpty()) {
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                savedMethods.take(5).forEach { saved ->
+                                    FilterChip(
+                                        selected = selectedSavedMethod?.id == saved.id,
+                                        onClick = {
+                                            onSelectSavedMethod(saved.id)
+                                            method = saved.channelTypeEnum().baseMethod
+                                            if (saved.channelTypeEnum() == PaymentChannelType.MPESA_STK) {
+                                                mode = 1
+                                                if (!saved.phoneNumber.isNullOrBlank()) {
+                                                    mpesaPhone = saved.phoneNumber
+                                                }
+                                            } else {
+                                                mode = 0
+                                            }
+                                            err = null
+                                        },
+                                        label = { Text(saved.label) },
+                                        modifier = Modifier.heightIn(min = 48.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     FilterChip(
                         selected = mode == 0,
@@ -955,14 +1523,11 @@ fun TenantPaymentSubmissionDialog(
                     )
                 }
 
-                if (unit?.mpesaPaybill != null || unit?.mpesaTill != null) {
+                if (!displayPaybill.isNullOrBlank() || !displayTill.isNullOrBlank()) {
                     MpesaInstructionsCard(
-                        paybill = unit.mpesaPaybill,
-                        till = unit.mpesaTill,
-                        accountReference = MpesaSmsParser.buildMpesaAccountReference(
-                            prefix = unit.mpesaAccountPrefix,
-                            unitNumber = lease.unitNumber
-                        )
+                        paybill = displayPaybill,
+                        till = displayTill,
+                        accountReference = displayAccountRef
                     )
                 }
 
@@ -1092,7 +1657,16 @@ fun TenantPaymentSubmissionDialog(
                         if (!CurrencyUtils.isValidMpesaReference(refCode)) {
                             err = "Enter a 4–30 character alphanumeric/hyphen transaction code"
                         } else {
-                            onSubmit(targetInvoice?.id, refCode.trim().uppercase(), amount, method, false)
+                            onSubmit(
+                                targetInvoice?.id,
+                                refCode.trim().uppercase(),
+                                amount,
+                                method,
+                                false,
+                                selectedSavedMethod?.id,
+                                selectedSavedMethod?.channelTypeEnum(),
+                                selectedSavedMethod?.primaryShortcodeOrIdentifier()
+                            )
                         }
                     } else {
                         if (!CurrencyUtils.isValidKenyanPhone(mpesaPhone)) {
@@ -1100,7 +1674,16 @@ fun TenantPaymentSubmissionDialog(
                         } else {
                             mpesaPhone = CurrencyUtils.normalizeKenyanPhone(mpesaPhone)
                             val simCode = "SIM-${UUID.randomUUID().toString().take(8).uppercase()}"
-                            onSubmit(targetInvoice?.id, simCode, amount, PaymentMethod.MPESA, true)
+                            onSubmit(
+                                targetInvoice?.id,
+                                simCode,
+                                amount,
+                                PaymentMethod.MPESA,
+                                true,
+                                selectedSavedMethod?.id,
+                                selectedSavedMethod?.channelTypeEnum() ?: PaymentChannelType.MPESA_STK,
+                                selectedSavedMethod?.primaryShortcodeOrIdentifier() ?: mpesaPhone
+                            )
                         }
                     }
                 },

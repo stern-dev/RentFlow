@@ -315,6 +315,11 @@ class PropertyRepository(
         mpesaPaybill: String? = null,
         mpesaTill: String? = null,
         mpesaAccountPrefix: String? = null,
+        latitude: Double? = null,
+        longitude: Double? = null,
+        formattedAddress: String? = null,
+        placeId: String? = null,
+        locationVerified: Boolean = false,
         actorName: String = "Owner"
     ): Result<String> {
         val docRef = db.collection("properties").document()
@@ -347,7 +352,12 @@ class PropertyRepository(
                 landlordVerified = orgVerified,
                 mpesaPaybill = mpesaPaybill?.trim()?.take(20)?.takeIf { it.isNotBlank() } ?: org?.mpesaPaybill,
                 mpesaTill = mpesaTill?.trim()?.take(20)?.takeIf { it.isNotBlank() } ?: org?.mpesaTill,
-                mpesaAccountPrefix = mpesaAccountPrefix?.trim()?.take(24)?.takeIf { it.isNotBlank() }
+                mpesaAccountPrefix = mpesaAccountPrefix?.trim()?.take(24)?.takeIf { it.isNotBlank() },
+                latitude = latitude,
+                longitude = longitude,
+                formattedAddress = formattedAddress,
+                placeId = placeId,
+                locationVerified = locationVerified && latitude != null && longitude != null
             )
             val validated = PropertyUnitSchemas.propertyCreateSchema.parseOrThrow(candidate)
             docRef.set(validated.toCreateMap()).await()
@@ -386,6 +396,11 @@ class PropertyRepository(
         mpesaPaybill: String? = null,
         mpesaTill: String? = null,
         mpesaAccountPrefix: String? = null,
+        latitude: Double? = null,
+        longitude: Double? = null,
+        formattedAddress: String? = null,
+        placeId: String? = null,
+        locationVerified: Boolean = false,
         actorName: String = "Owner"
     ): Result<Unit> {
         val cleanId = propertyId.trim()
@@ -406,7 +421,12 @@ class PropertyRepository(
                     electricityMeterNumber = electricityMeterNumber,
                     notes = notes,
                     imageRefs = imageRefs,
-                    archived = archived
+                    archived = archived,
+                    latitude = latitude,
+                    longitude = longitude,
+                    formattedAddress = formattedAddress,
+                    placeId = placeId,
+                    locationVerified = locationVerified
                 )
             )
             val existingSnap = db.collection("properties").document(validated.propertyId).get().await()
@@ -432,6 +452,7 @@ class PropertyRepository(
                 "description" to validated.description,
                 "imageRefs" to validated.imageRefs,
                 "archived" to validated.archived,
+                "locationVerified" to validated.locationVerified,
                 "updatedAt" to FieldValue.serverTimestamp()
             )
             updates["county"] = validated.county.takeIf { it.isNotBlank() } ?: FieldValue.delete()
@@ -441,10 +462,14 @@ class PropertyRepository(
             updates["mpesaPaybill"] = cleanPaybill ?: FieldValue.delete()
             updates["mpesaTill"] = cleanTill ?: FieldValue.delete()
             updates["mpesaAccountPrefix"] = cleanPrefix ?: FieldValue.delete()
+            updates["latitude"] = validated.latitude ?: FieldValue.delete()
+            updates["longitude"] = validated.longitude ?: FieldValue.delete()
+            updates["formattedAddress"] = validated.formattedAddress ?: FieldValue.delete()
+            updates["placeId"] = validated.placeId ?: FieldValue.delete()
 
             db.collection("properties").document(validated.propertyId).update(updates).await()
 
-            // Sync M-Pesa payment metadata down to units in this property
+            // Sync M-Pesa & building location metadata down to units in this property
             val childUnits = db.collection("units")
                 .whereEqualTo("propertyId", validated.propertyId)
                 .whereArrayContains("authorizedUids", uid)
@@ -458,6 +483,10 @@ class PropertyRepository(
                     "mpesaPaybill" to (cleanPaybill ?: FieldValue.delete()),
                     "mpesaTill" to (cleanTill ?: FieldValue.delete()),
                     "mpesaAccountPrefix" to (cleanPrefix ?: FieldValue.delete()),
+                    "latitude" to (validated.latitude ?: FieldValue.delete()),
+                    "longitude" to (validated.longitude ?: FieldValue.delete()),
+                    "formattedAddress" to (validated.formattedAddress ?: FieldValue.delete()),
+                    "locationVerified" to validated.locationVerified,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
                 val batch = db.batch()
@@ -641,7 +670,15 @@ class PropertyRepository(
                 landlordVerified = property.landlordVerified,
                 mpesaPaybill = property.mpesaPaybill,
                 mpesaTill = property.mpesaTill,
-                mpesaAccountPrefix = property.mpesaAccountPrefix
+                mpesaAccountPrefix = property.mpesaAccountPrefix,
+                latitude = property.latitude,
+                longitude = property.longitude,
+                formattedAddress = property.formattedAddress ?: listOf(
+                    property.addressLine,
+                    property.neighborhood,
+                    property.city
+                ).map { it.trim() }.filter { it.isNotBlank() }.distinct().joinToString(", ").take(200),
+                locationVerified = property.locationVerified && property.latitude != null && property.longitude != null
             )
             val validated = PropertyUnitSchemas.unitCreateSchema.parseOrThrow(candidate)
 

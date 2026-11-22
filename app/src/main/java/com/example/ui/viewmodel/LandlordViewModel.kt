@@ -6,8 +6,15 @@ import com.example.data.ai.AiAssistantRepository
 import com.example.data.ai.AiTaskState
 import com.example.data.ai.MaintenanceTriageSuggestion
 import com.example.data.repository.FinanceRepository
+import com.example.data.repository.HandoverRepository
 import com.example.data.repository.OperationsRepository
 import com.example.data.repository.PropertyRepository
+import com.example.domain.model.ChecklistItem
+import com.example.domain.model.DepositDeductionItem
+import com.example.domain.model.DepositSettlement
+import com.example.domain.model.DepositSettlementStatus
+import com.example.domain.model.MoveInChecklist
+import com.example.domain.model.RefundMethod
 import com.example.domain.finance.FinancialEngine
 import com.example.domain.finance.MonthlyCashFlowPoint
 import com.example.domain.finance.PortfolioSummary
@@ -20,6 +27,7 @@ import com.example.domain.model.Lease
 import com.example.domain.model.MaintenanceRequest
 import com.example.domain.model.MaintenanceStatus
 import com.example.domain.model.Payment
+import com.example.domain.model.PaymentChannelType
 import com.example.domain.model.PaymentMethod
 import com.example.domain.model.Property
 import com.example.domain.model.PropertyCategory
@@ -59,7 +67,8 @@ class LandlordViewModel(
     private val financeRepo: FinanceRepository,
     private val opsRepo: OperationsRepository,
     private val currentUserId: String,
-    private val aiRepo: AiAssistantRepository = AiAssistantRepository()
+    private val aiRepo: AiAssistantRepository = AiAssistantRepository(),
+    private val handoverRepo: HandoverRepository? = null
 ) : ViewModel() {
 
     private val _activeOrgId = MutableStateFlow<String?>(null)
@@ -163,6 +172,14 @@ class LandlordViewModel(
         .asUiState("LandlordVM", "Failed to load announcements")
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
+    val moveInChecklists: StateFlow<UiState<List<MoveInChecklist>>> = (handoverRepo?.observeChecklistsForLandlord(currentUserId) ?: flowOf(emptyList()))
+        .asUiState("LandlordVM", "Failed to load move-in checklists")
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
+
+    val depositSettlements: StateFlow<UiState<List<DepositSettlement>>> = (handoverRepo?.observeSettlementsForLandlord(currentUserId) ?: flowOf(emptyList()))
+        .asUiState("LandlordVM", "Failed to load deposit settlements")
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
+
     val portfolioSummary: StateFlow<PortfolioSummary> = combine(
         listOf(properties, units, leases, invoices, payments, expenses, maintenanceRequests)
     ) { states ->
@@ -215,6 +232,11 @@ class LandlordViewModel(
         mpesaPaybill: String? = null,
         mpesaTill: String? = null,
         mpesaAccountPrefix: String? = null,
+        latitude: Double? = null,
+        longitude: Double? = null,
+        formattedAddress: String? = null,
+        placeId: String? = null,
+        locationVerified: Boolean = false,
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
@@ -239,7 +261,12 @@ class LandlordViewModel(
                 imageRefs = imageRefs,
                 mpesaPaybill = mpesaPaybill,
                 mpesaTill = mpesaTill,
-                mpesaAccountPrefix = mpesaAccountPrefix
+                mpesaAccountPrefix = mpesaAccountPrefix,
+                latitude = latitude,
+                longitude = longitude,
+                formattedAddress = formattedAddress,
+                placeId = placeId,
+                locationVerified = locationVerified
             )
             _busy.value = false
             res.fold(
@@ -268,6 +295,11 @@ class LandlordViewModel(
         mpesaPaybill: String? = property.mpesaPaybill,
         mpesaTill: String? = property.mpesaTill,
         mpesaAccountPrefix: String? = property.mpesaAccountPrefix,
+        latitude: Double? = property.latitude,
+        longitude: Double? = property.longitude,
+        formattedAddress: String? = property.formattedAddress,
+        placeId: String? = property.placeId,
+        locationVerified: Boolean = property.locationVerified,
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
@@ -288,7 +320,12 @@ class LandlordViewModel(
                 archived = property.archived,
                 mpesaPaybill = mpesaPaybill,
                 mpesaTill = mpesaTill,
-                mpesaAccountPrefix = mpesaAccountPrefix
+                mpesaAccountPrefix = mpesaAccountPrefix,
+                latitude = latitude,
+                longitude = longitude,
+                formattedAddress = formattedAddress,
+                placeId = placeId,
+                locationVerified = locationVerified
             )
             _busy.value = false
             res.fold(
@@ -320,7 +357,12 @@ class LandlordViewModel(
                 archived = !property.archived,
                 mpesaPaybill = property.mpesaPaybill,
                 mpesaTill = property.mpesaTill,
-                mpesaAccountPrefix = property.mpesaAccountPrefix
+                mpesaAccountPrefix = property.mpesaAccountPrefix,
+                latitude = property.latitude,
+                longitude = property.longitude,
+                formattedAddress = property.formattedAddress,
+                placeId = property.placeId,
+                locationVerified = property.locationVerified
             )
             _busy.value = false
             _feedback.value = res.fold(
@@ -515,6 +557,117 @@ class LandlordViewModel(
         }
     }
 
+    fun saveMoveInChecklist(
+        lease: Lease,
+        existingChecklist: MoveInChecklist?,
+        inspectionDateEpochMs: Long,
+        waterMeterReading: String?,
+        electricityMeterReading: String?,
+        keysHandedOverCount: Long,
+        items: List<ChecklistItem>,
+        imageRefs: List<String>,
+        landlordNotes: String?,
+        submitForTenantSignOff: Boolean,
+        actorName: String,
+        onSuccess: () -> Unit
+    ) {
+        val repo = handoverRepo ?: run {
+            _feedback.value = "Checklist repository unavailable"
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            val res = repo.saveMoveInChecklist(
+                lease = lease,
+                existingChecklist = existingChecklist,
+                inspectionDateEpochMs = inspectionDateEpochMs,
+                waterMeterReading = waterMeterReading,
+                electricityMeterReading = electricityMeterReading,
+                keysHandedOverCount = keysHandedOverCount,
+                items = items,
+                imageRefs = imageRefs,
+                landlordNotes = landlordNotes,
+                submitForTenantSignOff = submitForTenantSignOff,
+                actorName = actorName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = if (submitForTenantSignOff) {
+                        "Move-in checklist sent to ${lease.tenantName} for sign-off"
+                    } else {
+                        "Move-in checklist draft saved"
+                    }
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to save move-in checklist"
+                }
+            )
+        }
+    }
+
+    fun saveDepositSettlement(
+        lease: Lease,
+        existingSettlement: DepositSettlement?,
+        depositHeldCents: Long,
+        arrearsIncludedCents: Long,
+        creditAppliedCents: Long,
+        deductions: List<DepositDeductionItem>,
+        moveOutDateEpochMs: Long,
+        waterMeterFinal: String?,
+        electricityMeterFinal: String?,
+        keysReturnedCount: Long,
+        imageRefs: List<String>,
+        landlordNotes: String?,
+        targetStatus: DepositSettlementStatus,
+        refundMethod: RefundMethod,
+        refundReferenceCode: String?,
+        actorName: String,
+        onSuccess: () -> Unit
+    ) {
+        val repo = handoverRepo ?: run {
+            _feedback.value = "Deposit settlement repository unavailable"
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            val res = repo.saveDepositSettlement(
+                lease = lease,
+                existingSettlement = existingSettlement,
+                depositHeldCents = depositHeldCents,
+                arrearsIncludedCents = arrearsIncludedCents,
+                creditAppliedCents = creditAppliedCents,
+                deductions = deductions,
+                moveOutDateEpochMs = moveOutDateEpochMs,
+                waterMeterFinal = waterMeterFinal,
+                electricityMeterFinal = electricityMeterFinal,
+                keysReturnedCount = keysReturnedCount,
+                imageRefs = imageRefs,
+                landlordNotes = landlordNotes,
+                targetStatus = targetStatus,
+                refundMethod = refundMethod,
+                refundReferenceCode = refundReferenceCode,
+                actorName = actorName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = when (targetStatus) {
+                        DepositSettlementStatus.DRAFT -> "Deposit settlement draft saved"
+                        DepositSettlementStatus.ISSUED -> "Deposit settlement issued to ${lease.tenantName}"
+                        DepositSettlementStatus.SETTLED -> "Deposit settlement finalized"
+                        else -> "Deposit settlement updated"
+                    }
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to save deposit settlement"
+                }
+            )
+        }
+    }
+
     fun generateMonthlyInvoices(
         billingPeriod: String,
         extraChargesCents: Long,
@@ -566,6 +719,9 @@ class LandlordViewModel(
         method: PaymentMethod,
         verifyImmediately: Boolean,
         actorName: String,
+        paymentMethodId: String? = null,
+        paymentChannelType: PaymentChannelType? = null,
+        paymentShortcode: String? = null,
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
@@ -576,7 +732,10 @@ class LandlordViewModel(
                 referenceCode = referenceCode,
                 amountCents = amountCents,
                 method = method,
-                simulatedCheckout = false
+                simulatedCheckout = false,
+                paymentMethodId = paymentMethodId,
+                paymentChannelType = paymentChannelType,
+                paymentShortcode = paymentShortcode
             )
             if (subRes.isSuccess && verifyImmediately) {
                 val payId = subRes.getOrThrow()
@@ -597,6 +756,9 @@ class LandlordViewModel(
                     tenantName = lease.tenantName,
                     amountCents = amountCents,
                     method = method.name,
+                    paymentMethodId = paymentMethodId,
+                    paymentChannelType = paymentChannelType?.name,
+                    paymentShortcode = paymentShortcode,
                     simulatedCheckout = false,
                     paymentDateEpochMs = System.currentTimeMillis(),
                     status = com.example.domain.model.PaymentStatus.PENDING_VERIFICATION.name,

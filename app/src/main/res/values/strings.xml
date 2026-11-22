@@ -5,5 +5,9 @@
     <string name="fcm_general_channel_id" translatable="false">rentflow_general</string>
     <string name="fcm_general_channel_name">RentFlow Alerts</string>
     <string name="fcm_rent_channel_id" translatable="false">rentflow_rent</string>
-    <string name="fcm_rent_channel_name">Rent Due &amp; Overdue Reminders</string>
+    <string name="fcm_rent_channel_name">Rent Invoices &amp; Payments</string>
+    <string name="mpesa_listener_service_label">RentFlow M-Pesa Receipt Detector</string>
+    <string name="location_exact_pin_label">Exact Map Pin</string>
+    <string name="location_approximate_label">Approximate City Center</string>
+    <string name="directions_in_google_maps">Directions in Google Maps</string>
 </resources>

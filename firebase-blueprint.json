@@ -88,6 +88,11 @@
         "mpesaTill": { "type": "string" },
         "mpesaAccountPrefix": { "type": "string" },
         "landlordVerified": { "type": "boolean" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "formattedAddress": { "type": "string" },
+        "placeId": { "type": "string" },
+        "locationVerified": { "type": "boolean" },
         "notes": { "type": "string" },
         "imageRefs": { "type": "array" },
         "archived": { "type": "boolean" },
@@ -125,6 +130,10 @@
         "mpesaPaybill": { "type": "string" },
         "mpesaTill": { "type": "string" },
         "mpesaAccountPrefix": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "formattedAddress": { "type": "string" },
+        "locationVerified": { "type": "boolean" },
         "currentTenantUid": { "type": "string" },
         "currentLeaseId": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -243,6 +252,9 @@
         "tenantName": { "type": "string" },
         "amountCents": { "type": "integer" },
         "method": { "type": "string", "enum": ["MPESA", "BANK_TRANSFER", "CASH"] },
+        "paymentMethodId": { "type": "string" },
+        "paymentChannelType": { "type": "string", "enum": ["MPESA_PAYBILL", "MPESA_TILL", "MPESA_STK", "BANK_TRANSFER", "CASH"] },
+        "paymentShortcode": { "type": "string" },
         "simulatedCheckout": { "type": "boolean" },
         "paymentDateEpochMs": { "type": "integer" },
         "status": { "type": "string", "enum": ["PENDING_VERIFICATION", "VERIFIED", "REJECTED", "REVERSED"] },
@@ -252,6 +264,8 @@
         "reversalReason": { "type": "string" },
         "allocationsSummary": { "type": "string" },
         "receiptNumber": { "type": "string" },
+        "verificationSource": { "type": "string", "enum": ["MANUAL", "MPESA_SMS_MATCH"] },
+        "matchedReceiptId": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -425,6 +439,7 @@
         "token": { "type": "string" },
         "platform": { "type": "string", "enum": ["ANDROID"] },
         "notifyMaintenance": { "type": "boolean" },
+        "notifyRentDue": { "type": "boolean" },
         "activeRole": { "type": "string", "enum": ["LANDLORD", "PROPERTY_MANAGER", "TENANT", "MAINTENANCE_STAFF", "ADMIN"] },
         "appVersion": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
@@ -446,6 +461,127 @@
         "savedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["userId", "unitId", "propertyId", "propertyName", "unitNumber", "rentCents", "savedAt"]
+    },
+    "SavedPaymentMethod": {
+      "title": "SavedPaymentMethod",
+      "description": "Cloud-synced Kenyan rent payment or collection channel saved by a user with Paybill, Till, STK Phone, Bank, or Cash details.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "label": { "type": "string" },
+        "channelType": { "type": "string", "enum": ["MPESA_PAYBILL", "MPESA_TILL", "MPESA_STK", "BANK_TRANSFER", "CASH"] },
+        "roleScope": { "type": "string", "enum": ["ALL", "TENANT", "LANDLORD"] },
+        "paybillNumber": { "type": "string" },
+        "accountReference": { "type": "string" },
+        "tillNumber": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "bankName": { "type": "string" },
+        "bankAccountNumber": { "type": "string" },
+        "defaultMethod": { "type": "boolean" },
+        "smsVerified": { "type": "boolean" },
+        "smsSampleRef": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "label", "channelType", "roleScope", "defaultMethod", "smsVerified", "createdAt", "updatedAt"]
+    },
+    "MpesaReceipt": {
+      "title": "MpesaReceipt",
+      "description": "Parsed Safaricom M-Pesa confirmation receipt captured via notification listener, share intent, or manual SMS paste for rent reconciliation and payment auto-fill.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "transactionCode": { "type": "string" },
+        "amountCents": { "type": "integer" },
+        "direction": { "type": "string", "enum": ["INCOMING_RECEIVED", "OUTGOING_SENT", "UNKNOWN"] },
+        "counterpartyName": { "type": "string" },
+        "counterpartyPhone": { "type": "string" },
+        "accountReference": { "type": "string" },
+        "shortcode": { "type": "string" },
+        "captureSource": { "type": "string", "enum": ["NOTIFICATION", "SHARE_INTENT", "MANUAL_PASTE"] },
+        "status": { "type": "string", "enum": ["STAGED", "RECONCILED", "DISMISSED"] },
+        "matchedPaymentId": { "type": "string" },
+        "matchedLeaseId": { "type": "string" },
+        "rawSnippet": { "type": "string" },
+        "transactionTimestampMs": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "transactionCode", "amountCents", "direction", "captureSource", "status", "rawSnippet", "transactionTimestampMs", "createdAt", "updatedAt"]
+    },
+    "MoveInChecklist": {
+      "title": "MoveInChecklist",
+      "description": "Room-by-room unit handover condition checklist created by landlord/manager and signed off or disputed by tenant.",
+      "type": "object",
+      "properties": {
+        "leaseId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "propertyId": { "type": "string" },
+        "propertyName": { "type": "string" },
+        "unitId": { "type": "string" },
+        "unitNumber": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "managerUids": { "type": "array" },
+        "authorizedUids": { "type": "array" },
+        "tenantUid": { "type": "string" },
+        "tenantName": { "type": "string" },
+        "status": { "type": "string", "enum": ["DRAFT", "PENDING_TENANT_REVIEW", "ACKNOWLEDGED", "DISPUTED"] },
+        "inspectionDateEpochMs": { "type": "integer" },
+        "waterMeterReading": { "type": "string" },
+        "electricityMeterReading": { "type": "string" },
+        "keysHandedOverCount": { "type": "integer" },
+        "items": { "type": "array" },
+        "imageRefs": { "type": "array" },
+        "landlordNotes": { "type": "string" },
+        "tenantResponseNote": { "type": "string" },
+        "acknowledgedAtEpochMs": { "type": "integer" },
+        "acknowledgedByUid": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["leaseId", "orgId", "propertyId", "propertyName", "unitId", "unitNumber", "ownerUid", "managerUids", "authorizedUids", "tenantUid", "tenantName", "status", "inspectionDateEpochMs", "keysHandedOverCount", "items", "imageRefs", "createdByUid", "createdAt", "updatedAt"]
+    },
+    "DepositSettlement": {
+      "title": "DepositSettlement",
+      "description": "Move-out inspection and itemized KES security deposit deduction and refund settlement ledger.",
+      "type": "object",
+      "properties": {
+        "leaseId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "propertyId": { "type": "string" },
+        "propertyName": { "type": "string" },
+        "unitId": { "type": "string" },
+        "unitNumber": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "managerUids": { "type": "array" },
+        "authorizedUids": { "type": "array" },
+        "tenantUid": { "type": "string" },
+        "tenantName": { "type": "string" },
+        "depositHeldCents": { "type": "integer" },
+        "arrearsIncludedCents": { "type": "integer" },
+        "creditAppliedCents": { "type": "integer" },
+        "deductions": { "type": "array" },
+        "deductionsTotalCents": { "type": "integer" },
+        "netRefundCents": { "type": "integer" },
+        "balanceOwedCents": { "type": "integer" },
+        "moveOutDateEpochMs": { "type": "integer" },
+        "waterMeterFinal": { "type": "string" },
+        "electricityMeterFinal": { "type": "string" },
+        "keysReturnedCount": { "type": "integer" },
+        "imageRefs": { "type": "array" },
+        "status": { "type": "string", "enum": ["DRAFT", "ISSUED", "DISPUTED", "APPROVED", "SETTLED"] },
+        "landlordNotes": { "type": "string" },
+        "tenantResponseNote": { "type": "string" },
+        "refundMethod": { "type": "string", "enum": ["MPESA", "BANK_TRANSFER", "CASH", "NONE"] },
+        "refundReferenceCode": { "type": "string" },
+        "settledAtEpochMs": { "type": "integer" },
+        "settledByUid": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["leaseId", "orgId", "propertyId", "propertyName", "unitId", "unitNumber", "ownerUid", "managerUids", "authorizedUids", "tenantUid", "tenantName", "depositHeldCents", "arrearsIncludedCents", "creditAppliedCents", "deductions", "deductionsTotalCents", "netRefundCents", "balanceOwedCents", "moveOutDateEpochMs", "keysReturnedCount", "imageRefs", "status", "refundMethod", "createdByUid", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -460,6 +596,14 @@
     "/users/{userId}/saved_units/{unitId}": {
       "schema": { "$ref": "#/entities/SavedUnit" },
       "description": "Bookmarked rental units saved by the user for comparison."
+    },
+    "/users/{userId}/payment_methods/{methodId}": {
+      "schema": { "$ref": "#/entities/SavedPaymentMethod" },
+      "description": "Saved Kenya M-Pesa Paybill, Till, STK Phone, Bank, and Cash payment channels owned by the user."
+    },
+    "/users/{userId}/mpesa_receipts/{receiptId}": {
+      "schema": { "$ref": "#/entities/MpesaReceipt" },
+      "description": "Staged and reconciled M-Pesa confirmation receipts captured for the authenticated user."
     },
     "/organizations/{orgId}": {
       "schema": { "$ref": "#/entities/Organization" },
@@ -484,6 +628,14 @@
     "/leases/{leaseId}": {
       "schema": { "$ref": "#/entities/Lease" },
       "description": "Active and historical tenancy agreements."
+    },
+    "/move_in_checklists/{checklistId}": {
+      "schema": { "$ref": "#/entities/MoveInChecklist" },
+      "description": "Move-in unit condition inspection checklists linked to tenancy leases."
+    },
+    "/deposit_settlements/{settlementId}": {
+      "schema": { "$ref": "#/entities/DepositSettlement" },
+      "description": "Move-out inspections and itemized security deposit settlement ledgers."
     },
     "/invoices/{invoiceId}": {
       "schema": { "$ref": "#/entities/Invoice" },

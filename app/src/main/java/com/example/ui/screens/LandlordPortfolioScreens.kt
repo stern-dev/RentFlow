@@ -36,7 +36,9 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.EditLocationAlt
 import androidx.compose.material.icons.filled.ElectricBolt
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MeetingRoom
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -87,6 +89,7 @@ import coil.compose.AsyncImage
 import com.example.data.ai.AiTaskState
 import com.example.domain.finance.CurrencyUtils
 import com.example.domain.finance.ReportExporter
+import com.example.domain.location.BuildingLocationResolver
 import com.example.domain.model.ApplicationStatus
 import com.example.domain.model.InviteStatus
 import com.example.domain.model.KenyaCounties
@@ -105,9 +108,20 @@ import com.example.domain.model.UserRole
 import com.example.domain.security.PermissionPolicy
 import com.example.domain.validation.PropertyUnitSchemas
 import com.example.domain.validation.ValidationResult
+import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.Checklist
+import com.example.data.notifications.NotificationHelper
+import com.example.data.notifications.PushDeepLink
+import com.example.domain.model.DepositSettlement
+import com.example.domain.model.DepositSettlementStatus
+import com.example.domain.model.MoveInChecklist
+import com.example.domain.model.MoveInChecklistStatus
+import com.example.ui.components.BuildingLocationPickerDialog
 import com.example.ui.components.CriticalActionConfirmationDialog
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.ErrorBannerCard
+import com.example.ui.components.LandlordDepositSettlementDialog
+import com.example.ui.components.LandlordMoveInChecklistDialog
 import com.example.ui.components.LoadingStateBox
 import com.example.ui.components.PillTone
 import com.example.ui.components.SectionHeader
@@ -116,6 +130,7 @@ import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusInfo
 import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.StatusWarning
+import com.example.ui.theme.StatusWarningBg
 import com.example.ui.theme.TabularMoneyStyle
 import com.example.ui.viewmodel.LandlordViewModel
 import com.example.ui.viewmodel.UiState
@@ -135,7 +150,9 @@ fun LandlordPortfolioScreen(
     onCreateRoleInvite: (Organization, String, UserRole, List<String>, () -> Unit) -> Unit = { _, _, _, _, _ -> },
     onRevokeRoleInvite: (RoleInvite) -> Unit = {},
     isRecentlyAuthenticated: () -> Boolean = { true },
-    onReauthenticate: suspend (Context) -> Result<Unit> = { Result.success(Unit) }
+    onReauthenticate: suspend (Context) -> Result<Unit> = { Result.success(Unit) },
+    deepLinkTarget: PushDeepLink? = null,
+    onConsumeDeepLinkTarget: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val propsState by viewModel.properties.collectAsStateWithLifecycle()
@@ -145,6 +162,9 @@ fun LandlordPortfolioScreen(
     val aiUnitDraftState by viewModel.aiUnitDraftState.collectAsStateWithLifecycle()
     val appsState by viewModel.applications.collectAsStateWithLifecycle()
     val leasesState by viewModel.leases.collectAsStateWithLifecycle()
+    val invoicesState by viewModel.invoices.collectAsStateWithLifecycle()
+    val checklistsState by viewModel.moveInChecklists.collectAsStateWithLifecycle()
+    val settlementsState by viewModel.depositSettlements.collectAsStateWithLifecycle()
     val activeOrgId by viewModel.activeOrgId.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
 
@@ -152,6 +172,9 @@ fun LandlordPortfolioScreen(
     val units = (unitsState as? UiState.Success)?.data ?: emptyList()
     val applications = (appsState as? UiState.Success)?.data ?: emptyList()
     val leases = (leasesState as? UiState.Success)?.data ?: emptyList()
+    val invoices = (invoicesState as? UiState.Success)?.data ?: emptyList()
+    val checklists = (checklistsState as? UiState.Success)?.data ?: emptyList()
+    val settlements = (settlementsState as? UiState.Success)?.data ?: emptyList()
 
     val uid = currentUser.userId
     val activeRole = currentUser.activeRoleEnum()
@@ -166,12 +189,43 @@ fun LandlordPortfolioScreen(
     var showAddPropertyDialog by remember { mutableStateOf(openAddPropertyImmediately && canCreateProperty) }
     var showInviteTeamDialog by remember { mutableStateOf(false) }
     var propertyToEdit by remember { mutableStateOf<Property?>(null) }
+    var openLocationPickerOnEdit by remember { mutableStateOf(false) }
     var propertyForUnitDialog by remember { mutableStateOf<Property?>(null) }
     var propertyForManagerDialog by remember { mutableStateOf<Property?>(null) }
     var propertyToDelete by remember { mutableStateOf<Property?>(null) }
     var unitForLeaseDialog by remember { mutableStateOf<Pair<RentalUnit, RentalApplication?>?>(null) }
     var leaseToTerminate by remember { mutableStateOf<Lease?>(null) }
     var leaseToRenew by remember { mutableStateOf<Lease?>(null) }
+    var leaseForChecklistDialog by remember { mutableStateOf<Lease?>(null) }
+    var leaseForSettlementDialog by remember { mutableStateOf<Lease?>(null) }
+
+    LaunchedEffect(deepLinkTarget, leases, checklists, settlements, leasesState, checklistsState, settlementsState) {
+        val dl = deepLinkTarget ?: return@LaunchedEffect
+        if (dl.targetTab == NotificationHelper.TAB_LANDLORD_LEASES ||
+            dl.checklistId != null ||
+            dl.settlementId != null ||
+            dl.leaseId != null
+        ) {
+            selectedTab = NotificationHelper.TAB_LANDLORD_LEASES
+        }
+        val targetChecklist = dl.checklistId?.let { cid -> checklists.firstOrNull { it.id == cid } }
+        val targetSettlement = dl.settlementId?.let { sid -> settlements.firstOrNull { it.id == sid } }
+        val resolvedLeaseId = dl.leaseId ?: targetChecklist?.leaseId ?: targetSettlement?.leaseId
+        val matchedLease = resolvedLeaseId?.let { lid -> leases.firstOrNull { it.id == lid } }
+        if (matchedLease != null) {
+            if (dl.checklistId != null || targetChecklist != null) {
+                leaseForChecklistDialog = matchedLease
+                onConsumeDeepLinkTarget()
+            } else if (dl.settlementId != null || targetSettlement != null) {
+                leaseForSettlementDialog = matchedLease
+                onConsumeDeepLinkTarget()
+            } else if (leasesState is UiState.Success) {
+                onConsumeDeepLinkTarget()
+            }
+        } else if (leasesState is UiState.Success && checklistsState is UiState.Success && settlementsState is UiState.Success) {
+            onConsumeDeepLinkTarget()
+        }
+    }
 
     if (openAddPropertyImmediately) {
         onConsumeAddPropertyTrigger()
@@ -238,7 +292,14 @@ fun LandlordPortfolioScreen(
                     onAddProperty = {
                         if (organizations.isEmpty()) onCreateOrgRequest() else showAddPropertyDialog = true
                     },
-                    onEditProperty = { prop -> propertyToEdit = prop },
+                    onEditProperty = { prop ->
+                        openLocationPickerOnEdit = false
+                        propertyToEdit = prop
+                    },
+                    onConfirmLocationPin = { prop ->
+                        openLocationPickerOnEdit = true
+                        propertyToEdit = prop
+                    },
                     onAddUnit = { prop -> propertyForUnitDialog = prop },
                     onAssignManager = { prop -> propertyForManagerDialog = prop },
                     onToggleArchive = { prop -> viewModel.toggleArchiveProperty(prop) },
@@ -304,7 +365,11 @@ fun LandlordPortfolioScreen(
                 )
                 3 -> LeasesTab(
                     leasesState = leasesState,
+                    checklists = checklists,
+                    settlements = settlements,
                     canTerminateLease = { lease -> PermissionPolicy.canTerminateLease(uid, activeRole, lease) },
+                    canManageChecklist = { lease -> PermissionPolicy.canManageLeaseChecklist(uid, activeRole, lease) },
+                    canManageSettlement = { lease -> PermissionPolicy.canManageDepositSettlement(uid, activeRole, lease) },
                     onExportPdf = { lease ->
                         ReportExporter.exportPdfDocument(
                             context = context,
@@ -328,6 +393,8 @@ fun LandlordPortfolioScreen(
                             )
                         )
                     },
+                    onOpenChecklist = { lease -> leaseForChecklistDialog = lease },
+                    onOpenSettlement = { lease -> leaseForSettlementDialog = lease },
                     onRenew = { lease -> leaseToRenew = lease },
                     onTerminate = { lease -> leaseToTerminate = lease }
                 )
@@ -358,7 +425,7 @@ fun LandlordPortfolioScreen(
                 existingProperty = null,
                 isBusy = busy,
                 onDismiss = { showAddPropertyDialog = false },
-                onSave = { orgId, name, cat, city, county, hood, addr, desc, waterMeter, powerMeter, notes, imgs, paybill, till, prefix ->
+                onSave = { orgId, name, cat, city, county, hood, addr, desc, waterMeter, powerMeter, notes, imgs, paybill, till, prefix, lat, lng, fmtAddr, pid, locVerified ->
                     viewModel.setActiveOrgId(orgId)
                     viewModel.createProperty(
                         orgId = orgId,
@@ -375,7 +442,12 @@ fun LandlordPortfolioScreen(
                         imageRefs = imgs,
                         mpesaPaybill = paybill,
                         mpesaTill = till,
-                        mpesaAccountPrefix = prefix
+                        mpesaAccountPrefix = prefix,
+                        latitude = lat,
+                        longitude = lng,
+                        formattedAddress = fmtAddr,
+                        placeId = pid,
+                        locationVerified = locVerified
                     ) {
                         showAddPropertyDialog = false
                     }
@@ -390,9 +462,13 @@ fun LandlordPortfolioScreen(
             initialOrgId = prop.orgId,
             ownerUid = prop.ownerUid,
             existingProperty = prop,
+            openLocationPickerInitially = openLocationPickerOnEdit,
             isBusy = busy,
-            onDismiss = { propertyToEdit = null },
-            onSave = { _, name, cat, city, county, hood, addr, desc, waterMeter, powerMeter, notes, imgs, paybill, till, prefix ->
+            onDismiss = {
+                openLocationPickerOnEdit = false
+                propertyToEdit = null
+            },
+            onSave = { _, name, cat, city, county, hood, addr, desc, waterMeter, powerMeter, notes, imgs, paybill, till, prefix, lat, lng, fmtAddr, pid, locVerified ->
                 viewModel.updateProperty(
                     property = prop,
                     name = name,
@@ -408,8 +484,14 @@ fun LandlordPortfolioScreen(
                     imageRefs = imgs,
                     mpesaPaybill = paybill,
                     mpesaTill = till,
-                    mpesaAccountPrefix = prefix
+                    mpesaAccountPrefix = prefix,
+                    latitude = lat,
+                    longitude = lng,
+                    formattedAddress = fmtAddr,
+                    placeId = pid,
+                    locationVerified = locVerified
                 ) {
+                    openLocationPickerOnEdit = false
                     propertyToEdit = null
                 }
             }
@@ -517,6 +599,71 @@ fun LandlordPortfolioScreen(
             onConfirm = { reason ->
                 viewModel.terminateLease(lease, reason, currentUser.fullName)
                 leaseToTerminate = null
+                val existingSettle = settlements.firstOrNull { it.leaseId == lease.id }
+                if (existingSettle?.statusEnum() != DepositSettlementStatus.SETTLED &&
+                    PermissionPolicy.canManageDepositSettlement(uid, activeRole, lease)
+                ) {
+                    leaseForSettlementDialog = lease
+                }
+            }
+        )
+    }
+
+    leaseForChecklistDialog?.let { lease ->
+        val existingChecklist = checklists.firstOrNull { it.leaseId == lease.id }
+        LandlordMoveInChecklistDialog(
+            lease = lease,
+            existingChecklist = existingChecklist,
+            isBusy = busy,
+            onDismiss = { leaseForChecklistDialog = null },
+            onSave = { waterMeter, powerMeter, keysCount, items, imageRefs, landlordNotes, submitToTenant ->
+                viewModel.saveMoveInChecklist(
+                    lease = lease,
+                    existingChecklist = existingChecklist,
+                    inspectionDateEpochMs = existingChecklist?.inspectionDateEpochMs ?: System.currentTimeMillis(),
+                    waterMeterReading = waterMeter,
+                    electricityMeterReading = powerMeter,
+                    keysHandedOverCount = keysCount,
+                    items = items,
+                    imageRefs = imageRefs,
+                    landlordNotes = landlordNotes,
+                    submitForTenantSignOff = submitToTenant,
+                    actorName = currentUser.fullName,
+                    onSuccess = { leaseForChecklistDialog = null }
+                )
+            }
+        )
+    }
+
+    leaseForSettlementDialog?.let { lease ->
+        val existingSettlement = settlements.firstOrNull { it.leaseId == lease.id }
+        val leaseInvoices = remember(invoices, lease.id) { invoices.filter { it.leaseId == lease.id } }
+        LandlordDepositSettlementDialog(
+            lease = lease,
+            existingSettlement = existingSettlement,
+            leaseInvoices = leaseInvoices,
+            isBusy = busy,
+            onDismiss = { leaseForSettlementDialog = null },
+            onSave = { depositHeldCents, arrearsCents, creditCents, deductions, waterFinal, powerFinal, keysReturned, imageRefs, landlordNotes, targetStatus, refundMethod, refundRef ->
+                viewModel.saveDepositSettlement(
+                    lease = lease,
+                    existingSettlement = existingSettlement,
+                    depositHeldCents = depositHeldCents,
+                    arrearsIncludedCents = arrearsCents,
+                    creditAppliedCents = creditCents,
+                    deductions = deductions,
+                    moveOutDateEpochMs = existingSettlement?.moveOutDateEpochMs ?: System.currentTimeMillis(),
+                    waterMeterFinal = waterFinal,
+                    electricityMeterFinal = powerFinal,
+                    keysReturnedCount = keysReturned,
+                    imageRefs = imageRefs,
+                    landlordNotes = landlordNotes,
+                    targetStatus = targetStatus,
+                    refundMethod = refundMethod,
+                    refundReferenceCode = refundRef,
+                    actorName = currentUser.fullName,
+                    onSuccess = { leaseForSettlementDialog = null }
+                )
             }
         )
     }
@@ -542,6 +689,7 @@ private fun PropertiesTab(
     onRevokeInvite: (RoleInvite) -> Unit,
     onAddProperty: () -> Unit,
     onEditProperty: (Property) -> Unit,
+    onConfirmLocationPin: (Property) -> Unit,
     onAddUnit: (Property) -> Unit,
     onAssignManager: (Property) -> Unit,
     onToggleArchive: (Property) -> Unit,
@@ -767,6 +915,65 @@ private fun PropertiesTab(
                                     val allowAssignMgr = canAssignManager(prop)
                                     val allowCreateUnit = canCreateUnit(prop)
                                     val allowDelete = canDeleteProperty(prop)
+                                    val resolvedPropLocation = BuildingLocationResolver.resolve(prop)
+                                    if (resolvedPropLocation.isExactPin) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(
+                                                Icons.Filled.LocationOn,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.secondary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Text(
+                                                text = "Exact Map Pin • ${resolvedPropLocation.addressSummary}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.secondary,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                    } else {
+                                        androidx.compose.material3.Surface(
+                                            color = StatusWarningBg,
+                                            shape = MaterialTheme.shapes.small,
+                                            border = BorderStroke(1.dp, StatusWarning.copy(alpha = 0.35f)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("confirm_location_prompt_${prop.id}")
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = "Approximate Map Location (${prop.city})",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = StatusWarning
+                                                    )
+                                                    Text(
+                                                        text = "Set an exact GPS pin so renters get accurate Google Maps directions.",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                                if (allowManage) {
+                                                    TextButton(
+                                                        onClick = { onConfirmLocationPin(prop) },
+                                                        modifier = Modifier
+                                                            .heightIn(min = 48.dp)
+                                                            .testTag("confirm_location_button_${prop.id}")
+                                                    ) {
+                                                        Text("Confirm Pin")
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                     if (!allowManage) {
                                         Text(
                                             "Managed Access • Structure & rent pricing controlled by Owner",
@@ -1458,11 +1665,18 @@ private fun ApplicationsTab(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun LeasesTab(
     leasesState: UiState<List<Lease>>,
+    checklists: List<MoveInChecklist>,
+    settlements: List<DepositSettlement>,
     canTerminateLease: (Lease) -> Boolean,
+    canManageChecklist: (Lease) -> Boolean,
+    canManageSettlement: (Lease) -> Boolean,
     onExportPdf: (Lease) -> Unit,
+    onOpenChecklist: (Lease) -> Unit,
+    onOpenSettlement: (Lease) -> Unit,
     onRenew: (Lease) -> Unit,
     onTerminate: (Lease) -> Unit
 ) {
@@ -1485,6 +1699,8 @@ private fun LeasesTab(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(leases, key = { it.id }) { lease ->
+                        val checklist = checklists.firstOrNull { it.leaseId == lease.id }
+                        val settlement = settlements.firstOrNull { it.leaseId == lease.id }
                         val tone = when (lease.statusEnum()) {
                             LeaseStatus.ACTIVE, LeaseStatus.RENEWED -> PillTone.SUCCESS
                             LeaseStatus.EXPIRED -> PillTone.WARNING
@@ -1501,7 +1717,7 @@ private fun LeasesTab(
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text("${lease.tenantName} • ${lease.propertyName} (${lease.unitNumber})", style = MaterialTheme.typography.titleMedium)
                                         Text(
-                                            "${CurrencyUtils.formatKes(lease.rentCents)}/mo • Due Day ${lease.dueDayOfMonth}",
+                                            "${CurrencyUtils.formatKes(lease.rentCents)}/mo • Deposit ${CurrencyUtils.formatKes(lease.depositCents)} • Due Day ${lease.dueDayOfMonth}",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.secondary
                                         )
@@ -1512,6 +1728,33 @@ private fun LeasesTab(
                                         )
                                     }
                                     StatusPill(lease.statusEnum().label, tone)
+                                }
+                                if (checklist != null || settlement != null) {
+                                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        checklist?.let { cl ->
+                                            val clTone = when (cl.statusEnum()) {
+                                                MoveInChecklistStatus.ACKNOWLEDGED -> PillTone.SUCCESS
+                                                MoveInChecklistStatus.PENDING_TENANT_REVIEW -> PillTone.WARNING
+                                                MoveInChecklistStatus.DISPUTED -> PillTone.ERROR
+                                                MoveInChecklistStatus.DRAFT -> PillTone.INFO
+                                            }
+                                            StatusPill("Checklist: ${cl.statusEnum().label}", clTone)
+                                        }
+                                        settlement?.let { ds ->
+                                            val dsTone = when (ds.statusEnum()) {
+                                                DepositSettlementStatus.SETTLED, DepositSettlementStatus.APPROVED -> PillTone.SUCCESS
+                                                DepositSettlementStatus.ISSUED -> PillTone.WARNING
+                                                DepositSettlementStatus.DISPUTED -> PillTone.ERROR
+                                                DepositSettlementStatus.DRAFT -> PillTone.INFO
+                                            }
+                                            val amountTxt = if (ds.balanceOwedCents > 0L) {
+                                                "Owed ${CurrencyUtils.formatKes(ds.balanceOwedCents)}"
+                                            } else {
+                                                "Refund ${CurrencyUtils.formatKes(ds.netRefundCents)}"
+                                            }
+                                            StatusPill("Deposit: ${ds.statusEnum().label} • $amountTxt", dsTone)
+                                        }
+                                    }
                                 }
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     OutlinedButton(
@@ -1535,6 +1778,49 @@ private fun LeasesTab(
                                         }
                                     }
                                 }
+                                if (canManageChecklist(lease) || canManageSettlement(lease)) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                        if (canManageChecklist(lease)) {
+                                            OutlinedButton(
+                                                onClick = { onOpenChecklist(lease) },
+                                                modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("lease_checklist_button_${lease.id}")
+                                            ) {
+                                                Icon(Icons.Filled.Checklist, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(Modifier.width(4.dp))
+                                                Text(
+                                                    when (checklist?.statusEnum()) {
+                                                        MoveInChecklistStatus.DISPUTED -> "Resolve Checklist"
+                                                        MoveInChecklistStatus.ACKNOWLEDGED -> "Signed Checklist"
+                                                        MoveInChecklistStatus.PENDING_TENANT_REVIEW -> "Pending Sign-Off"
+                                                        MoveInChecklistStatus.DRAFT -> "Edit Checklist"
+                                                        null -> "Move-In Checklist"
+                                                    },
+                                                    maxLines = 1
+                                                )
+                                            }
+                                        }
+                                        if (canManageSettlement(lease)) {
+                                            OutlinedButton(
+                                                onClick = { onOpenSettlement(lease) },
+                                                modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("lease_settlement_button_${lease.id}")
+                                            ) {
+                                                Icon(Icons.Filled.AccountBalanceWallet, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(Modifier.width(4.dp))
+                                                Text(
+                                                    when (settlement?.statusEnum()) {
+                                                        DepositSettlementStatus.DISPUTED -> "Resolve Deposit"
+                                                        DepositSettlementStatus.APPROVED -> "Disburse Refund"
+                                                        DepositSettlementStatus.SETTLED -> "Settled Ledger"
+                                                        DepositSettlementStatus.ISSUED -> "Issued Deposit"
+                                                        DepositSettlementStatus.DRAFT -> "Edit Settlement"
+                                                        null -> "Settle Deposit"
+                                                    },
+                                                    maxLines = 1
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1546,11 +1832,12 @@ private fun LeasesTab(
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-private fun PropertyEditorDialog(
+internal fun PropertyEditorDialog(
     organizations: List<Organization>,
     initialOrgId: String,
     ownerUid: String,
     existingProperty: Property?,
+    openLocationPickerInitially: Boolean = false,
     isBusy: Boolean,
     onDismiss: () -> Unit,
     onSave: (
@@ -1568,7 +1855,12 @@ private fun PropertyEditorDialog(
         imageRefs: List<String>,
         mpesaPaybill: String?,
         mpesaTill: String?,
-        mpesaAccountPrefix: String?
+        mpesaAccountPrefix: String?,
+        latitude: Double?,
+        longitude: Double?,
+        formattedAddress: String?,
+        placeId: String?,
+        locationVerified: Boolean
     ) -> Unit
 ) {
     val isEditing = existingProperty != null
@@ -1581,6 +1873,12 @@ private fun PropertyEditorDialog(
     var countyExpanded by remember { mutableStateOf(false) }
     var neighborhood by remember(existingProperty?.id) { mutableStateOf(existingProperty?.neighborhood ?: "") }
     var address by remember(existingProperty?.id) { mutableStateOf(existingProperty?.addressLine ?: "") }
+    var latitude by remember(existingProperty?.id) { mutableStateOf(existingProperty?.latitude) }
+    var longitude by remember(existingProperty?.id) { mutableStateOf(existingProperty?.longitude) }
+    var formattedAddress by remember(existingProperty?.id) { mutableStateOf(existingProperty?.formattedAddress) }
+    var placeId by remember(existingProperty?.id) { mutableStateOf(existingProperty?.placeId) }
+    var locationVerified by remember(existingProperty?.id) { mutableStateOf(existingProperty?.locationVerified ?: false) }
+    var showLocationPicker by remember(existingProperty?.id) { mutableStateOf(openLocationPickerInitially) }
     var waterMeter by remember(existingProperty?.id) { mutableStateOf(existingProperty?.waterMeterNumber ?: "") }
     var powerMeter by remember(existingProperty?.id) { mutableStateOf(existingProperty?.electricityMeterNumber ?: "") }
     var mpesaPaybill by remember(existingProperty?.id) { mutableStateOf(existingProperty?.mpesaPaybill ?: "") }
@@ -1719,6 +2017,66 @@ private fun PropertyEditorDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("property_address_input")
                 )
+                Card(
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(12.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Google Maps Building Pin", style = MaterialTheme.typography.labelLarge)
+                            StatusPill(
+                                label = if (locationVerified && BuildingLocationResolver.hasValidCoordinates(latitude, longitude)) {
+                                    "Exact Map Pin"
+                                } else {
+                                    "Approximate"
+                                },
+                                tone = if (locationVerified && BuildingLocationResolver.hasValidCoordinates(latitude, longitude)) {
+                                    PillTone.SUCCESS
+                                } else {
+                                    PillTone.WARNING
+                                }
+                            )
+                        }
+                        if (BuildingLocationResolver.hasValidCoordinates(latitude, longitude)) {
+                            Text(
+                                text = formattedAddress ?: BuildingLocationResolver.formatCoordinates(latitude!!, longitude!!),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "GPS: ${BuildingLocationResolver.formatCoordinates(latitude!!, longitude!!)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                        } else {
+                            Text(
+                                text = "No exact GPS pin saved yet. Renters will see the $city center until you pin the building.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = { showLocationPicker = true },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("open_location_picker_button")
+                        ) {
+                            Icon(Icons.Filled.EditLocationAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(if (BuildingLocationResolver.hasValidCoordinates(latitude, longitude)) "Update Building Pin on Map" else "Set Building Pin on Map")
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = waterMeter,
                     onValueChange = { waterMeter = it; fieldErrors = fieldErrors - "waterMeterNumber" },
@@ -1805,7 +2163,12 @@ private fun PropertyEditorDialog(
                             electricityMeterNumber = powerMeter.takeIf { it.isNotBlank() },
                             notes = notes.takeIf { it.isNotBlank() },
                             imageRefs = imageUris.toList(),
-                            archived = existingProperty.archived
+                            archived = existingProperty.archived,
+                            latitude = latitude,
+                            longitude = longitude,
+                            formattedAddress = formattedAddress,
+                            placeId = placeId,
+                            locationVerified = locationVerified
                         )
                         when (val validation = PropertyUnitSchemas.propertyUpdateSchema.parse(input)) {
                             is ValidationResult.Invalid -> {
@@ -1831,7 +2194,12 @@ private fun PropertyEditorDialog(
                                     clean.imageRefs,
                                     mpesaPaybill.trim().takeIf { it.isNotBlank() },
                                     mpesaTill.trim().takeIf { it.isNotBlank() },
-                                    mpesaAccountPrefix.trim().takeIf { it.isNotBlank() }
+                                    mpesaAccountPrefix.trim().takeIf { it.isNotBlank() },
+                                    clean.latitude,
+                                    clean.longitude,
+                                    clean.formattedAddress,
+                                    clean.placeId,
+                                    clean.locationVerified
                                 )
                             }
                         }
@@ -1850,7 +2218,12 @@ private fun PropertyEditorDialog(
                             waterMeterNumber = waterMeter.takeIf { it.isNotBlank() },
                             electricityMeterNumber = powerMeter.takeIf { it.isNotBlank() },
                             notes = notes.takeIf { it.isNotBlank() },
-                            imageRefs = imageUris.toList()
+                            imageRefs = imageUris.toList(),
+                            latitude = latitude,
+                            longitude = longitude,
+                            formattedAddress = formattedAddress,
+                            placeId = placeId,
+                            locationVerified = locationVerified
                         )
                         when (val validation = PropertyUnitSchemas.propertyCreateSchema.parse(candidate)) {
                             is ValidationResult.Invalid -> {
@@ -1876,7 +2249,12 @@ private fun PropertyEditorDialog(
                                     clean.imageRefs,
                                     mpesaPaybill.trim().takeIf { it.isNotBlank() },
                                     mpesaTill.trim().takeIf { it.isNotBlank() },
-                                    mpesaAccountPrefix.trim().takeIf { it.isNotBlank() }
+                                    mpesaAccountPrefix.trim().takeIf { it.isNotBlank() },
+                                    clean.latitude,
+                                    clean.longitude,
+                                    clean.formattedAddress,
+                                    clean.placeId,
+                                    clean.locationVerified
                                 )
                             }
                         }
@@ -1888,6 +2266,45 @@ private fun PropertyEditorDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
+
+    if (showLocationPicker) {
+        BuildingLocationPickerDialog(
+            initialPropertyName = name,
+            initialCity = city,
+            initialCounty = county,
+            initialNeighborhood = neighborhood,
+            initialAddressLine = address,
+            initialLatitude = latitude,
+            initialLongitude = longitude,
+            initialFormattedAddress = formattedAddress,
+            initialPlaceId = placeId,
+            onDismiss = { showLocationPicker = false },
+            onConfirmLocation = { picked ->
+                latitude = picked.latitude
+                longitude = picked.longitude
+                formattedAddress = picked.formattedAddress
+                placeId = picked.placeId
+                locationVerified = true
+                if (!picked.city.isNullOrBlank()) {
+                    city = picked.city
+                    fieldErrors = fieldErrors - "city"
+                }
+                if (!picked.county.isNullOrBlank()) {
+                    county = picked.county
+                    fieldErrors = fieldErrors - "county"
+                }
+                if (!picked.neighborhood.isNullOrBlank() && neighborhood.isBlank()) {
+                    neighborhood = picked.neighborhood
+                    fieldErrors = fieldErrors - "neighborhood"
+                }
+                if (!picked.addressLine.isNullOrBlank() && address.isBlank()) {
+                    address = picked.addressLine
+                    fieldErrors = fieldErrors - "addressLine"
+                }
+                showLocationPicker = false
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)

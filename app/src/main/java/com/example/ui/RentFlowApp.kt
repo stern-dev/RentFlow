@@ -57,6 +57,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -70,8 +71,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.material.icons.filled.Fingerprint
@@ -79,17 +83,27 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.Surface
 import com.example.data.notifications.FcmTokenRepository
 import com.example.data.notifications.NotificationHelper
+import com.example.data.notifications.PushDeepLink
 import com.example.data.repository.FinanceRepository
+import com.example.data.repository.HandoverRepository
+import com.example.data.repository.MpesaCapturePreferencesRepository
+import com.example.data.repository.MpesaReceiptRepository
 import com.example.data.repository.OperationsRepository
+import com.example.data.repository.PaymentMethodRepository
 import com.example.data.repository.PropertyRepository
 import com.example.data.repository.SecurityPreferences
 import com.example.data.repository.ThemeMode
 import com.example.data.repository.UserOrgRepository
 import com.example.data.repository.UserRepository
 import com.example.data.security.BiometricAvailability
+import com.example.domain.finance.MpesaReceiptMatcher
+import com.example.domain.finance.MpesaSmsParser
 import com.example.domain.model.InviteStatus
+import com.example.domain.model.MpesaCaptureSource
+import com.example.domain.model.MpesaReceipt
 import com.example.domain.model.NotificationType
 import com.example.domain.model.Organization
+import com.example.domain.model.PaymentChannelType
 import com.example.domain.model.UserProfile
 import com.example.domain.model.UserRole
 import com.example.domain.security.PermissionPolicy
@@ -104,9 +118,12 @@ import com.example.ui.screens.LandlordDashboardScreen
 import com.example.ui.screens.LandlordFinanceScreen
 import com.example.ui.screens.LandlordOperationsScreen
 import com.example.ui.screens.LandlordPortfolioScreen
+import com.example.ui.screens.MpesaReconcileScreen
 import com.example.ui.screens.NotificationsScreen
+import com.example.ui.screens.PaymentMethodSelectionScreen
 import com.example.ui.screens.ProfileSettingsScreen
 import com.example.ui.screens.PropertyDiscoveryScreen
+import com.example.ui.screens.PropertyMpesaSuggestion
 import com.example.ui.screens.RoleOnboardingScreen
 import com.example.ui.screens.StaffMaintenanceQueueScreen
 import com.example.ui.screens.TenantDashboardScreen
@@ -117,7 +134,9 @@ import com.example.ui.viewmodel.AuthSessionState
 import com.example.ui.viewmodel.AuthViewModel
 import com.example.ui.viewmodel.DiscoveryViewModel
 import com.example.ui.viewmodel.LandlordViewModel
+import com.example.ui.viewmodel.MpesaReconcileViewModel
 import com.example.ui.viewmodel.OperationsViewModel
+import com.example.ui.viewmodel.PaymentMethodViewModel
 import com.example.ui.viewmodel.TenantViewModel
 import com.example.ui.viewmodel.UiState
 
@@ -131,8 +150,10 @@ private data class NavItem(
 fun RentFlowApp(
     currentTheme: ThemeMode,
     onThemeChange: (ThemeMode) -> Unit,
-    pendingPushRoute: String? = null,
-    onConsumePushRoute: () -> Unit = {},
+    pendingPushDeepLink: PushDeepLink? = null,
+    onConsumePushDeepLink: () -> Unit = {},
+    pendingSharedSmsText: String? = null,
+    onConsumeSharedSms: () -> Unit = {},
     securityPrefs: SecurityPreferences = SecurityPreferences(),
     biometricAvailability: BiometricAvailability = BiometricAvailability.AVAILABLE,
     isAppLocked: Boolean = false,
@@ -234,8 +255,10 @@ fun RentFlowApp(
                 userOrgRepo = userOrgRepo,
                 currentTheme = currentTheme,
                 onThemeChange = onThemeChange,
-                pendingPushRoute = pendingPushRoute,
-                onConsumePushRoute = onConsumePushRoute,
+                pendingPushDeepLink = pendingPushDeepLink,
+                onConsumePushDeepLink = onConsumePushDeepLink,
+                pendingSharedSmsText = pendingSharedSmsText,
+                onConsumeSharedSms = onConsumeSharedSms,
                 securityPrefs = securityPrefs,
                 biometricAvailability = biometricAvailability,
                 isAppLocked = isAppLocked,
@@ -259,8 +282,10 @@ private fun AuthenticatedRentFlowShell(
     userOrgRepo: UserOrgRepository,
     currentTheme: ThemeMode,
     onThemeChange: (ThemeMode) -> Unit,
-    pendingPushRoute: String?,
-    onConsumePushRoute: () -> Unit,
+    pendingPushDeepLink: PushDeepLink?,
+    onConsumePushDeepLink: () -> Unit,
+    pendingSharedSmsText: String?,
+    onConsumeSharedSms: () -> Unit,
     securityPrefs: SecurityPreferences,
     biometricAvailability: BiometricAvailability,
     isAppLocked: Boolean,
@@ -275,6 +300,10 @@ private fun AuthenticatedRentFlowShell(
     val propertyRepo = remember(context) { PropertyRepository(context) }
     val financeRepo = remember(context) { FinanceRepository(context) }
     val opsRepo = remember(context) { OperationsRepository(context) }
+    val handoverRepo = remember(context) { HandoverRepository(context) }
+    val paymentMethodRepo = remember(context) { PaymentMethodRepository(context) }
+    val mpesaReceiptRepo = remember(context) { MpesaReceiptRepository(context) }
+    val mpesaPrefsRepo = remember(context) { MpesaCapturePreferencesRepository(context) }
 
     val authViewModel: AuthViewModel = viewModel(
         key = "auth_$uid",
@@ -340,10 +369,16 @@ private fun AuthenticatedRentFlowShell(
                         propertyRepo = propertyRepo,
                         financeRepo = financeRepo,
                         opsRepo = opsRepo,
+                        handoverRepo = handoverRepo,
+                        paymentMethodRepo = paymentMethodRepo,
+                        mpesaReceiptRepo = mpesaReceiptRepo,
+                        mpesaPrefsRepo = mpesaPrefsRepo,
                         currentTheme = currentTheme,
                         onThemeChange = onThemeChange,
-                        pendingPushRoute = pendingPushRoute,
-                        onConsumePushRoute = onConsumePushRoute,
+                        pendingPushDeepLink = pendingPushDeepLink,
+                        onConsumePushDeepLink = onConsumePushDeepLink,
+                        pendingSharedSmsText = pendingSharedSmsText,
+                        onConsumeSharedSms = onConsumeSharedSms,
                         securityPrefs = securityPrefs,
                         biometricAvailability = biometricAvailability,
                         onToggleBiometricLock = onToggleBiometricLock,
@@ -375,10 +410,16 @@ private fun RoleRoutedWorkspace(
     propertyRepo: PropertyRepository,
     financeRepo: FinanceRepository,
     opsRepo: OperationsRepository,
+    handoverRepo: HandoverRepository,
+    paymentMethodRepo: PaymentMethodRepository,
+    mpesaReceiptRepo: MpesaReceiptRepository,
+    mpesaPrefsRepo: MpesaCapturePreferencesRepository,
     currentTheme: ThemeMode,
     onThemeChange: (ThemeMode) -> Unit,
-    pendingPushRoute: String?,
-    onConsumePushRoute: () -> Unit,
+    pendingPushDeepLink: PushDeepLink?,
+    onConsumePushDeepLink: () -> Unit,
+    pendingSharedSmsText: String?,
+    onConsumeSharedSms: () -> Unit,
     securityPrefs: SecurityPreferences,
     biometricAvailability: BiometricAvailability,
     onToggleBiometricLock: (Boolean) -> Unit,
@@ -396,7 +437,8 @@ private fun RoleRoutedWorkspace(
         key = "landlord_$uid",
         factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
-            override fun <T : ViewModel> create(modelClass: Class<T>): T = LandlordViewModel(propertyRepo, financeRepo, opsRepo, uid) as T
+            override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                LandlordViewModel(propertyRepo, financeRepo, opsRepo, uid, handoverRepo = handoverRepo) as T
         }
     )
     val resolvedOrgId = remember(profile.activeOrgId, organizations) {
@@ -417,7 +459,8 @@ private fun RoleRoutedWorkspace(
         key = "tenant_$uid",
         factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
-            override fun <T : ViewModel> create(modelClass: Class<T>): T = TenantViewModel(propertyRepo, financeRepo, opsRepo, uid) as T
+            override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                TenantViewModel(propertyRepo, financeRepo, opsRepo, uid, handoverRepo = handoverRepo) as T
         }
     )
     val opsVm: OperationsViewModel = viewModel(
@@ -432,6 +475,21 @@ private fun RoleRoutedWorkspace(
         factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T = AdminViewModel(userOrgRepo, uid, authViewModel.isBootstrappedAdmin) as T
+        }
+    )
+    val paymentMethodVm: PaymentMethodViewModel = viewModel(
+        key = "pm_$uid",
+        factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = PaymentMethodViewModel(paymentMethodRepo, uid) as T
+        }
+    )
+    val mpesaReconcileVm: MpesaReconcileViewModel = viewModel(
+        key = "mpesa_$uid",
+        factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                MpesaReconcileViewModel(mpesaReceiptRepo, financeRepo, mpesaPrefsRepo, uid) as T
         }
     )
 
@@ -469,6 +527,12 @@ private fun RoleRoutedWorkspace(
 
     var currentRoute by remember(activeRole) { mutableStateOf(navItems.first().route) }
     var showNotificationsOverlay by remember { mutableStateOf(false) }
+    var showPaymentMethodsOverlay by remember { mutableStateOf(false) }
+    var showMpesaReconcileOverlay by remember { mutableStateOf(false) }
+    var prefilledTenantReceipt by remember { mutableStateOf<MpesaReceipt?>(null) }
+    var activeTenantPayDeepLink by remember { mutableStateOf<PushDeepLink?>(null) }
+    var activeTenantHomeDeepLink by remember { mutableStateOf<PushDeepLink?>(null) }
+    var activePortfolioDeepLink by remember { mutableStateOf<PushDeepLink?>(null) }
     var showCreateOrgDialog by remember { mutableStateOf(false) }
     var triggerAddProperty by remember { mutableStateOf(false) }
     var roleMenuExpanded by remember { mutableStateOf(false) }
@@ -482,10 +546,10 @@ private fun RoleRoutedWorkspace(
         contract = ActivityResultContracts.RequestPermission()
     ) { /* Permission status updates reactively via NotificationHelper.hasNotificationPermission */ }
 
-    LaunchedEffect(uid, profile.notifyMaintenance) {
+    LaunchedEffect(uid, profile.notifyMaintenance, profile.notifyRentDue) {
         NotificationHelper.ensureChannels(context)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            profile.notifyMaintenance &&
+            (profile.notifyMaintenance || profile.notifyRentDue) &&
             !requestedNotificationPermission &&
             !NotificationHelper.hasNotificationPermission(context)
         ) {
@@ -494,18 +558,36 @@ private fun RoleRoutedWorkspace(
         }
     }
 
-    LaunchedEffect(uid, profile.notifyMaintenance, profile.activeRole) {
+    LaunchedEffect(uid, profile.notifyMaintenance, profile.notifyRentDue, profile.activeRole) {
         fcmTokenRepo.syncCurrentToken(profile)
     }
 
-    LaunchedEffect(pendingPushRoute, activeRole) {
-        val route = pendingPushRoute?.trim().orEmpty()
+    LaunchedEffect(pendingPushDeepLink, activeRole) {
+        val deepLink = pendingPushDeepLink ?: return@LaunchedEffect
+        val route = deepLink.targetRoute.trim()
         if (route.isNotBlank()) {
             when (route) {
                 NotificationHelper.ROUTE_NOTIFICATIONS -> showNotificationsOverlay = true
+                NotificationHelper.ROUTE_TENANT_HOME -> {
+                    showNotificationsOverlay = false
+                    if (activeRole == UserRole.TENANT) {
+                        currentRoute = "tenant_home"
+                        activeTenantHomeDeepLink = deepLink
+                    }
+                }
+                NotificationHelper.ROUTE_LANDLORD_PORTFOLIO -> {
+                    showNotificationsOverlay = false
+                    if (activeRole == UserRole.LANDLORD || activeRole == UserRole.PROPERTY_MANAGER) {
+                        currentRoute = "portfolio"
+                        activePortfolioDeepLink = deepLink
+                    }
+                }
                 NotificationHelper.ROUTE_TENANT_PAY -> {
                     showNotificationsOverlay = false
-                    if (activeRole == UserRole.TENANT) currentRoute = "tenant_pay"
+                    if (activeRole == UserRole.TENANT) {
+                        currentRoute = "tenant_pay"
+                        activeTenantPayDeepLink = deepLink
+                    }
                 }
                 NotificationHelper.ROUTE_LANDLORD_FINANCE -> {
                     showNotificationsOverlay = false
@@ -525,15 +607,15 @@ private fun RoleRoutedWorkspace(
                     }
                 }
             }
-            onConsumePushRoute()
         }
+        onConsumePushDeepLink()
     }
 
     val notificationsState by opsVm.notifications.collectAsStateWithLifecycle()
     var initializedNotifSnapshot by remember(uid) { mutableStateOf(false) }
     val seenNotifIds = remember(uid) { mutableSetOf<String>() }
 
-    LaunchedEffect(notificationsState, profile.notifyMaintenance, activeRole) {
+    LaunchedEffect(notificationsState, profile.notifyMaintenance, profile.notifyRentDue, activeRole) {
         val items = (notificationsState as? UiState.Success)?.data ?: return@LaunchedEffect
         if (!initializedNotifSnapshot) {
             seenNotifIds.addAll(items.map { it.id })
@@ -542,31 +624,113 @@ private fun RoleRoutedWorkspace(
         }
         val newlyArrived = items.filter { it.id !in seenNotifIds }
         seenNotifIds.addAll(items.map { it.id })
-        if (!profile.notifyMaintenance) return@LaunchedEffect
 
-        val roleMaintenanceRoute = when (activeRole) {
-            UserRole.TENANT -> NotificationHelper.ROUTE_TENANT_REPAIRS
-            UserRole.LANDLORD, UserRole.PROPERTY_MANAGER -> NotificationHelper.ROUTE_LANDLORD_OPERATIONS
-            UserRole.MAINTENANCE_STAFF -> NotificationHelper.ROUTE_STAFF_JOBS
-            UserRole.ADMIN -> NotificationHelper.ROUTE_NOTIFICATIONS
-        }
-        newlyArrived
-            .filter { !it.read && it.typeEnum() == NotificationType.MAINTENANCE }
-            .forEach { notif ->
-                val dedupKey = NotificationHelper.buildMaintenanceDedupKey(
-                    requestId = notif.relatedEntityId,
-                    title = notif.title,
-                    fallbackId = notif.id
-                )
-                NotificationHelper.showMaintenancePushNotification(
-                    context = context,
-                    title = notif.title,
-                    body = notif.body,
-                    requestId = notif.relatedEntityId,
-                    targetRoute = roleMaintenanceRoute,
-                    dedupKey = dedupKey
-                )
+        if (profile.notifyMaintenance) {
+            val roleMaintenanceRoute = when (activeRole) {
+                UserRole.TENANT -> NotificationHelper.ROUTE_TENANT_REPAIRS
+                UserRole.LANDLORD, UserRole.PROPERTY_MANAGER -> NotificationHelper.ROUTE_LANDLORD_OPERATIONS
+                UserRole.MAINTENANCE_STAFF -> NotificationHelper.ROUTE_STAFF_JOBS
+                UserRole.ADMIN -> NotificationHelper.ROUTE_NOTIFICATIONS
             }
+            newlyArrived
+                .filter { !it.read && it.typeEnum() == NotificationType.MAINTENANCE }
+                .forEach { notif ->
+                    val dedupKey = NotificationHelper.buildMaintenanceDedupKey(
+                        requestId = notif.relatedEntityId,
+                        title = notif.title,
+                        fallbackId = notif.id
+                    )
+                    NotificationHelper.showMaintenancePushNotification(
+                        context = context,
+                        title = notif.title,
+                        body = notif.body,
+                        requestId = notif.relatedEntityId,
+                        targetRoute = roleMaintenanceRoute,
+                        dedupKey = dedupKey
+                    )
+                }
+        }
+
+        if (profile.notifyRentDue && activeRole == UserRole.TENANT) {
+            newlyArrived
+                .filter { !it.read && it.typeEnum() == NotificationType.INVOICE }
+                .forEach { notif ->
+                    val dedupKey = NotificationHelper.buildInvoiceGeneratedDedupKey(
+                        invoiceId = notif.relatedEntityId,
+                        fallbackId = notif.id
+                    )
+                    NotificationHelper.showBillingPushNotification(
+                        context = context,
+                        title = notif.title,
+                        body = notif.body,
+                        targetRoute = NotificationHelper.ROUTE_TENANT_PAY,
+                        targetTab = NotificationHelper.TAB_TENANT_INVOICES,
+                        invoiceId = notif.relatedEntityId,
+                        dedupKey = dedupKey
+                    )
+                }
+
+            newlyArrived
+                .filter {
+                    !it.read &&
+                        it.typeEnum() == NotificationType.PAYMENT &&
+                        it.title.startsWith("Payment Verified", ignoreCase = true)
+                }
+                .forEach { notif ->
+                    val dedupKey = NotificationHelper.buildPaymentConfirmedDedupKey(
+                        paymentId = notif.relatedEntityId,
+                        fallbackId = notif.id
+                    )
+                    NotificationHelper.showBillingPushNotification(
+                        context = context,
+                        title = notif.title,
+                        body = notif.body,
+                        targetRoute = NotificationHelper.ROUTE_TENANT_PAY,
+                        targetTab = NotificationHelper.TAB_TENANT_PAYMENTS,
+                        paymentId = notif.relatedEntityId,
+                        dedupKey = dedupKey
+                    )
+                }
+        }
+
+        if (profile.notifyRentDue) {
+            newlyArrived
+                .filter { !it.read && it.typeEnum() == NotificationType.LEASE }
+                .forEach { notif ->
+                    val entityId = notif.relatedEntityId?.trim().takeIf { !it.isNullOrBlank() }
+                    val isChecklist = notif.title.contains("Checklist", ignoreCase = true)
+                    val isSettlement = notif.title.contains("Deposit", ignoreCase = true)
+                    if (isChecklist || isSettlement) {
+                        val isLandlordSide = activeRole == UserRole.LANDLORD || activeRole == UserRole.PROPERTY_MANAGER
+                        val eventHint = when {
+                            isChecklist && notif.title.contains("Signed Off", ignoreCase = true) -> NotificationHelper.EVENT_CHECKLIST_ACKNOWLEDGED
+                            isChecklist && notif.title.contains("Discrepancy", ignoreCase = true) -> NotificationHelper.EVENT_CHECKLIST_DISPUTED
+                            isChecklist -> NotificationHelper.EVENT_CHECKLIST_PENDING_REVIEW
+                            notif.title.contains("Approved", ignoreCase = true) -> NotificationHelper.EVENT_SETTLEMENT_APPROVED
+                            notif.title.contains("Review Requested", ignoreCase = true) -> NotificationHelper.EVENT_SETTLEMENT_DISPUTED
+                            notif.title.contains("Settled", ignoreCase = true) -> NotificationHelper.EVENT_SETTLEMENT_SETTLED
+                            else -> NotificationHelper.EVENT_SETTLEMENT_ISSUED
+                        }
+                        val checklistId = if (isChecklist) entityId else null
+                        val settlementId = if (isSettlement) entityId else null
+                        NotificationHelper.showHandoverPushNotification(
+                            context = context,
+                            title = notif.title,
+                            body = notif.body,
+                            targetRoute = if (isLandlordSide) NotificationHelper.ROUTE_LANDLORD_PORTFOLIO else NotificationHelper.ROUTE_TENANT_HOME,
+                            targetTab = if (isLandlordSide) NotificationHelper.TAB_LANDLORD_LEASES else null,
+                            checklistId = checklistId,
+                            settlementId = settlementId,
+                            dedupKey = NotificationHelper.buildHandoverDedupKey(
+                                eventType = eventHint,
+                                checklistId = checklistId,
+                                settlementId = settlementId,
+                                fallbackId = notif.id
+                            )
+                        )
+                    }
+                }
+        }
     }
 
     val unreadCount by opsVm.unreadNotificationCount.collectAsStateWithLifecycle()
@@ -578,9 +742,11 @@ private fun RoleRoutedWorkspace(
     val tenFb by tenantVm.feedback.collectAsStateWithLifecycle()
     val opsFb by opsVm.feedback.collectAsStateWithLifecycle()
     val admFb by adminVm.feedback.collectAsStateWithLifecycle()
+    val pmFb by paymentMethodVm.feedback.collectAsStateWithLifecycle()
+    val mpesaFb by mpesaReconcileVm.feedback.collectAsStateWithLifecycle()
 
-    LaunchedEffect(authFb, discFb, landFb, tenFb, opsFb, admFb) {
-        val msg = authFb ?: discFb ?: landFb ?: tenFb ?: opsFb ?: admFb
+    LaunchedEffect(authFb, discFb, landFb, tenFb, opsFb, admFb, pmFb, mpesaFb) {
+        val msg = authFb ?: discFb ?: landFb ?: tenFb ?: opsFb ?: admFb ?: pmFb ?: mpesaFb
         if (!msg.isNullOrBlank()) {
             snackbarHostState.showSnackbar(msg)
             authViewModel.clearFeedback()
@@ -589,11 +755,134 @@ private fun RoleRoutedWorkspace(
             tenantVm.clearFeedback()
             opsViewModelClear(opsVm)
             adminVm.clearFeedback()
+            paymentMethodVm.clearFeedback()
+            mpesaReconcileVm.clearFeedback()
         }
+    }
+
+    LaunchedEffect(pendingSharedSmsText, activeRole) {
+        val shared = pendingSharedSmsText?.trim().orEmpty()
+        if (shared.isNotBlank()) {
+            mpesaReconcileVm.stageSmsText(shared, MpesaCaptureSource.SHARE_INTENT) { staged ->
+                if (activeRole == UserRole.LANDLORD || activeRole == UserRole.PROPERTY_MANAGER) {
+                    showNotificationsOverlay = false
+                    showPaymentMethodsOverlay = false
+                    showMpesaReconcileOverlay = true
+                } else if (activeRole == UserRole.TENANT) {
+                    showNotificationsOverlay = false
+                    showPaymentMethodsOverlay = false
+                    showMpesaReconcileOverlay = false
+                    currentRoute = "tenant_pay"
+                    prefilledTenantReceipt = staged.firstOrNull()
+                }
+            }
+            onConsumeSharedSms()
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var mpesaListenerEnabled by remember {
+        mutableStateOf(MpesaCapturePreferencesRepository.isNotificationListenerEnabled(context))
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                mpesaListenerEnabled = MpesaCapturePreferencesRepository.isNotificationListenerEnabled(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     if (showNotificationsOverlay) {
         BackHandler { showNotificationsOverlay = false }
+    }
+    if (showPaymentMethodsOverlay) {
+        BackHandler { showPaymentMethodsOverlay = false }
+    }
+    if (showMpesaReconcileOverlay) {
+        BackHandler { showMpesaReconcileOverlay = false }
+    }
+
+    val paymentMethodsState by paymentMethodVm.methods.collectAsStateWithLifecycle()
+    val selectedPaymentMethodId by paymentMethodVm.selectedMethodId.collectAsStateWithLifecycle()
+    val paymentMethodBusy by paymentMethodVm.busy.collectAsStateWithLifecycle()
+    val savedMethodsCount = ((paymentMethodsState as? UiState.Success)?.data ?: emptyList()).size
+
+    val tenantActiveUnit by tenantVm.activeUnit.collectAsStateWithLifecycle()
+    val tenantActiveLease by tenantVm.activeLease.collectAsStateWithLifecycle()
+    val landlordPropertiesState by landlordVm.properties.collectAsStateWithLifecycle()
+
+    val propertyMpesaSuggestions = remember(activeRole, tenantActiveUnit, tenantActiveLease, landlordPropertiesState, activeOrganization) {
+        buildList {
+            if (activeRole == UserRole.TENANT) {
+                val unit = tenantActiveUnit
+                val unitNum = tenantActiveLease?.unitNumber ?: unit?.unitNumber.orEmpty()
+                if (!unit?.mpesaPaybill.isNullOrBlank()) {
+                    add(
+                        PropertyMpesaSuggestion(
+                            title = "${unit!!.propertyName} Paybill",
+                            channelType = PaymentChannelType.MPESA_PAYBILL,
+                            paybillNumber = unit.mpesaPaybill,
+                            accountReference = MpesaSmsParser.buildMpesaAccountReference(unit.mpesaAccountPrefix, unitNum)
+                        )
+                    )
+                }
+                if (!unit?.mpesaTill.isNullOrBlank()) {
+                    add(
+                        PropertyMpesaSuggestion(
+                            title = "${unit!!.propertyName} Till",
+                            channelType = PaymentChannelType.MPESA_TILL,
+                            tillNumber = unit.mpesaTill
+                        )
+                    )
+                }
+            } else if (activeRole == UserRole.LANDLORD || activeRole == UserRole.PROPERTY_MANAGER) {
+                val props = (landlordPropertiesState as? UiState.Success)?.data ?: emptyList()
+                props.forEach { prop ->
+                    if (!prop.mpesaPaybill.isNullOrBlank()) {
+                        add(
+                            PropertyMpesaSuggestion(
+                                title = "${prop.name} Paybill",
+                                channelType = PaymentChannelType.MPESA_PAYBILL,
+                                paybillNumber = prop.mpesaPaybill,
+                                accountReference = prop.mpesaAccountPrefix?.takeIf { it.isNotBlank() } ?: "RENT"
+                            )
+                        )
+                    }
+                    if (!prop.mpesaTill.isNullOrBlank()) {
+                        add(
+                            PropertyMpesaSuggestion(
+                                title = "${prop.name} Till",
+                                channelType = PaymentChannelType.MPESA_TILL,
+                                tillNumber = prop.mpesaTill
+                            )
+                        )
+                    }
+                }
+                if (isEmpty() && activeOrganization != null) {
+                    if (!activeOrganization.mpesaPaybill.isNullOrBlank()) {
+                        add(
+                            PropertyMpesaSuggestion(
+                                title = "${activeOrganization.name} Paybill",
+                                channelType = PaymentChannelType.MPESA_PAYBILL,
+                                paybillNumber = activeOrganization.mpesaPaybill,
+                                accountReference = "RENT"
+                            )
+                        )
+                    }
+                    if (!activeOrganization.mpesaTill.isNullOrBlank()) {
+                        add(
+                            PropertyMpesaSuggestion(
+                                title = "${activeOrganization.name} Till",
+                                channelType = PaymentChannelType.MPESA_TILL,
+                                tillNumber = activeOrganization.mpesaTill
+                            )
+                        )
+                    }
+                }
+            }
+        }
     }
 
     val tenantLeases by tenantVm.leases.collectAsStateWithLifecycle()
@@ -601,6 +890,34 @@ private fun RoleRoutedWorkspace(
     val knownLeases = when (activeRole) {
         UserRole.TENANT -> (tenantLeases as? UiState.Success)?.data ?: emptyList()
         else -> (landlordLeases as? UiState.Success)?.data ?: emptyList()
+    }
+
+    val mpesaReceiptsState by mpesaReconcileVm.receipts.collectAsStateWithLifecycle()
+    val mpesaCapturePrefs by mpesaReconcileVm.capturePrefs.collectAsStateWithLifecycle()
+    val mpesaReconcileBusy by mpesaReconcileVm.busy.collectAsStateWithLifecycle()
+    val landlordPaymentsState by landlordVm.payments.collectAsStateWithLifecycle()
+    val landlordInvoicesState by landlordVm.invoices.collectAsStateWithLifecycle()
+    val tenantPaymentsState by tenantVm.payments.collectAsStateWithLifecycle()
+
+    val allMpesaReceipts = (mpesaReceiptsState as? UiState.Success)?.data ?: emptyList()
+    val landlordPaymentList = (landlordPaymentsState as? UiState.Success)?.data ?: emptyList()
+    val landlordInvoiceList = (landlordInvoicesState as? UiState.Success)?.data ?: emptyList()
+    val landlordLeaseList = (landlordLeases as? UiState.Success)?.data ?: emptyList()
+    val tenantPaymentList = (tenantPaymentsState as? UiState.Success)?.data ?: emptyList()
+
+    val stagedMpesaEvaluations = remember(allMpesaReceipts, landlordPaymentList, landlordLeaseList, activeRole) {
+        if (activeRole == UserRole.LANDLORD || activeRole == UserRole.PROPERTY_MANAGER) {
+            MpesaReceiptMatcher.evaluateAllForLandlord(allMpesaReceipts, landlordPaymentList, landlordLeaseList)
+        } else {
+            emptyList()
+        }
+    }
+    val tenantAutofillCandidates = remember(allMpesaReceipts, tenantPaymentList, activeRole) {
+        if (activeRole == UserRole.TENANT) {
+            MpesaReceiptMatcher.filterTenantAutofillCandidates(allMpesaReceipts, tenantPaymentList)
+        } else {
+            emptyList()
+        }
     }
 
     val incomingInvitesState by authViewModel.incomingInvites.collectAsStateWithLifecycle()
@@ -627,7 +944,12 @@ private fun RoleRoutedWorkspace(
                     title = {
                         Column {
                             Text(
-                                text = if (showNotificationsOverlay) "Notifications" else "RentFlow",
+                                text = when {
+                                    showMpesaReconcileOverlay -> "M-Pesa SMS Auto-Verify"
+                                    showPaymentMethodsOverlay -> "Payment Methods"
+                                    showNotificationsOverlay -> "Notifications"
+                                    else -> "RentFlow"
+                                },
                                 style = MaterialTheme.typography.titleMedium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -669,6 +991,7 @@ private fun RoleRoutedWorkspace(
                                         onClick = {
                                             roleMenuExpanded = false
                                             showNotificationsOverlay = false
+                                            showMpesaReconcileOverlay = false
                                             authViewModel.switchRole(role, profile.roles, profile.fullName)
                                         }
                                     )
@@ -727,7 +1050,7 @@ private fun RoleRoutedWorkspace(
                 )
             },
             bottomBar = {
-                if (!useRail && !showNotificationsOverlay) {
+                if (!useRail && !showNotificationsOverlay && !showPaymentMethodsOverlay && !showMpesaReconcileOverlay) {
                     NavigationBar {
                         navItems.forEach { item ->
                             NavigationBarItem(
@@ -742,7 +1065,7 @@ private fun RoleRoutedWorkspace(
             }
         ) { innerPadding ->
             Row(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-                if (useRail && !showNotificationsOverlay) {
+                if (useRail && !showNotificationsOverlay && !showPaymentMethodsOverlay && !showMpesaReconcileOverlay) {
                     NavigationRail {
                         Spacer(Modifier.height(8.dp))
                         navItems.forEach { item ->
@@ -761,7 +1084,84 @@ private fun RoleRoutedWorkspace(
                     contentAlignment = Alignment.TopCenter
                 ) {
                     Box(modifier = Modifier.fillMaxSize().widthIn(max = 960.dp)) {
-                        if (showNotificationsOverlay) {
+                        if (showMpesaReconcileOverlay) {
+                            MpesaReconcileScreen(
+                                evaluations = stagedMpesaEvaluations,
+                                leases = landlordLeaseList,
+                                autoCaptureEnabled = mpesaCapturePrefs.autoCaptureEnabled,
+                                listenerEnabled = mpesaListenerEnabled,
+                                isBusy = mpesaReconcileBusy,
+                                onToggleAutoCapture = { mpesaReconcileVm.setAutoCaptureEnabled(it) },
+                                onOpenNotificationSettings = {
+                                    MpesaCapturePreferencesRepository.openNotificationListenerSettings(context)
+                                },
+                                onStageSmsBatch = { rawBatch, onDone ->
+                                    mpesaReconcileVm.stageSmsText(rawBatch, MpesaCaptureSource.MANUAL_PASTE) {
+                                        onDone()
+                                    }
+                                },
+                                onApproveMatched = { eval ->
+                                    mpesaReconcileVm.approveMatchedReceipt(
+                                        evaluation = eval,
+                                        invoices = landlordInvoiceList,
+                                        actorName = profile.fullName
+                                    )
+                                },
+                                onReconcileToLease = { receipt, lease ->
+                                    mpesaReconcileVm.reconcileUnmatchedToLease(
+                                        receipt = receipt,
+                                        lease = lease,
+                                        invoices = landlordInvoiceList,
+                                        actorName = profile.fullName
+                                    )
+                                },
+                                onMarkAlreadyVerified = { eval ->
+                                    mpesaReconcileVm.markAlreadyVerifiedReconciled(eval)
+                                },
+                                onDismissReceipt = { receipt ->
+                                    mpesaReconcileVm.dismissReceipt(receipt)
+                                },
+                                onReopenReceipt = { receipt ->
+                                    mpesaReconcileVm.reopenReceipt(receipt)
+                                },
+                                onBack = { showMpesaReconcileOverlay = false }
+                            )
+                        } else if (showPaymentMethodsOverlay) {
+                            PaymentMethodSelectionScreen(
+                                methodsState = paymentMethodsState,
+                                selectedMethodId = selectedPaymentMethodId,
+                                userRole = activeRole,
+                                propertySuggestions = propertyMpesaSuggestions,
+                                isBusy = paymentMethodBusy,
+                                onBack = { showPaymentMethodsOverlay = false },
+                                onSelectMethod = { paymentMethodVm.selectMethod(it.id) },
+                                onConfirmUseMethod = { chosen ->
+                                    paymentMethodVm.selectMethod(chosen.id)
+                                    showPaymentMethodsOverlay = false
+                                },
+                                onSaveMethod = { existingId, label, channel, scope, pb, acct, till, phone, bankName, bankAcct, makeDef, smsVer, smsRef, onDone ->
+                                    paymentMethodVm.saveMethod(
+                                        existingMethodId = existingId,
+                                        label = label,
+                                        channelType = channel,
+                                        roleScope = scope,
+                                        paybillNumber = pb,
+                                        accountReference = acct,
+                                        tillNumber = till,
+                                        phoneNumber = phone,
+                                        bankName = bankName,
+                                        bankAccountNumber = bankAcct,
+                                        defaultMethod = makeDef,
+                                        smsVerified = smsVer,
+                                        smsSampleRef = smsRef
+                                    ) {
+                                        onDone()
+                                    }
+                                },
+                                onSetDefaultMethod = { paymentMethodVm.setDefaultMethod(it) },
+                                onDeleteMethod = { paymentMethodVm.deleteMethod(it) }
+                            )
+                        } else if (showNotificationsOverlay) {
                             NotificationsScreen(opsViewModel = opsVm)
                         } else {
                             when (currentRoute) {
@@ -805,11 +1205,23 @@ private fun RoleRoutedWorkspace(
                                         authViewModel.revokeRoleInvite(invite, profile.fullName)
                                     },
                                     isRecentlyAuthenticated = { authViewModel.isRecentlySignedIn() },
-                                    onReauthenticate = { ctx -> authViewModel.verifyRecentGoogleAuth(ctx) }
+                                    onReauthenticate = { ctx -> authViewModel.verifyRecentGoogleAuth(ctx) },
+                                    deepLinkTarget = activePortfolioDeepLink,
+                                    onConsumeDeepLinkTarget = { activePortfolioDeepLink = null }
                                 )
                                 "finance" -> LandlordFinanceScreen(
                                     viewModel = landlordVm,
                                     currentUser = profile,
+                                    paymentMethodViewModel = paymentMethodVm,
+                                    onOpenPaymentMethods = { showPaymentMethodsOverlay = true },
+                                    stagedMpesaEvaluations = stagedMpesaEvaluations,
+                                    mpesaReconcileBusy = mpesaReconcileBusy,
+                                    onOpenMpesaReconcile = { showMpesaReconcileOverlay = true },
+                                    onStageMpesaSmsText = { rawSms, onDone ->
+                                        mpesaReconcileVm.stageSmsText(rawSms, MpesaCaptureSource.MANUAL_PASTE) {
+                                            onDone()
+                                        }
+                                    },
                                     isRecentlyAuthenticated = { authViewModel.isRecentlySignedIn() },
                                     onReauthenticate = { ctx -> authViewModel.verifyRecentGoogleAuth(ctx) }
                                 )
@@ -840,7 +1252,16 @@ private fun RoleRoutedWorkspace(
                                             securityPrefs = securityPrefs,
                                             biometricAvailability = biometricAvailability,
                                             onToggleBiometricLock = onToggleBiometricLock,
-                                            onSessionTimeoutChange = onSessionTimeoutChange
+                                            onSessionTimeoutChange = onSessionTimeoutChange,
+                                            savedMethodsCount = savedMethodsCount,
+                                            onOpenPaymentMethods = { showPaymentMethodsOverlay = true },
+                                            mpesaAutoCaptureEnabled = mpesaCapturePrefs.autoCaptureEnabled,
+                                            mpesaListenerEnabled = mpesaListenerEnabled,
+                                            onToggleMpesaAutoCapture = { mpesaReconcileVm.setAutoCaptureEnabled(it) },
+                                            onOpenMpesaListenerSettings = {
+                                                MpesaCapturePreferencesRepository.openNotificationListenerSettings(context)
+                                            },
+                                            onOpenMpesaReconcile = { showMpesaReconcileOverlay = true }
                                         )
                                     } else {
                                         PropertyDiscoveryScreen(viewModel = discoveryVm, currentUser = profile, isPublicMode = false)
@@ -852,9 +1273,27 @@ private fun RoleRoutedWorkspace(
                                     currentUser = profile,
                                     onNavigatePayRent = { currentRoute = "tenant_pay" },
                                     onNavigateMaintenance = { currentRoute = "tenant_repairs" },
-                                    onNavigateDiscovery = { currentRoute = "discover" }
+                                    onNavigateDiscovery = { currentRoute = "discover" },
+                                    deepLinkTarget = activeTenantHomeDeepLink,
+                                    onConsumeDeepLinkTarget = { activeTenantHomeDeepLink = null }
                                 )
-                                "tenant_pay" -> TenantPaymentsScreen(viewModel = tenantVm, currentUser = profile)
+                                "tenant_pay" -> TenantPaymentsScreen(
+                                    viewModel = tenantVm,
+                                    currentUser = profile,
+                                    paymentMethodViewModel = paymentMethodVm,
+                                    onOpenPaymentMethods = { showPaymentMethodsOverlay = true },
+                                    detectedMpesaReceipts = tenantAutofillCandidates,
+                                    initialPrefilledReceipt = prefilledTenantReceipt,
+                                    onConsumePrefilledReceipt = { prefilledTenantReceipt = null },
+                                    deepLinkTarget = activeTenantPayDeepLink,
+                                    onConsumeDeepLinkTarget = { activeTenantPayDeepLink = null },
+                                    onReceiptSubmittedForPayment = { receipt, paymentId, leaseId ->
+                                        mpesaReconcileVm.markTenantReceiptSubmitted(receipt, paymentId, leaseId)
+                                    },
+                                    onDismissDetectedReceipt = { receipt ->
+                                        mpesaReconcileVm.dismissReceipt(receipt)
+                                    }
+                                )
                                 "tenant_repairs" -> TenantMaintenanceScreen(viewModel = tenantVm, currentUser = profile)
                                 "discover" -> PropertyDiscoveryScreen(viewModel = discoveryVm, currentUser = profile, isPublicMode = false)
                                 "inbox_profile" -> Column(modifier = Modifier.fillMaxSize()) {
@@ -879,7 +1318,15 @@ private fun RoleRoutedWorkspace(
                                             securityPrefs = securityPrefs,
                                             biometricAvailability = biometricAvailability,
                                             onToggleBiometricLock = onToggleBiometricLock,
-                                            onSessionTimeoutChange = onSessionTimeoutChange
+                                            onSessionTimeoutChange = onSessionTimeoutChange,
+                                            savedMethodsCount = savedMethodsCount,
+                                            onOpenPaymentMethods = { showPaymentMethodsOverlay = true },
+                                            mpesaAutoCaptureEnabled = mpesaCapturePrefs.autoCaptureEnabled,
+                                            mpesaListenerEnabled = mpesaListenerEnabled,
+                                            onToggleMpesaAutoCapture = { mpesaReconcileVm.setAutoCaptureEnabled(it) },
+                                            onOpenMpesaListenerSettings = {
+                                                MpesaCapturePreferencesRepository.openNotificationListenerSettings(context)
+                                            }
                                         )
                                     } else {
                                         ConversationsScreen(opsViewModel = opsVm, currentUser = profile, knownLeases = knownLeases)
@@ -902,7 +1349,15 @@ private fun RoleRoutedWorkspace(
                                     securityPrefs = securityPrefs,
                                     biometricAvailability = biometricAvailability,
                                     onToggleBiometricLock = onToggleBiometricLock,
-                                    onSessionTimeoutChange = onSessionTimeoutChange
+                                    onSessionTimeoutChange = onSessionTimeoutChange,
+                                    savedMethodsCount = savedMethodsCount,
+                                    onOpenPaymentMethods = { showPaymentMethodsOverlay = true },
+                                    mpesaAutoCaptureEnabled = mpesaCapturePrefs.autoCaptureEnabled,
+                                    mpesaListenerEnabled = mpesaListenerEnabled,
+                                    onToggleMpesaAutoCapture = { mpesaReconcileVm.setAutoCaptureEnabled(it) },
+                                    onOpenMpesaListenerSettings = {
+                                        MpesaCapturePreferencesRepository.openNotificationListenerSettings(context)
+                                    }
                                 )
 
                                 "admin_hub" -> AdminPortalScreen(

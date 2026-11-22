@@ -1878,13 +1878,22 @@ test("FCM device tokens: owner CRUD succeeds, cross-user access, unverified emai
   await assertFails(otherDb.collection("users").doc(TENANT_UID).collection("fcm_tokens").get());
   await assertFails(otherDb.collection("users").doc(TENANT_UID).collection("fcm_tokens").doc("tok_hash_abc123").delete());
 
-  // Owner list & partial update succeed
+  // Owner list & partial update succeed (including notifyRentDue)
   await assertSucceeds(tenantDb.collection("users").doc(TENANT_UID).collection("fcm_tokens").get());
   await assertSucceeds(
     tokenDocRef.update({
       notifyMaintenance: false,
+      notifyRentDue: true,
       activeRole: "LANDLORD",
       updatedAt: pastDate(500),
+    })
+  );
+
+  // Invalid non-bool notifyRentDue rejected
+  await assertFails(
+    tokenDocRef.update({
+      notifyRentDue: "yes",
+      updatedAt: pastDate(450),
     })
   );
 
@@ -2181,4 +2190,782 @@ test("Verified landlord anti-spoofing, M-Pesa settings, invoice reminders, and l
     })
   );
 });
+
+test("SavedPaymentMethod: owner CRUD with Kenya Paybill/Till validation, cross-user isolation, and Payment channel metadata", async () => {
+  const now = pastDate(5000);
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com", true);
+  const otherTenantDb = authedDb(OTHER_TENANT_UID, "other@example.com", true);
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com", true);
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, { uid: TENANT_UID, fullName: "Brian Ochieng", email: "tenant@example.com", roles: ["TENANT"] });
+    await seedUser(db, { uid: OTHER_TENANT_UID, fullName: "Mercy Wambui", email: "other@example.com", roles: ["TENANT"] });
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Wanjiku Kamau", email: "owner@example.com", roles: ["LANDLORD"] });
+  });
+
+  // Valid Kenya M-Pesa Paybill (5-7 digits, non-zero leading + accountReference)
+  await assertSucceeds(
+    tenantDb.collection("users").doc(TENANT_UID).collection("payment_methods").doc("pm_paybill").set({
+      userId: TENANT_UID,
+      label: "KCB Rent Paybill",
+      channelType: "MPESA_PAYBILL",
+      roleScope: "TENANT",
+      paybillNumber: "522522",
+      accountReference: "KH-A101",
+      defaultMethod: true,
+      smsVerified: true,
+      smsSampleRef: "UBK7X92M10",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Valid Kenya M-Pesa Till (Buy Goods)
+  await assertSucceeds(
+    landlordDb.collection("users").doc(LANDLORD_UID).collection("payment_methods").doc("pm_till").set({
+      userId: LANDLORD_UID,
+      label: "Westlands Buy Goods Till",
+      channelType: "MPESA_TILL",
+      roleScope: "LANDLORD",
+      tillNumber: "882211",
+      defaultMethod: true,
+      smsVerified: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Reject invalid shortcodes: 4 digits, 8 digits, leading zero, or Paybill without accountReference
+  await assertFails(
+    tenantDb.collection("users").doc(TENANT_UID).collection("payment_methods").doc("pm_bad_short").set({
+      userId: TENANT_UID,
+      label: "Too Short Paybill",
+      channelType: "MPESA_PAYBILL",
+      roleScope: "TENANT",
+      paybillNumber: "1234",
+      accountReference: "A101",
+      defaultMethod: false,
+      smsVerified: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+  await assertFails(
+    tenantDb.collection("users").doc(TENANT_UID).collection("payment_methods").doc("pm_bad_zero").set({
+      userId: TENANT_UID,
+      label: "Leading Zero Till",
+      channelType: "MPESA_TILL",
+      roleScope: "TENANT",
+      tillNumber: "012345",
+      defaultMethod: false,
+      smsVerified: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+  await assertFails(
+    tenantDb.collection("users").doc(TENANT_UID).collection("payment_methods").doc("pm_missing_acc").set({
+      userId: TENANT_UID,
+      label: "Missing Account Paybill",
+      channelType: "MPESA_PAYBILL",
+      roleScope: "TENANT",
+      paybillNumber: "522522",
+      defaultMethod: false,
+      smsVerified: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Owner can list & update defaultMethod; cross-user read/write/delete is denied
+  await assertSucceeds(
+    tenantDb.collection("users").doc(TENANT_UID).collection("payment_methods").get()
+  );
+  await assertSucceeds(
+    tenantDb.collection("users").doc(TENANT_UID).collection("payment_methods").doc("pm_paybill").update({
+      defaultMethod: false,
+      updatedAt: pastDate(500),
+    })
+  );
+  await assertFails(
+    otherTenantDb.collection("users").doc(TENANT_UID).collection("payment_methods").get()
+  );
+  await assertFails(
+    otherTenantDb.collection("users").doc(TENANT_UID).collection("payment_methods").doc("pm_paybill").delete()
+  );
+  await assertSucceeds(
+    tenantDb.collection("users").doc(TENANT_UID).collection("payment_methods").doc("pm_paybill").delete()
+  );
+
+  // Payment creation with optional paymentMethodId / paymentChannelType / paymentShortcode succeeds
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("organizations").doc("org_pm").set({
+      name: "Kilimani Homes",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID],
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("leases").doc("lease_pm").set({
+      orgId: "org_pm",
+      propertyId: "prop_pm",
+      propertyName: "Kilimani Ridge",
+      unitId: "unit_pm",
+      unitNumber: "A1",
+      ownerUid: LANDLORD_UID,
+      managerUids: [],
+      authorizedUids: [LANDLORD_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      tenantPhone: "+254712345678",
+      rentCents: 3000000,
+      depositCents: 3000000,
+      startDateEpochMs: Date.now() - 864000000,
+      endDateEpochMs: Date.now() + 864000000,
+      dueDayOfMonth: 5,
+      status: "ACTIVE",
+      creditBalanceCents: 0,
+      termsSummary: "Standard KE lease",
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  await assertSucceeds(
+    tenantDb.collection("payments").doc("pay_ke_1").set({
+      referenceCode: "UBK7X92M10",
+      leaseId: "lease_pm",
+      orgId: "org_pm",
+      propertyId: "prop_pm",
+      propertyName: "Kilimani Ridge",
+      unitId: "unit_pm",
+      unitNumber: "A1",
+      ownerUid: LANDLORD_UID,
+      managerUids: [],
+      authorizedUids: [LANDLORD_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      amountCents: 3000000,
+      method: "MPESA",
+      paymentMethodId: "pm_paybill",
+      paymentChannelType: "MPESA_PAYBILL",
+      paymentShortcode: "522522",
+      simulatedCheckout: false,
+      paymentDateEpochMs: Date.now() - 2000,
+      status: "PENDING_VERIFICATION",
+      recordedByUid: TENANT_UID,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+});
+
+test("MpesaReceipt: owner CRUD, strict tx code & status validation, cross-user isolation, and Payment SMS verification update", async () => {
+  const now = pastDate(6000);
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com", true);
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com", true);
+  const otherTenantDb = authedDb(OTHER_TENANT_UID, "other@example.com", true);
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Wanjiku Kamau", email: "owner@example.com", roles: ["LANDLORD"] });
+    await seedUser(db, { uid: TENANT_UID, fullName: "Brian Ochieng", email: "tenant@example.com", roles: ["TENANT"] });
+    await seedUser(db, { uid: OTHER_TENANT_UID, fullName: "Mercy Wambui", email: "other@example.com", roles: ["TENANT"] });
+    await db.collection("organizations").doc("org_sms").set({
+      name: "Kilimani Homes",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID],
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("leases").doc("lease_sms").set({
+      orgId: "org_sms",
+      propertyId: "prop_sms",
+      propertyName: "Kilimani Ridge",
+      unitId: "unit_sms",
+      unitNumber: "A1",
+      ownerUid: LANDLORD_UID,
+      managerUids: [],
+      authorizedUids: [LANDLORD_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      tenantPhone: "+254712345678",
+      rentCents: 3000000,
+      depositCents: 3000000,
+      startDateEpochMs: Date.now() - 864000000,
+      endDateEpochMs: Date.now() + 864000000,
+      dueDayOfMonth: 5,
+      status: "ACTIVE",
+      creditBalanceCents: 0,
+      termsSummary: "Standard KE lease",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("payments").doc("pay_sms_pending").set({
+      referenceCode: "UBK7X92M10",
+      leaseId: "lease_sms",
+      orgId: "org_sms",
+      propertyId: "prop_sms",
+      propertyName: "Kilimani Ridge",
+      unitId: "unit_sms",
+      unitNumber: "A1",
+      ownerUid: LANDLORD_UID,
+      managerUids: [],
+      authorizedUids: [LANDLORD_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      amountCents: 3000000,
+      method: "MPESA",
+      simulatedCheckout: false,
+      paymentDateEpochMs: Date.now() - 4000,
+      status: "PENDING_VERIFICATION",
+      recordedByUid: TENANT_UID,
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  const landlordReceiptRef = landlordDb.collection("users").doc(LANDLORD_UID).collection("mpesa_receipts").doc("mpesa_UBK7X92M10");
+  const validReceipt = {
+    userId: LANDLORD_UID,
+    transactionCode: "UBK7X92M10",
+    amountCents: 3000000,
+    direction: "INCOMING_RECEIVED",
+    counterpartyName: "BRIAN OCHIENG",
+    counterpartyPhone: "+254712345678",
+    captureSource: "NOTIFICATION",
+    status: "STAGED",
+    rawSnippet: "UBK7X92M10 Confirmed. You have received Ksh30,000.00 from BRIAN OCHIENG 0712345678.",
+    transactionTimestampMs: Date.now() - 3000,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  // Reject invalid transactionCode (not 10 uppercase alphanumeric)
+  await assertFails(
+    landlordReceiptRef.set({ ...validReceipt, transactionCode: "SHORT123" })
+  );
+  // Reject non-positive amount
+  await assertFails(
+    landlordReceiptRef.set({ ...validReceipt, amountCents: 0 })
+  );
+  // Reject cross-user write
+  await assertFails(
+    tenantDb.collection("users").doc(LANDLORD_UID).collection("mpesa_receipts").doc("mpesa_UBK7X92M10").set(validReceipt)
+  );
+
+  // Owner create & list succeed
+  await assertSucceeds(landlordReceiptRef.set(validReceipt));
+  await assertSucceeds(landlordDb.collection("users").doc(LANDLORD_UID).collection("mpesa_receipts").get());
+
+  // Cross-user read/list/delete denied
+  await assertFails(otherTenantDb.collection("users").doc(LANDLORD_UID).collection("mpesa_receipts").doc("mpesa_UBK7X92M10").get());
+  await assertFails(otherTenantDb.collection("users").doc(LANDLORD_UID).collection("mpesa_receipts").get());
+  await assertFails(otherTenantDb.collection("users").doc(LANDLORD_UID).collection("mpesa_receipts").doc("mpesa_UBK7X92M10").delete());
+
+  // Reject tampering immutable transactionCode or amountCents on update
+  await assertFails(
+    landlordReceiptRef.update({
+      amountCents: 4000000,
+      updatedAt: pastDate(500),
+    })
+  );
+
+  // Owner can mark receipt RECONCILED and verify matching Payment with MPESA_SMS_MATCH metadata
+  await assertSucceeds(
+    landlordReceiptRef.update({
+      status: "RECONCILED",
+      matchedPaymentId: "pay_sms_pending",
+      matchedLeaseId: "lease_sms",
+      updatedAt: pastDate(400),
+    })
+  );
+  await assertSucceeds(
+    landlordDb.collection("payments").doc("pay_sms_pending").update({
+      status: "VERIFIED",
+      verifiedByUid: LANDLORD_UID,
+      verificationSource: "MPESA_SMS_MATCH",
+      matchedReceiptId: "mpesa_UBK7X92M10",
+      receiptNumber: "RCP-12345678",
+      allocationsSummary: "Allocated KES 30,000",
+      updatedAt: pastDate(300),
+    })
+  );
+
+  // Tenant cannot spoof verificationSource to self-verify a Payment
+  await assertFails(
+    tenantDb.collection("payments").doc("pay_sms_pending").update({
+      status: "VERIFIED",
+      verificationSource: "MPESA_SMS_MATCH",
+      updatedAt: pastDate(200),
+    })
+  );
+});
+
+test("Property & Unit building geolocation: paired coordinates, Kenya equator allowance, (0,0) & out-of-range rejection, and owner updates", async () => {
+  const now = pastDate(5000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Wanjiku Kamau", email: "owner@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: TENANT_UID, fullName: "Brian Ochieng", email: "tenant@example.com", roles: ["TENANT"], now });
+    await db.collection("organizations").doc("org_loc").set({
+      name: "Kilimani Estates",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID],
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com", true);
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com", true);
+
+  const baseProp = {
+    orgId: "org_loc",
+    ownerUid: LANDLORD_UID,
+    managerUids: [],
+    authorizedUids: [LANDLORD_UID],
+    name: "Argwings Court",
+    category: "APARTMENTS",
+    city: "Nairobi",
+    county: "Nairobi",
+    neighborhood: "Kilimani",
+    addressLine: "Argwings Kodhek Rd",
+    description: "Modern apartments",
+    imageRefs: [],
+    archived: false,
+    hasPublishedUnits: true,
+    totalUnitsCount: 1,
+    occupiedUnitsCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  // Reject unpaired coordinate (latitude without longitude)
+  await assertFails(
+    landlordDb.collection("properties").doc("prop_bad_pair").set({
+      ...baseProp,
+      latitude: -1.2896,
+    })
+  );
+
+  // Reject Null Island (0.0, 0.0)
+  await assertFails(
+    landlordDb.collection("properties").doc("prop_null_island").set({
+      ...baseProp,
+      latitude: 0.0,
+      longitude: 0.0,
+    })
+  );
+
+  // Reject out-of-bounds latitude (> 90)
+  await assertFails(
+    landlordDb.collection("properties").doc("prop_oob_lat").set({
+      ...baseProp,
+      latitude: 95.0,
+      longitude: 36.82,
+    })
+  );
+
+  // Allow Kenya equator coordinates (latitude 0.0 with non-zero longitude)
+  await assertSucceeds(
+    landlordDb.collection("properties").doc("prop_equator").set({
+      ...baseProp,
+      name: "Nanyuki Equator Suites",
+      city: "Nanyuki",
+      latitude: 0.0,
+      longitude: 37.0740,
+      formattedAddress: "Nanyuki, Laikipia, Kenya",
+      locationVerified: true,
+    })
+  );
+
+  // Valid Nairobi pin create + unit create + coordinate update propagation
+  await assertSucceeds(
+    landlordDb.collection("properties").doc("prop_loc").set({
+      ...baseProp,
+      latitude: -1.2896,
+      longitude: 36.7831,
+      formattedAddress: "Argwings Kodhek Rd, Kilimani, Nairobi",
+      placeId: "ChIJNairobiKilimani123",
+      locationVerified: true,
+    })
+  );
+
+  await assertSucceeds(
+    landlordDb.collection("units").doc("unit_loc").set({
+      propertyId: "prop_loc",
+      propertyName: "Argwings Court",
+      propertyCity: "Nairobi",
+      propertyCategory: "APARTMENTS",
+      orgId: "org_loc",
+      ownerUid: LANDLORD_UID,
+      managerUids: [],
+      authorizedUids: [LANDLORD_UID],
+      unitNumber: "A1",
+      unitType: "ONE_BEDROOM",
+      rentCents: 3500000,
+      depositCents: 3500000,
+      status: "AVAILABLE",
+      amenities: ["Wi-Fi"],
+      description: "Bright 1BR",
+      imageRefs: [],
+      published: true,
+      latitude: -1.2896,
+      longitude: 36.7831,
+      formattedAddress: "Argwings Kodhek Rd, Kilimani, Nairobi",
+      locationVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Owner updates building pin and propagates coordinates to child unit
+  await assertSucceeds(
+    landlordDb.collection("properties").doc("prop_loc").update({
+      latitude: -1.2901,
+      longitude: 36.7842,
+      formattedAddress: "Yaya Centre Area, Kilimani, Nairobi",
+      placeId: "ChIJUpdatedPlace",
+      locationVerified: true,
+      updatedAt: pastDate(400),
+    })
+  );
+  await assertSucceeds(
+    landlordDb.collection("units").doc("unit_loc").update({
+      latitude: -1.2901,
+      longitude: 36.7842,
+      formattedAddress: "Yaya Centre Area, Kilimani, Nairobi",
+      locationVerified: true,
+      updatedAt: pastDate(300),
+    })
+  );
+
+  // Tenant cannot tamper with unit or property location
+  await assertFails(
+    tenantDb.collection("properties").doc("prop_loc").update({
+      latitude: -1.3000,
+      longitude: 36.8000,
+      updatedAt: pastDate(200),
+    })
+  );
+  await assertFails(
+    tenantDb.collection("units").doc("unit_loc").update({
+      latitude: -1.3000,
+      longitude: 36.8000,
+      updatedAt: pastDate(200),
+    })
+  );
+});
+
+test("Move-in checklists & deposit settlements: role permissions, KES math invariant, tenant review/dispute, payout rules, and immutable locks", async () => {
+  const now = pastDate(8000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Wanjiku Kamau", email: "owner@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: MANAGER_UID, fullName: "Grace Wambui", email: "manager@example.com", roles: ["PROPERTY_MANAGER"], now });
+    await seedUser(db, { uid: TENANT_UID, fullName: "Brian Ochieng", email: "tenant@example.com", roles: ["TENANT"], now });
+    await seedUser(db, { uid: OTHER_TENANT_UID, fullName: "Other Tenant", email: "other@example.com", roles: ["TENANT"], now });
+    await db.collection("organizations").doc("org_handover").set({
+      name: "Kilimani Homes",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID, MANAGER_UID],
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("leases").doc("lease_handover").set({
+      orgId: "org_handover",
+      propertyId: "prop_h1",
+      propertyName: "Kilimani Ridge",
+      unitId: "unit_h1",
+      unitNumber: "C4",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      tenantPhone: "+254712345678",
+      rentCents: 3000000,
+      depositCents: 3000000,
+      startDateEpochMs: Date.now() - 864000000,
+      endDateEpochMs: Date.now() + 864000000,
+      dueDayOfMonth: 5,
+      status: "ACTIVE",
+      creditBalanceCents: 200000,
+      termsSummary: "Standard KE lease",
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com", true);
+  const managerDb = authedDb(MANAGER_UID, "manager@example.com", true);
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com", true);
+  const otherDb = authedDb(OTHER_TENANT_UID, "other@example.com", true);
+
+  const checklistRef = landlordDb.collection("move_in_checklists").doc("cl_lease_handover");
+  const baseChecklist = {
+    leaseId: "lease_handover",
+    orgId: "org_handover",
+    propertyId: "prop_h1",
+    propertyName: "Kilimani Ridge",
+    unitId: "unit_h1",
+    unitNumber: "C4",
+    ownerUid: LANDLORD_UID,
+    managerUids: [MANAGER_UID],
+    authorizedUids: [LANDLORD_UID, MANAGER_UID],
+    tenantUid: TENANT_UID,
+    tenantName: "Brian Ochieng",
+    status: "DRAFT",
+    inspectionDateEpochMs: Date.now() - 1000,
+    waterMeterReading: "WM-1024",
+    electricityMeterReading: "KPLC-5541",
+    keysHandedOverCount: 3,
+    items: [
+      { itemId: "living_walls", area: "Living Room", label: "Walls & Paint", condition: "GOOD", notes: "" },
+    ],
+    imageRefs: [],
+    createdByUid: LANDLORD_UID,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  // Tenant cannot create a move-in checklist
+  await assertFails(
+    tenantDb.collection("move_in_checklists").doc("cl_lease_handover").set({
+      ...baseChecklist,
+      createdByUid: TENANT_UID,
+    })
+  );
+
+  // Landlord creates DRAFT checklist, then assigned manager sends for tenant review
+  await assertSucceeds(checklistRef.set(baseChecklist));
+  await assertSucceeds(
+    managerDb.collection("move_in_checklists").doc("cl_lease_handover").update({
+      status: "PENDING_TENANT_REVIEW",
+      landlordNotes: "Freshly painted before handover",
+      updatedAt: pastDate(700),
+    })
+  );
+
+  // Other unrelated user denied read & write
+  await assertFails(otherDb.collection("move_in_checklists").doc("cl_lease_handover").get());
+  await assertFails(otherDb.collection("move_in_checklists").doc("cl_lease_handover").update({ status: "DISPUTED", updatedAt: pastDate(600) }));
+
+  // Tenant cannot dispute without an explanation note
+  await assertFails(
+    tenantDb.collection("move_in_checklists").doc("cl_lease_handover").update({
+      status: "DISPUTED",
+      updatedAt: pastDate(600),
+    })
+  );
+
+  // Tenant disputes with valid note
+  await assertSucceeds(
+    tenantDb.collection("move_in_checklists").doc("cl_lease_handover").update({
+      status: "DISPUTED",
+      tenantResponseNote: "Bathroom mirror has a small crack on bottom corner.",
+      updatedAt: pastDate(550),
+    })
+  );
+
+  // Landlord updates checklist and re-submits for sign-off
+  await assertSucceeds(
+    checklistRef.update({
+      status: "PENDING_TENANT_REVIEW",
+      landlordNotes: "Mirror crack noted; tenant not liable.",
+      updatedAt: pastDate(500),
+    })
+  );
+
+  // Tenant cannot tamper with items/keys when acknowledging
+  await assertFails(
+    tenantDb.collection("move_in_checklists").doc("cl_lease_handover").update({
+      status: "ACKNOWLEDGED",
+      keysHandedOverCount: 1,
+      acknowledgedByUid: TENANT_UID,
+      acknowledgedAtEpochMs: Date.now(),
+      updatedAt: pastDate(450),
+    })
+  );
+
+  // Tenant signs off cleanly
+  await assertSucceeds(
+    tenantDb.collection("move_in_checklists").doc("cl_lease_handover").update({
+      status: "ACKNOWLEDGED",
+      tenantResponseNote: "Confirmed and accepted.",
+      acknowledgedByUid: TENANT_UID,
+      acknowledgedAtEpochMs: Date.now(),
+      updatedAt: pastDate(400),
+    })
+  );
+
+  // Signed-off checklist is permanently locked against landlord and tenant edits
+  await assertFails(
+    checklistRef.update({
+      landlordNotes: "Tampering after sign-off",
+      updatedAt: pastDate(350),
+    })
+  );
+  await assertFails(
+    tenantDb.collection("move_in_checklists").doc("cl_lease_handover").update({
+      status: "DISPUTED",
+      tenantResponseNote: "Late dispute",
+      updatedAt: pastDate(350),
+    })
+  );
+
+  // --- Deposit Settlement Tests ---
+  const settlementRef = landlordDb.collection("deposit_settlements").doc("ds_lease_handover");
+  const validSettlement = {
+    leaseId: "lease_handover",
+    orgId: "org_handover",
+    propertyId: "prop_h1",
+    propertyName: "Kilimani Ridge",
+    unitId: "unit_h1",
+    unitNumber: "C4",
+    ownerUid: LANDLORD_UID,
+    managerUids: [MANAGER_UID],
+    authorizedUids: [LANDLORD_UID, MANAGER_UID],
+    tenantUid: TENANT_UID,
+    tenantName: "Brian Ochieng",
+    depositHeldCents: 3000000,
+    arrearsIncludedCents: 200000,
+    creditAppliedCents: 200000,
+    deductions: [
+      { id: "ded_1", category: "CLEANING", description: "Deep cleaning", amountCents: 300000 },
+    ],
+    deductionsTotalCents: 300000,
+    netRefundCents: 2700000,
+    balanceOwedCents: 0,
+    moveOutDateEpochMs: Date.now(),
+    waterMeterFinal: "WM-1180",
+    electricityMeterFinal: "KPLC-6002",
+    keysReturnedCount: 3,
+    imageRefs: [],
+    status: "ISSUED",
+    refundMethod: "MPESA",
+    createdByUid: LANDLORD_UID,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  // Reject settlement with invalid KES arithmetic invariant
+  await assertFails(
+    landlordDb.collection("deposit_settlements").doc("ds_bad_math").set({
+      ...validSettlement,
+      netRefundCents: 2999900,
+    })
+  );
+
+  // Reject creating directly in SETTLED state
+  await assertFails(
+    landlordDb.collection("deposit_settlements").doc("ds_premature").set({
+      ...validSettlement,
+      status: "SETTLED",
+    })
+  );
+
+  // Landlord creates & issues valid settlement
+  await assertSucceeds(settlementRef.set(validSettlement));
+
+  // Tenant disputes without reason -> rejected
+  await assertFails(
+    tenantDb.collection("deposit_settlements").doc("ds_lease_handover").update({
+      status: "DISPUTED",
+      updatedAt: pastDate(300),
+    })
+  );
+
+  // Tenant disputes with reason -> succeeds
+  await assertSucceeds(
+    tenantDb.collection("deposit_settlements").doc("ds_lease_handover").update({
+      status: "DISPUTED",
+      tenantResponseNote: "Unit was left spotless on handover.",
+      updatedAt: pastDate(250),
+    })
+  );
+
+  // Landlord lowers deduction & re-issues
+  await assertSucceeds(
+    settlementRef.update({
+      deductions: [{ id: "ded_1", category: "CLEANING", description: "Window track cleaning", amountCents: 100000 }],
+      deductionsTotalCents: 100000,
+      netRefundCents: 2900000,
+      balanceOwedCents: 0,
+      status: "ISSUED",
+      updatedAt: pastDate(200),
+    })
+  );
+
+  // Tenant approves updated statement
+  await assertSucceeds(
+    tenantDb.collection("deposit_settlements").doc("ds_lease_handover").update({
+      status: "APPROVED",
+      tenantResponseNote: "Agreed.",
+      updatedAt: pastDate(150),
+    })
+  );
+
+  // Settling with netRefundCents > 0 without refundReferenceCode fails
+  await assertFails(
+    settlementRef.update({
+      status: "SETTLED",
+      refundMethod: "MPESA",
+      settledByUid: LANDLORD_UID,
+      settledAtEpochMs: Date.now(),
+      updatedAt: pastDate(100),
+    })
+  );
+
+  // Settling with valid payout method and reference code succeeds
+  await assertSucceeds(
+    settlementRef.update({
+      status: "SETTLED",
+      refundMethod: "MPESA",
+      refundReferenceCode: "UBL9K22M88",
+      settledByUid: LANDLORD_UID,
+      settledAtEpochMs: Date.now(),
+      updatedAt: pastDate(50),
+    })
+  );
+
+  // Once SETTLED, document is locked and immutable
+  await assertFails(
+    settlementRef.update({
+      deductionsTotalCents: 200000,
+      netRefundCents: 2800000,
+      updatedAt: pastDate(10),
+    })
+  );
+  await assertFails(
+    tenantDb.collection("deposit_settlements").doc("ds_lease_handover").update({
+      status: "DISPUTED",
+      tenantResponseNote: "Cannot reopen",
+      updatedAt: pastDate(10),
+    })
+  );
+});
+
+
+
+
 

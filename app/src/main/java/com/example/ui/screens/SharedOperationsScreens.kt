@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.ReportProblem
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.AlertDialog
@@ -964,10 +965,12 @@ private fun StartConversationDialog(
 @Composable
 fun PushNotificationPermissionCard(
     modifier: Modifier = Modifier,
-    maintenanceAlertsEnabled: Boolean = true
+    maintenanceAlertsEnabled: Boolean = true,
+    rentAlertsEnabled: Boolean = true
 ) {
     val context = LocalContext.current
     var hasPermission by remember { mutableStateOf(NotificationHelper.hasNotificationPermission(context)) }
+    val anyAlertsEnabled = maintenanceAlertsEnabled || rentAlertsEnabled
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -977,7 +980,7 @@ fun PushNotificationPermissionCard(
     Card(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
-            containerColor = if (hasPermission && maintenanceAlertsEnabled) {
+            containerColor = if (hasPermission && anyAlertsEnabled) {
                 MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f)
             } else {
                 MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
@@ -997,7 +1000,7 @@ fun PushNotificationPermissionCard(
                 Icon(
                     imageVector = Icons.Filled.NotificationsActive,
                     contentDescription = "Push notifications status",
-                    tint = if (hasPermission && maintenanceAlertsEnabled) {
+                    tint = if (hasPermission && anyAlertsEnabled) {
                         MaterialTheme.colorScheme.secondary
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
@@ -1007,9 +1010,9 @@ fun PushNotificationPermissionCard(
                     Text("Real-Time FCM Push Alerts", style = MaterialTheme.typography.titleSmall)
                     Text(
                         when {
-                            !hasPermission -> "System notification permission is off. Enable push alerts for instant maintenance updates."
-                            !maintenanceAlertsEnabled -> "Maintenance push alerts are paused in your profile settings."
-                            else -> "Active • Tenants receive status changes and landlords receive new ticket alerts."
+                            !hasPermission -> "System notification permission is off. Enable push alerts for instant invoice, payment, and repair updates."
+                            !anyAlertsEnabled -> "Push alerts are paused in your profile settings."
+                            else -> "Active • Receive instant alerts for new invoices, verified rent payments, and repair updates."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1018,12 +1021,12 @@ fun PushNotificationPermissionCard(
                 StatusPill(
                     label = when {
                         !hasPermission -> "Permission Off"
-                        !maintenanceAlertsEnabled -> "Paused"
+                        !anyAlertsEnabled -> "Paused"
                         else -> "Active"
                     },
                     tone = when {
                         !hasPermission -> PillTone.WARNING
-                        !maintenanceAlertsEnabled -> PillTone.NEUTRAL
+                        !anyAlertsEnabled -> PillTone.NEUTRAL
                         else -> PillTone.SUCCESS
                     }
                 )
@@ -1125,7 +1128,14 @@ fun ProfileSettingsScreen(
     securityPrefs: SecurityPreferences = SecurityPreferences(),
     biometricAvailability: BiometricAvailability = BiometricAvailability.AVAILABLE,
     onToggleBiometricLock: (Boolean) -> Unit = {},
-    onSessionTimeoutChange: (Int) -> Unit = {}
+    onSessionTimeoutChange: (Int) -> Unit = {},
+    savedMethodsCount: Int = 0,
+    onOpenPaymentMethods: (() -> Unit)? = null,
+    mpesaAutoCaptureEnabled: Boolean = true,
+    mpesaListenerEnabled: Boolean = false,
+    onToggleMpesaAutoCapture: ((Boolean) -> Unit)? = null,
+    onOpenMpesaListenerSettings: () -> Unit = {},
+    onOpenMpesaReconcile: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val busy by authViewModel.busy.collectAsStateWithLifecycle()
@@ -1296,8 +1306,82 @@ fun ProfileSettingsScreen(
             )
         }
 
+        if (onOpenPaymentMethods != null) {
+            item {
+                Card(
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                    ) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp)
+                        ) {
+                            Text("Kenya M-Pesa & Payment Methods", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                text = if (savedMethodsCount == 0) {
+                                    "Add & validate Paybill, Till, STK Phone, Bank, or Cash methods"
+                                } else {
+                                    "$savedMethodsCount saved payment channel(s)"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onOpenPaymentMethods,
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("profile_payment_methods_button")
+                        ) {
+                            Icon(Icons.Filled.Payments, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Manage")
+                        }
+                    }
+                }
+            }
+        }
+
+        if (onToggleMpesaAutoCapture != null) {
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MpesaAutoCaptureSettingsCard(
+                        autoCaptureEnabled = mpesaAutoCaptureEnabled,
+                        listenerEnabled = mpesaListenerEnabled,
+                        onToggleAutoCapture = onToggleMpesaAutoCapture,
+                        onOpenNotificationSettings = onOpenMpesaListenerSettings
+                    )
+                    if (onOpenMpesaReconcile != null) {
+                        OutlinedButton(
+                            onClick = onOpenMpesaReconcile,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("profile_mpesa_reconcile_button")
+                        ) {
+                            Text("Open M-Pesa SMS Auto-Verify Queue")
+                        }
+                    }
+                }
+            }
+        }
+
         item {
-            PushNotificationPermissionCard(maintenanceAlertsEnabled = notifyMaint)
+            PushNotificationPermissionCard(
+                maintenanceAlertsEnabled = notifyMaint,
+                rentAlertsEnabled = notifyRent
+            )
         }
 
         item {

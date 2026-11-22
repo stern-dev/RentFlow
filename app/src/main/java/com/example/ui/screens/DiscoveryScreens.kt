@@ -27,10 +27,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.CompareArrows
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.AlertDialog
@@ -62,16 +65,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import com.example.data.location.DirectionsLauncher
 import com.example.domain.finance.CurrencyUtils
+import com.example.domain.location.BuildingLocationResolver
 import com.example.domain.model.ApplicationStatus
 import com.example.domain.model.PropertyCategory
 import com.example.domain.model.RentalApplication
 import com.example.domain.model.RentalUnit
 import com.example.domain.model.UserProfile
+import com.example.ui.components.BuildingMapPreviewCard
+import com.example.ui.components.DiscoveryMapView
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.ErrorBannerCard
 import com.example.ui.components.LoadingStateBox
@@ -104,8 +112,11 @@ fun PropertyDiscoveryScreen(
     onBackToSignIn: (() -> Unit)? = null,
     onRequireAuthToApply: () -> Unit = {}
 ) {
+    val context = LocalContext.current
     val unitsState by viewModel.publishedUnits.collectAsStateWithLifecycle()
     val filteredUnits by viewModel.filteredUnits.collectAsStateWithLifecycle()
+    val publishedPropertiesById by viewModel.publishedPropertiesById.collectAsStateWithLifecycle()
+    val mapPinGroups by viewModel.mapPinGroups.collectAsStateWithLifecycle()
     val filters by viewModel.filters.collectAsStateWithLifecycle()
     val myAppsState by viewModel.myApplications.collectAsStateWithLifecycle()
     val savedUnitIds by viewModel.savedUnitIds.collectAsStateWithLifecycle()
@@ -113,6 +124,7 @@ fun PropertyDiscoveryScreen(
     val compareUnits by viewModel.compareUnits.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
 
+    var showMapView by remember { mutableStateOf(false) }
     var selectedUnit by remember { mutableStateOf<RentalUnit?>(null) }
     var unitForApplication by remember { mutableStateOf<RentalUnit?>(null) }
     var unitToReport by remember { mutableStateOf<RentalUnit?>(null) }
@@ -125,6 +137,88 @@ fun PropertyDiscoveryScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                FilterChip(
+                    selected = !showMapView,
+                    onClick = { showMapView = false },
+                    leadingIcon = {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ViewList,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    label = { Text("List (${filteredUnits.size})") },
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("discovery_view_list_button")
+                )
+                FilterChip(
+                    selected = showMapView,
+                    onClick = { showMapView = true },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Filled.Map,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    label = { Text("Map (${mapPinGroups.size})") },
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("discovery_view_map_button")
+                )
+                Spacer(Modifier.weight(1f))
+                if (isPublicMode && onBackToSignIn != null && showMapView) {
+                    TextButton(onClick = onBackToSignIn, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text("Sign In")
+                    }
+                }
+            }
+
+            if (showMapView) {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(bottom = 8.dp)
+                ) {
+                    items(kenyanCities) { city ->
+                        FilterChip(
+                            selected = filters.selectedCity == city,
+                            onClick = { viewModel.updateCity(city) },
+                            label = { Text(city) }
+                        )
+                    }
+                }
+
+                when (val st = unitsState) {
+                    is UiState.Loading -> LoadingStateBox("Loading Kenyan rental buildings...")
+                    is UiState.Error -> ErrorBannerCard(st.message, modifier = Modifier.padding(16.dp))
+                    is UiState.Success -> {
+                        DiscoveryMapView(
+                            pinGroups = mapPinGroups,
+                            selectedCityFilter = filters.selectedCity,
+                            onOpenUnitDetails = { unit -> selectedUnit = unit },
+                            onApplyUnit = { unit ->
+                                if (isPublicMode || currentUser == null) {
+                                    onRequireAuthToApply()
+                                } else {
+                                    unitForApplication = unit
+                                }
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                        )
+                    }
+                }
+            } else {
             LazyColumn(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -309,6 +403,7 @@ fun PropertyDiscoveryScreen(
                     }
                 }
             }
+            }
 
             AnimatedVisibility(visible = compareUnits.isNotEmpty()) {
                 CompareUnitsDockBar(
@@ -432,6 +527,20 @@ fun PropertyDiscoveryScreen(
                         }
                     }
                 }
+                val resolvedLocation = BuildingLocationResolver.resolve(unit, publishedPropertiesById[unit.propertyId])
+                BuildingMapPreviewCard(
+                    buildingName = unit.propertyName,
+                    location = resolvedLocation,
+                    onDirectionsClick = {
+                        DirectionsLauncher.openGoogleMapsDirections(
+                            context = context,
+                            latitude = resolvedLocation.latitude,
+                            longitude = resolvedLocation.longitude,
+                            label = unit.propertyName
+                        )
+                    },
+                    testTag = "discovery_unit_location_card"
+                )
                 Button(
                     onClick = {
                         selectedUnit = null

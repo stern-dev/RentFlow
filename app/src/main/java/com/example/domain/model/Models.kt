@@ -75,11 +75,51 @@ enum class PaymentMethod(val label: String) {
     CASH("Cash")
 }
 
+enum class PaymentChannelType(
+    val label: String,
+    val baseMethod: PaymentMethod
+) {
+    MPESA_PAYBILL("M-Pesa Paybill", PaymentMethod.MPESA),
+    MPESA_TILL("M-Pesa Buy Goods Till", PaymentMethod.MPESA),
+    MPESA_STK("M-Pesa Express (STK)", PaymentMethod.MPESA),
+    BANK_TRANSFER("Bank Transfer", PaymentMethod.BANK_TRANSFER),
+    CASH("Cash", PaymentMethod.CASH)
+}
+
+enum class PaymentRoleScope(val label: String) {
+    ALL("Tenant & Landlord"),
+    TENANT("Tenant Only"),
+    LANDLORD("Landlord Only")
+}
+
 enum class PaymentStatus(val label: String) {
     PENDING_VERIFICATION("Pending Verification"),
     VERIFIED("Verified"),
     REJECTED("Rejected"),
     REVERSED("Reversed")
+}
+
+enum class PaymentVerificationSource(val label: String) {
+    MANUAL("Manual Review"),
+    MPESA_SMS_MATCH("M-Pesa SMS Verified")
+}
+
+enum class MpesaReceiptDirection(val label: String) {
+    INCOMING_RECEIVED("Incoming Received"),
+    OUTGOING_SENT("Outgoing Sent"),
+    UNKNOWN("Detected")
+}
+
+enum class MpesaCaptureSource(val label: String) {
+    NOTIFICATION("Notification Auto-Capture"),
+    SHARE_INTENT("Shared SMS"),
+    MANUAL_PASTE("Pasted SMS")
+}
+
+enum class MpesaReceiptStatus(val label: String) {
+    STAGED("Staged"),
+    RECONCILED("Reconciled"),
+    DISMISSED("Dismissed")
 }
 
 enum class ExpenseCategory(val label: String) {
@@ -139,6 +179,44 @@ enum class InviteStatus(val label: String) {
     ACCEPTED("Accepted"),
     DECLINED("Declined"),
     REVOKED("Revoked")
+}
+
+enum class ChecklistCondition(val label: String) {
+    GOOD("Good"),
+    FAIR("Fair"),
+    NEEDS_REPAIR("Needs Repair"),
+    DAMAGED("Damaged")
+}
+
+enum class MoveInChecklistStatus(val label: String) {
+    DRAFT("Draft"),
+    PENDING_TENANT_REVIEW("Pending Sign-Off"),
+    ACKNOWLEDGED("Acknowledged"),
+    DISPUTED("Discrepancy Flagged")
+}
+
+enum class DeductionCategory(val label: String) {
+    DAMAGE_REPAIR("Damage Repair"),
+    CLEANING("Deep Cleaning"),
+    UNPAID_RENT("Unpaid Rent / Arrears"),
+    UTILITIES("Unpaid Utilities"),
+    MISSING_KEYS("Missing Keys / Locks"),
+    OTHER("Other Deduction")
+}
+
+enum class DepositSettlementStatus(val label: String) {
+    DRAFT("Draft"),
+    ISSUED("Statement Issued"),
+    DISPUTED("Under Review"),
+    APPROVED("Approved by Tenant"),
+    SETTLED("Refund Settled")
+}
+
+enum class RefundMethod(val label: String) {
+    MPESA("M-Pesa"),
+    BANK_TRANSFER("Bank Transfer"),
+    CASH("Cash"),
+    NONE("No Refund Due")
 }
 
 @Keep
@@ -290,6 +368,11 @@ data class Property(
     val mpesaPaybill: String? = null,
     val mpesaTill: String? = null,
     val mpesaAccountPrefix: String? = null,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val formattedAddress: String? = null,
+    val placeId: String? = null,
+    val locationVerified: Boolean = false,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -320,6 +403,11 @@ data class Property(
         "mpesaPaybill" to mpesaPaybill?.takeIf { it.isNotBlank() },
         "mpesaTill" to mpesaTill?.takeIf { it.isNotBlank() },
         "mpesaAccountPrefix" to mpesaAccountPrefix?.takeIf { it.isNotBlank() },
+        "latitude" to latitude?.takeIf { longitude != null && it.isFinite() && it in -90.0..90.0 && !(it == 0.0 && longitude == 0.0) },
+        "longitude" to longitude?.takeIf { latitude != null && it.isFinite() && it in -180.0..180.0 && !(latitude == 0.0 && it == 0.0) },
+        "formattedAddress" to formattedAddress?.trim()?.takeIf { it.isNotBlank() }?.take(200),
+        "placeId" to placeId?.trim()?.takeIf { it.isNotBlank() }?.take(160),
+        "locationVerified" to (locationVerified && latitude != null && longitude != null),
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     ).filterValues { it != null } as Map<String, Any>
@@ -352,6 +440,10 @@ data class RentalUnit(
     val mpesaPaybill: String? = null,
     val mpesaTill: String? = null,
     val mpesaAccountPrefix: String? = null,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val formattedAddress: String? = null,
+    val locationVerified: Boolean = false,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -385,6 +477,10 @@ data class RentalUnit(
         "mpesaPaybill" to mpesaPaybill?.takeIf { it.isNotBlank() },
         "mpesaTill" to mpesaTill?.takeIf { it.isNotBlank() },
         "mpesaAccountPrefix" to mpesaAccountPrefix?.takeIf { it.isNotBlank() },
+        "latitude" to latitude?.takeIf { longitude != null && it.isFinite() && it in -90.0..90.0 && !(it == 0.0 && longitude == 0.0) },
+        "longitude" to longitude?.takeIf { latitude != null && it.isFinite() && it in -180.0..180.0 && !(latitude == 0.0 && it == 0.0) },
+        "formattedAddress" to formattedAddress?.trim()?.takeIf { it.isNotBlank() }?.take(200),
+        "locationVerified" to (locationVerified && latitude != null && longitude != null),
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     ).filterValues { it != null } as Map<String, Any>
@@ -579,6 +675,9 @@ data class Payment(
     val tenantName: String = "",
     val amountCents: Long = 0L,
     val method: String = PaymentMethod.MPESA.name,
+    val paymentMethodId: String? = null,
+    val paymentChannelType: String? = null,
+    val paymentShortcode: String? = null,
     val simulatedCheckout: Boolean = false,
     val paymentDateEpochMs: Long = 0L,
     val status: String = PaymentStatus.PENDING_VERIFICATION.name,
@@ -588,11 +687,17 @@ data class Payment(
     val reversalReason: String? = null,
     val allocationsSummary: String? = null,
     val receiptNumber: String? = null,
+    val verificationSource: String? = null,
+    val matchedReceiptId: String? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
     fun methodEnum(): PaymentMethod = safeEnum(method, PaymentMethod.MPESA)
+    fun channelTypeEnum(): PaymentChannelType? =
+        paymentChannelType?.let { raw -> enumValues<PaymentChannelType>().firstOrNull { it.name == raw } }
     fun statusEnum(): PaymentStatus = safeEnum(status, PaymentStatus.PENDING_VERIFICATION)
+    fun verificationSourceEnum(): PaymentVerificationSource? =
+        verificationSource?.let { raw -> enumValues<PaymentVerificationSource>().firstOrNull { it.name == raw } }
 
     @Suppress("UNCHECKED_CAST")
     fun toCreateMap(): Map<String, Any> = mapOf(
@@ -611,6 +716,9 @@ data class Payment(
         "tenantName" to tenantName,
         "amountCents" to amountCents,
         "method" to method,
+        "paymentMethodId" to paymentMethodId?.takeIf { it.isNotBlank() },
+        "paymentChannelType" to paymentChannelType?.takeIf { it.isNotBlank() },
+        "paymentShortcode" to paymentShortcode?.takeIf { it.isNotBlank() },
         "simulatedCheckout" to simulatedCheckout,
         "paymentDateEpochMs" to paymentDateEpochMs,
         "status" to status,
@@ -620,6 +728,122 @@ data class Payment(
         "reversalReason" to reversalReason?.takeIf { it.isNotBlank() },
         "allocationsSummary" to allocationsSummary?.takeIf { it.isNotBlank() },
         "receiptNumber" to receiptNumber?.takeIf { it.isNotBlank() },
+        "verificationSource" to verificationSource?.takeIf { it.isNotBlank() },
+        "matchedReceiptId" to matchedReceiptId?.takeIf { it.isNotBlank() },
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp()
+    ).filterValues { it != null } as Map<String, Any>
+}
+
+@Keep
+@IgnoreExtraProperties
+data class MpesaReceipt(
+    @DocumentId val id: String = "",
+    val userId: String = "",
+    val transactionCode: String = "",
+    val amountCents: Long = 0L,
+    val direction: String = MpesaReceiptDirection.UNKNOWN.name,
+    val counterpartyName: String? = null,
+    val counterpartyPhone: String? = null,
+    val accountReference: String? = null,
+    val shortcode: String? = null,
+    val captureSource: String = MpesaCaptureSource.MANUAL_PASTE.name,
+    val status: String = MpesaReceiptStatus.STAGED.name,
+    val matchedPaymentId: String? = null,
+    val matchedLeaseId: String? = null,
+    val rawSnippet: String = "",
+    val transactionTimestampMs: Long = 0L,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun directionEnum(): MpesaReceiptDirection = safeEnum(direction, MpesaReceiptDirection.UNKNOWN)
+    fun captureSourceEnum(): MpesaCaptureSource = safeEnum(captureSource, MpesaCaptureSource.MANUAL_PASTE)
+    fun statusEnum(): MpesaReceiptStatus = safeEnum(status, MpesaReceiptStatus.STAGED)
+
+    @Suppress("UNCHECKED_CAST")
+    fun toCreateMap(): Map<String, Any> = mapOf(
+        "userId" to userId,
+        "transactionCode" to transactionCode.trim().uppercase(),
+        "amountCents" to amountCents,
+        "direction" to direction,
+        "counterpartyName" to counterpartyName?.trim()?.take(100)?.takeIf { it.isNotBlank() },
+        "counterpartyPhone" to counterpartyPhone?.trim()?.take(24)?.takeIf { it.isNotBlank() },
+        "accountReference" to accountReference?.trim()?.take(40)?.takeIf { it.isNotBlank() },
+        "shortcode" to shortcode?.trim()?.take(24)?.takeIf { it.isNotBlank() },
+        "captureSource" to captureSource,
+        "status" to status,
+        "matchedPaymentId" to matchedPaymentId?.trim()?.take(128)?.takeIf { it.isNotBlank() },
+        "matchedLeaseId" to matchedLeaseId?.trim()?.take(128)?.takeIf { it.isNotBlank() },
+        "rawSnippet" to rawSnippet.trim().take(240),
+        "transactionTimestampMs" to transactionTimestampMs,
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp()
+    ).filterValues { it != null } as Map<String, Any>
+}
+
+@Keep
+@IgnoreExtraProperties
+data class SavedPaymentMethod(
+    @DocumentId val id: String = "",
+    val userId: String = "",
+    val label: String = "",
+    val channelType: String = PaymentChannelType.MPESA_PAYBILL.name,
+    val roleScope: String = PaymentRoleScope.ALL.name,
+    val paybillNumber: String? = null,
+    val accountReference: String? = null,
+    val tillNumber: String? = null,
+    val phoneNumber: String? = null,
+    val bankName: String? = null,
+    val bankAccountNumber: String? = null,
+    val defaultMethod: Boolean = false,
+    val smsVerified: Boolean = false,
+    val smsSampleRef: String? = null,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun channelTypeEnum(): PaymentChannelType = safeEnum(channelType, PaymentChannelType.MPESA_PAYBILL)
+    fun roleScopeEnum(): PaymentRoleScope = safeEnum(roleScope, PaymentRoleScope.ALL)
+
+    fun primaryShortcodeOrIdentifier(): String? = when (channelTypeEnum()) {
+        PaymentChannelType.MPESA_PAYBILL -> paybillNumber?.takeIf { it.isNotBlank() }
+        PaymentChannelType.MPESA_TILL -> tillNumber?.takeIf { it.isNotBlank() }
+        PaymentChannelType.MPESA_STK -> phoneNumber?.takeIf { it.isNotBlank() }
+        PaymentChannelType.BANK_TRANSFER -> bankAccountNumber?.takeIf { it.isNotBlank() }
+        PaymentChannelType.CASH -> "CASH"
+    }
+
+    fun summarySubtitle(): String = when (channelTypeEnum()) {
+        PaymentChannelType.MPESA_PAYBILL -> {
+            val pb = paybillNumber.orEmpty()
+            val acct = accountReference.orEmpty()
+            if (acct.isNotBlank()) "Paybill $pb • Acct $acct" else "Paybill $pb"
+        }
+        PaymentChannelType.MPESA_TILL -> "Buy Goods Till ${tillNumber.orEmpty()}"
+        PaymentChannelType.MPESA_STK -> "STK Phone ${phoneNumber.orEmpty()}"
+        PaymentChannelType.BANK_TRANSFER -> {
+            val masked = bankAccountNumber?.let { acct ->
+                if (acct.length > 4) "••••${acct.takeLast(4)}" else acct
+            }.orEmpty()
+            "${bankName.orEmpty()} $masked".trim()
+        }
+        PaymentChannelType.CASH -> "Cash collection / receipt"
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    fun toCreateMap(): Map<String, Any> = mapOf(
+        "userId" to userId,
+        "label" to label,
+        "channelType" to channelType,
+        "roleScope" to roleScope,
+        "paybillNumber" to paybillNumber?.takeIf { it.isNotBlank() },
+        "accountReference" to accountReference?.takeIf { it.isNotBlank() },
+        "tillNumber" to tillNumber?.takeIf { it.isNotBlank() },
+        "phoneNumber" to phoneNumber?.takeIf { it.isNotBlank() },
+        "bankName" to bankName?.takeIf { it.isNotBlank() },
+        "bankAccountNumber" to bankAccountNumber?.takeIf { it.isNotBlank() },
+        "defaultMethod" to defaultMethod,
+        "smsVerified" to smsVerified,
+        "smsSampleRef" to smsSampleRef?.takeIf { it.isNotBlank() },
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     ).filterValues { it != null } as Map<String, Any>
@@ -912,6 +1136,7 @@ data class FcmDeviceToken(
     val token: String = "",
     val platform: String = "ANDROID",
     val notifyMaintenance: Boolean = true,
+    val notifyRentDue: Boolean = true,
     val activeRole: String = UserRole.TENANT.name,
     val appVersion: String? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
@@ -923,6 +1148,7 @@ data class FcmDeviceToken(
         "token" to token,
         "platform" to platform,
         "notifyMaintenance" to notifyMaintenance,
+        "notifyRentDue" to notifyRentDue,
         "activeRole" to activeRole,
         "appVersion" to appVersion?.takeIf { it.isNotBlank() },
         "createdAt" to FieldValue.serverTimestamp(),
@@ -949,6 +1175,200 @@ data class SavedUnit(
         "rentCents" to rentCents,
         "savedAt" to FieldValue.serverTimestamp()
     )
+}
+
+@Keep
+@IgnoreExtraProperties
+data class ChecklistItem(
+    val itemId: String = "",
+    val area: String = "",
+    val label: String = "",
+    val condition: String = ChecklistCondition.GOOD.name,
+    val notes: String = ""
+) {
+    fun conditionEnum(): ChecklistCondition = safeEnum(condition, ChecklistCondition.GOOD)
+
+    fun toMap(): Map<String, Any> = mapOf(
+        "itemId" to itemId.trim().take(64),
+        "area" to area.trim().take(60),
+        "label" to label.trim().take(100),
+        "condition" to conditionEnum().name,
+        "notes" to notes.trim().take(300)
+    )
+}
+
+@Keep
+@IgnoreExtraProperties
+data class MoveInChecklist(
+    @DocumentId val id: String = "",
+    val leaseId: String = "",
+    val orgId: String = "",
+    val propertyId: String = "",
+    val propertyName: String = "",
+    val unitId: String = "",
+    val unitNumber: String = "",
+    val ownerUid: String = "",
+    val managerUids: List<String> = emptyList(),
+    val authorizedUids: List<String> = emptyList(),
+    val tenantUid: String = "",
+    val tenantName: String = "",
+    val status: String = MoveInChecklistStatus.DRAFT.name,
+    val inspectionDateEpochMs: Long = 0L,
+    val waterMeterReading: String? = null,
+    val electricityMeterReading: String? = null,
+    val keysHandedOverCount: Long = 0L,
+    val items: List<ChecklistItem> = emptyList(),
+    val imageRefs: List<String> = emptyList(),
+    val landlordNotes: String? = null,
+    val tenantResponseNote: String? = null,
+    val acknowledgedAtEpochMs: Long? = null,
+    val acknowledgedByUid: String? = null,
+    val createdByUid: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun statusEnum(): MoveInChecklistStatus = safeEnum(status, MoveInChecklistStatus.DRAFT)
+
+    @Suppress("UNCHECKED_CAST")
+    fun toCreateMap(): Map<String, Any> = mapOf(
+        "leaseId" to leaseId,
+        "orgId" to orgId,
+        "propertyId" to propertyId,
+        "propertyName" to propertyName,
+        "unitId" to unitId,
+        "unitNumber" to unitNumber,
+        "ownerUid" to ownerUid,
+        "managerUids" to managerUids,
+        "authorizedUids" to authorizedUids,
+        "tenantUid" to tenantUid,
+        "tenantName" to tenantName,
+        "status" to status,
+        "inspectionDateEpochMs" to inspectionDateEpochMs,
+        "waterMeterReading" to waterMeterReading?.trim()?.take(40)?.takeIf { it.isNotBlank() },
+        "electricityMeterReading" to electricityMeterReading?.trim()?.take(40)?.takeIf { it.isNotBlank() },
+        "keysHandedOverCount" to keysHandedOverCount.coerceIn(0L, 50L),
+        "items" to items.map { it.toMap() },
+        "imageRefs" to imageRefs,
+        "landlordNotes" to landlordNotes?.trim()?.take(800)?.takeIf { it.isNotBlank() },
+        "tenantResponseNote" to tenantResponseNote?.trim()?.take(800)?.takeIf { it.isNotBlank() },
+        "acknowledgedAtEpochMs" to acknowledgedAtEpochMs,
+        "acknowledgedByUid" to acknowledgedByUid?.takeIf { it.isNotBlank() },
+        "createdByUid" to createdByUid,
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp()
+    ).filterValues { it != null } as Map<String, Any>
+
+    companion object {
+        fun defaultKenyanItems(): List<ChecklistItem> = listOf(
+            ChecklistItem("living_walls", "Living Room", "Walls, Paint & Ceiling", ChecklistCondition.GOOD.name, ""),
+            ChecklistItem("living_floor", "Living Room", "Flooring & Tiles", ChecklistCondition.GOOD.name, ""),
+            ChecklistItem("living_windows", "Living Room", "Windows, Curtains & Security Grilles", ChecklistCondition.GOOD.name, ""),
+            ChecklistItem("kitchen_sink", "Kitchen", "Sink, Taps & Plumbing Trap", ChecklistCondition.GOOD.name, ""),
+            ChecklistItem("kitchen_cabinets", "Kitchen", "Cabinets, Worktop & Hinges", ChecklistCondition.GOOD.name, ""),
+            ChecklistItem("bath_plumbing", "Bathroom", "Shower Head, Drainage & Water Pressure", ChecklistCondition.GOOD.name, ""),
+            ChecklistItem("bath_toilet", "Bathroom", "Toilet Cistern, Flush & Seat", ChecklistCondition.GOOD.name, ""),
+            ChecklistItem("bedroom_wardrobe", "Bedroom", "Wardrobes, Doors & Handles", ChecklistCondition.GOOD.name, ""),
+            ChecklistItem("utilities_power", "Utilities", "KPLC / Token Meter & Sockets", ChecklistCondition.GOOD.name, ""),
+            ChecklistItem("security_locks", "Security", "Main Door Lock, Padlock Latch & Keys", ChecklistCondition.GOOD.name, "")
+        )
+    }
+}
+
+@Keep
+@IgnoreExtraProperties
+data class DepositDeductionItem(
+    val id: String = "",
+    val category: String = DeductionCategory.DAMAGE_REPAIR.name,
+    val description: String = "",
+    val amountCents: Long = 0L
+) {
+    fun categoryEnum(): DeductionCategory = safeEnum(category, DeductionCategory.DAMAGE_REPAIR)
+
+    fun toMap(): Map<String, Any> = mapOf(
+        "id" to id.trim().take(64),
+        "category" to categoryEnum().name,
+        "description" to description.trim().take(200),
+        "amountCents" to amountCents.coerceAtLeast(0L)
+    )
+}
+
+@Keep
+@IgnoreExtraProperties
+data class DepositSettlement(
+    @DocumentId val id: String = "",
+    val leaseId: String = "",
+    val orgId: String = "",
+    val propertyId: String = "",
+    val propertyName: String = "",
+    val unitId: String = "",
+    val unitNumber: String = "",
+    val ownerUid: String = "",
+    val managerUids: List<String> = emptyList(),
+    val authorizedUids: List<String> = emptyList(),
+    val tenantUid: String = "",
+    val tenantName: String = "",
+    val depositHeldCents: Long = 0L,
+    val arrearsIncludedCents: Long = 0L,
+    val creditAppliedCents: Long = 0L,
+    val deductions: List<DepositDeductionItem> = emptyList(),
+    val deductionsTotalCents: Long = 0L,
+    val netRefundCents: Long = 0L,
+    val balanceOwedCents: Long = 0L,
+    val moveOutDateEpochMs: Long = 0L,
+    val waterMeterFinal: String? = null,
+    val electricityMeterFinal: String? = null,
+    val keysReturnedCount: Long = 0L,
+    val imageRefs: List<String> = emptyList(),
+    val status: String = DepositSettlementStatus.DRAFT.name,
+    val landlordNotes: String? = null,
+    val tenantResponseNote: String? = null,
+    val refundMethod: String = RefundMethod.MPESA.name,
+    val refundReferenceCode: String? = null,
+    val settledAtEpochMs: Long? = null,
+    val settledByUid: String? = null,
+    val createdByUid: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun statusEnum(): DepositSettlementStatus = safeEnum(status, DepositSettlementStatus.DRAFT)
+    fun refundMethodEnum(): RefundMethod = safeEnum(refundMethod, RefundMethod.MPESA)
+
+    @Suppress("UNCHECKED_CAST")
+    fun toCreateMap(): Map<String, Any> = mapOf(
+        "leaseId" to leaseId,
+        "orgId" to orgId,
+        "propertyId" to propertyId,
+        "propertyName" to propertyName,
+        "unitId" to unitId,
+        "unitNumber" to unitNumber,
+        "ownerUid" to ownerUid,
+        "managerUids" to managerUids,
+        "authorizedUids" to authorizedUids,
+        "tenantUid" to tenantUid,
+        "tenantName" to tenantName,
+        "depositHeldCents" to depositHeldCents.coerceAtLeast(0L),
+        "arrearsIncludedCents" to arrearsIncludedCents.coerceAtLeast(0L),
+        "creditAppliedCents" to creditAppliedCents.coerceAtLeast(0L),
+        "deductions" to deductions.map { it.toMap() },
+        "deductionsTotalCents" to deductionsTotalCents.coerceAtLeast(0L),
+        "netRefundCents" to netRefundCents.coerceAtLeast(0L),
+        "balanceOwedCents" to balanceOwedCents.coerceAtLeast(0L),
+        "moveOutDateEpochMs" to moveOutDateEpochMs,
+        "waterMeterFinal" to waterMeterFinal?.trim()?.take(40)?.takeIf { it.isNotBlank() },
+        "electricityMeterFinal" to electricityMeterFinal?.trim()?.take(40)?.takeIf { it.isNotBlank() },
+        "keysReturnedCount" to keysReturnedCount.coerceIn(0L, 50L),
+        "imageRefs" to imageRefs,
+        "status" to status,
+        "landlordNotes" to landlordNotes?.trim()?.take(800)?.takeIf { it.isNotBlank() },
+        "tenantResponseNote" to tenantResponseNote?.trim()?.take(800)?.takeIf { it.isNotBlank() },
+        "refundMethod" to refundMethod,
+        "refundReferenceCode" to refundReferenceCode?.trim()?.uppercase()?.take(60)?.takeIf { it.isNotBlank() },
+        "settledAtEpochMs" to settledAtEpochMs,
+        "settledByUid" to settledByUid?.takeIf { it.isNotBlank() },
+        "createdByUid" to createdByUid,
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp()
+    ).filterValues { it != null } as Map<String, Any>
 }
 
 object KenyaCounties {

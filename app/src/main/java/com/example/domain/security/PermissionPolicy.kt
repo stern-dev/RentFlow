@@ -70,4 +70,16 @@ object PermissionPolicy {
 
     fun canDeleteExpense(uid: String, activeRole: UserRole, expense: Expense): Boolean =
         activeRole == UserRole.ADMIN || (activeRole == UserRole.LANDLORD && expense.ownerUid == uid)
+
+    fun canManageLeaseChecklist(uid: String, activeRole: UserRole, lease: Lease): Boolean =
+        activeRole == UserRole.ADMIN ||
+            (activeRole in listOf(UserRole.LANDLORD, UserRole.PROPERTY_MANAGER) && uid in lease.authorizedUids)
+
+    fun canManageDepositSettlement(uid: String, activeRole: UserRole, lease: Lease): Boolean =
+        activeRole == UserRole.ADMIN ||
+            (activeRole in listOf(UserRole.LANDLORD, UserRole.PROPERTY_MANAGER) && uid in lease.authorizedUids)
+
+    fun canFinalizeDepositSettlement(uid: String, activeRole: UserRole, lease: Lease): Boolean =
+        activeRole == UserRole.ADMIN ||
+            (activeRole in listOf(UserRole.LANDLORD, UserRole.PROPERTY_MANAGER) && uid in lease.authorizedUids)
 }

@@ -151,4 +151,144 @@ class FinancialEngineTest {
         assertEquals(1, summary.pendingPaymentsCount)
         assertEquals(1, summary.overdueInvoices.size)
     }
+
+    @Test
+    fun `computeTenantPaymentTrends returns 12 rolling months with accurate streak and consistency`() {
+        val tz = java.util.TimeZone.getTimeZone("Africa/Nairobi")
+        val cal = java.util.Calendar.getInstance(tz, java.util.Locale.US).apply {
+            set(2026, java.util.Calendar.NOVEMBER, 10, 12, 0, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        val nowMs = cal.timeInMillis
+
+        val empty = FinancialEngine.computeTenantPaymentTrends(
+            invoices = emptyList(),
+            payments = emptyList(),
+            nowMs = nowMs
+        )
+        assertEquals(12, empty.points.size)
+        assertEquals("2025-12", empty.points.first().billingPeriod)
+        assertEquals("2026-11", empty.points.last().billingPeriod)
+        assertFalse(empty.hasHistoricalActivity)
+        assertEquals(0, empty.currentStreakMonths)
+        assertEquals(0, empty.consistencyPercent)
+
+        fun dueMs(year: Int, monthZeroBased: Int, day: Int): Long =
+            java.util.Calendar.getInstance(tz, java.util.Locale.US).apply {
+                set(year, monthZeroBased, day, 12, 0, 0)
+                set(java.util.Calendar.MILLISECOND, 0)
+            }.timeInMillis
+
+        val invoices = listOf(
+            // Jul 2026: Paid late
+            Invoice(
+                id = "inv_jul",
+                leaseId = "l1",
+                billingPeriod = "2026-07",
+                totalDueCents = 2500000L,
+                paidCents = 2500000L,
+                outstandingCents = 0L,
+                dueDateEpochMs = dueMs(2026, java.util.Calendar.JULY, 5),
+                status = InvoiceStatus.PAID.name
+            ),
+            // Aug 2026: Overdue/Partial breaks streak
+            Invoice(
+                id = "inv_aug",
+                leaseId = "l1",
+                billingPeriod = "2026-08",
+                totalDueCents = 2500000L,
+                paidCents = 1000000L,
+                outstandingCents = 1500000L,
+                dueDateEpochMs = dueMs(2026, java.util.Calendar.AUGUST, 5),
+                status = InvoiceStatus.OVERDUE.name
+            ),
+            // Sep 2026: Paid on time (streak 1)
+            Invoice(
+                id = "inv_sep",
+                leaseId = "l1",
+                billingPeriod = "2026-09",
+                totalDueCents = 2500000L,
+                paidCents = 2500000L,
+                outstandingCents = 0L,
+                dueDateEpochMs = dueMs(2026, java.util.Calendar.SEPTEMBER, 5),
+                status = InvoiceStatus.PAID.name
+            ),
+            // Oct 2026: Paid on time (streak 2)
+            Invoice(
+                id = "inv_oct",
+                leaseId = "l1",
+                billingPeriod = "2026-10",
+                totalDueCents = 2500000L,
+                paidCents = 2500000L,
+                outstandingCents = 0L,
+                dueDateEpochMs = dueMs(2026, java.util.Calendar.OCTOBER, 5),
+                status = InvoiceStatus.PAID.name
+            ),
+            // Nov 2026: Current month invoice not yet due (should NOT break current 2-month streak)
+            Invoice(
+                id = "inv_nov",
+                leaseId = "l1",
+                billingPeriod = "2026-11",
+                totalDueCents = 2500000L,
+                paidCents = 0L,
+                outstandingCents = 2500000L,
+                dueDateEpochMs = dueMs(2026, java.util.Calendar.NOVEMBER, 25),
+                status = InvoiceStatus.UNPAID.name
+            ),
+            // Cancelled invoice must be ignored
+            Invoice(
+                id = "inv_cancelled",
+                leaseId = "l1",
+                billingPeriod = "2026-06",
+                totalDueCents = 2500000L,
+                paidCents = 0L,
+                outstandingCents = 2500000L,
+                dueDateEpochMs = dueMs(2026, java.util.Calendar.JUNE, 5),
+                status = InvoiceStatus.CANCELLED.name
+            )
+        )
+
+        val payments = listOf(
+            Payment(
+                id = "pay_sep",
+                leaseId = "l1",
+                invoiceId = "inv_sep",
+                amountCents = 2500000L,
+                paymentDateEpochMs = dueMs(2026, java.util.Calendar.SEPTEMBER, 3),
+                status = PaymentStatus.VERIFIED.name
+            ),
+            Payment(
+                id = "pay_oct",
+                leaseId = "l1",
+                invoiceId = "inv_oct",
+                amountCents = 2500000L,
+                paymentDateEpochMs = dueMs(2026, java.util.Calendar.OCTOBER, 4),
+                status = PaymentStatus.VERIFIED.name
+            )
+        )
+
+        val trends = FinancialEngine.computeTenantPaymentTrends(
+            invoices = invoices,
+            payments = payments,
+            nowMs = nowMs
+        )
+
+        assertTrue(trends.hasHistoricalActivity)
+        assertEquals(12, trends.points.size)
+        assertEquals(2, trends.currentStreakMonths)
+        assertEquals(2, trends.bestStreakMonths)
+        // Evaluated closed/due months = Jul, Aug, Sep, Oct (3 settled out of 4 = 75%)
+        assertEquals(75, trends.consistencyPercent)
+        assertEquals(5, trends.billedMonthsCount)
+        assertEquals(3, trends.settledMonthsCount)
+        assertEquals(12500000L, trends.totalBilled12MonthsCents)
+        assertEquals(8500000L, trends.totalPaid12MonthsCents)
+
+        val augPoint = trends.points.first { it.billingPeriod == "2026-08" }
+        assertEquals(com.example.domain.finance.TenantMonthTrendStatus.PARTIAL, augPoint.status)
+        assertEquals(1500000L, augPoint.outstandingCents)
+
+        val novPoint = trends.points.last()
+        assertEquals(com.example.domain.finance.TenantMonthTrendStatus.DUE, novPoint.status)
+    }
 }

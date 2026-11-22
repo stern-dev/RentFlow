@@ -13,8 +13,11 @@ import com.example.domain.model.Property
 import com.example.domain.model.RentalUnit
 import com.example.domain.model.UnitStatus
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
+import kotlin.math.roundToInt
 
 data class PortfolioSummary(
     val totalProperties: Int = 0,
@@ -41,6 +44,38 @@ data class TenantAccountSummary(
     val accountCreditCents: Long = 0L,
     val nextDueDateEpochMs: Long = 0L,
     val paymentStatusLabel: String = "Up to date"
+)
+
+enum class TenantMonthTrendStatus(val label: String) {
+    NO_INVOICE("No Invoice"),
+    PAID_ON_TIME("Paid"),
+    PAID_LATE("Settled"),
+    PARTIAL("Partial"),
+    DUE("Balance Due"),
+    OVERDUE("Overdue")
+}
+
+data class TenantPaymentTrendPoint(
+    val billingPeriod: String,
+    val shortLabel: String,
+    val fullLabel: String,
+    val billedCents: Long,
+    val paidCents: Long,
+    val outstandingCents: Long,
+    val verifiedPaymentsCount: Int,
+    val status: TenantMonthTrendStatus
+)
+
+data class TenantPaymentTrendsSummary(
+    val points: List<TenantPaymentTrendPoint> = emptyList(),
+    val currentStreakMonths: Int = 0,
+    val bestStreakMonths: Int = 0,
+    val consistencyPercent: Int = 0,
+    val billedMonthsCount: Int = 0,
+    val settledMonthsCount: Int = 0,
+    val totalBilled12MonthsCents: Long = 0L,
+    val totalPaid12MonthsCents: Long = 0L,
+    val hasHistoricalActivity: Boolean = false
 )
 
 data class InvoiceAllocationUpdate(
@@ -260,5 +295,218 @@ object FinancialEngine {
                 expenseCents = expenseByMonth[key] ?: 0L
             )
         }
+    }
+
+    fun computeTenantPaymentTrends(
+        invoices: List<Invoice>,
+        payments: List<Payment>,
+        activeLeaseId: String? = null,
+        nowMs: Long = System.currentTimeMillis()
+    ): TenantPaymentTrendsSummary {
+        val nairobiTz = TimeZone.getTimeZone("Africa/Nairobi")
+        val keyFmt = SimpleDateFormat("yyyy-MM", Locale.US).apply { timeZone = nairobiTz }
+        val shortFmt = SimpleDateFormat("MMM", Locale.US).apply { timeZone = nairobiTz }
+        val fullFmt = SimpleDateFormat("MMM yyyy", Locale.US).apply { timeZone = nairobiTz }
+
+        val periodKeys = buildRollingMonthKeys(nowMs = nowMs, months = 12, timeZone = nairobiTz, keyFmt = keyFmt)
+        val currentPeriodKey = periodKeys.lastOrNull().orEmpty()
+
+        val activeInvoices = invoices.filter {
+            it.statusEnum() != InvoiceStatus.CANCELLED &&
+                (activeLeaseId == null || it.leaseId == activeLeaseId)
+        }
+        val verifiedPayments = payments.filter {
+            it.statusEnum() == PaymentStatus.VERIFIED &&
+                (activeLeaseId == null || it.leaseId == activeLeaseId)
+        }
+
+        val invoicesByPeriod = activeInvoices.groupBy { inv ->
+            inv.billingPeriod.trim().takeIf { CurrencyUtils.isValidBillingPeriod(it) }
+                ?: keyFmt.format(Date(inv.dueDateEpochMs.takeIf { it > 0L } ?: nowMs))
+        }
+        val paymentsByPeriod = verifiedPayments.groupBy { pay ->
+            keyFmt.format(Date(pay.paymentDateEpochMs.takeIf { it > 0L } ?: nowMs))
+        }
+
+        val points = periodKeys.map { key ->
+            val parsedDate = try {
+                keyFmt.parse(key) ?: Date(nowMs)
+            } catch (_: Exception) {
+                Date(nowMs)
+            }
+            val shortLabel = shortFmt.format(parsedDate)
+            val fullLabel = fullFmt.format(parsedDate)
+
+            val monthInvoices = invoicesByPeriod[key].orEmpty()
+            val monthPayments = paymentsByPeriod[key].orEmpty()
+            val monthInvoiceIds = monthInvoices.map { it.id }.toSet()
+            val linkedPaymentSum = verifiedPayments
+                .filter { it.invoiceId != null && it.invoiceId in monthInvoiceIds }
+                .sumOf { it.amountCents.coerceAtLeast(0L) }
+            val monthPaymentSum = monthPayments.sumOf { it.amountCents.coerceAtLeast(0L) }
+
+            val billedCents = monthInvoices.sumOf { it.totalDueCents.coerceAtLeast(0L) }
+            val paidCents = if (monthInvoices.isNotEmpty()) {
+                maxOf(
+                    monthInvoices.sumOf { it.paidCents.coerceAtLeast(0L) },
+                    linkedPaymentSum
+                )
+            } else {
+                monthPaymentSum
+            }
+            val outstandingCents = if (monthInvoices.isNotEmpty()) {
+                val rawOutstanding = monthInvoices.sumOf { it.outstandingCents.coerceAtLeast(0L) }
+                minOf(rawOutstanding, (billedCents - paidCents).coerceAtLeast(0L))
+            } else {
+                0L
+            }
+
+            val status = when {
+                monthInvoices.isEmpty() && paidCents == 0L -> TenantMonthTrendStatus.NO_INVOICE
+                monthInvoices.isEmpty() && paidCents > 0L -> TenantMonthTrendStatus.PAID_ON_TIME
+                outstandingCents == 0L -> {
+                    val latestDue = monthInvoices.maxOfOrNull { it.dueDateEpochMs } ?: nowMs
+                    val latestVerifiedPayTime = verifiedPayments
+                        .filter { (it.invoiceId != null && it.invoiceId in monthInvoiceIds) || keyFmt.format(Date(it.paymentDateEpochMs)) == key }
+                        .maxOfOrNull { it.paymentDateEpochMs }
+                    if (latestVerifiedPayTime != null && latestVerifiedPayTime > latestDue + 86_400_000L) {
+                        TenantMonthTrendStatus.PAID_LATE
+                    } else {
+                        TenantMonthTrendStatus.PAID_ON_TIME
+                    }
+                }
+                monthInvoices.any { it.statusEnum() == InvoiceStatus.OVERDUE || it.dueDateEpochMs < nowMs } -> {
+                    if (paidCents > 0L) TenantMonthTrendStatus.PARTIAL else TenantMonthTrendStatus.OVERDUE
+                }
+                paidCents > 0L -> TenantMonthTrendStatus.PARTIAL
+                else -> TenantMonthTrendStatus.DUE
+            }
+
+            TenantPaymentTrendPoint(
+                billingPeriod = key,
+                shortLabel = shortLabel,
+                fullLabel = fullLabel,
+                billedCents = billedCents,
+                paidCents = paidCents,
+                outstandingCents = outstandingCents,
+                verifiedPaymentsCount = monthPayments.size,
+                status = status
+            )
+        }
+
+        var runningStreak = 0
+        var bestStreak = 0
+        var settledCount = 0
+        var billedCount = 0
+        var evaluatedConsistencyCount = 0
+
+        points.forEach { pt ->
+            val isSettled = pt.status == TenantMonthTrendStatus.PAID_ON_TIME ||
+                pt.status == TenantMonthTrendStatus.PAID_LATE
+            val isBilled = pt.billedCents > 0L || pt.status != TenantMonthTrendStatus.NO_INVOICE
+            if (isBilled) {
+                billedCount++
+                val isUndueCurrentInvoice = pt.billingPeriod == currentPeriodKey && pt.status == TenantMonthTrendStatus.DUE
+                if (!isUndueCurrentInvoice) {
+                    evaluatedConsistencyCount++
+                }
+                if (isSettled) {
+                    settledCount++
+                    runningStreak++
+                    if (runningStreak > bestStreak) bestStreak = runningStreak
+                } else if (!isUndueCurrentInvoice) {
+                    runningStreak = 0
+                }
+            }
+        }
+
+        val consistencyPercent = when {
+            evaluatedConsistencyCount > 0 -> ((settledCount.toFloat() / evaluatedConsistencyCount.toFloat()) * 100f).roundToInt().coerceIn(0, 100)
+            billedCount > 0 -> 100
+            else -> 0
+        }
+
+        return TenantPaymentTrendsSummary(
+            points = points,
+            currentStreakMonths = runningStreak,
+            bestStreakMonths = bestStreak,
+            consistencyPercent = consistencyPercent,
+            billedMonthsCount = billedCount,
+            settledMonthsCount = settledCount,
+            totalBilled12MonthsCents = points.sumOf { it.billedCents },
+            totalPaid12MonthsCents = points.sumOf { it.paidCents },
+            hasHistoricalActivity = points.any { it.billedCents > 0L || it.paidCents > 0L }
+        )
+    }
+
+    private fun buildRollingMonthKeys(
+        nowMs: Long,
+        months: Int,
+        timeZone: TimeZone,
+        keyFmt: SimpleDateFormat
+    ): List<String> {
+        val cal = Calendar.getInstance(timeZone, Locale.US).apply {
+            timeInMillis = nowMs
+            set(Calendar.DAY_OF_MONTH, 1)
+            set(Calendar.HOUR_OF_DAY, 12)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+            add(Calendar.MONTH, -(months - 1))
+        }
+        val keys = ArrayList<String>(months)
+        repeat(months) {
+            keys.add(keyFmt.format(cal.time))
+            cal.add(Calendar.MONTH, 1)
+        }
+        return keys
+    }
+
+    data class DepositReconciliationResult(
+        val depositHeldCents: Long,
+        val creditAppliedCents: Long,
+        val arrearsIncludedCents: Long,
+        val deductionsTotalCents: Long,
+        val totalAvailableCents: Long,
+        val totalChargesCents: Long,
+        val netRefundCents: Long,
+        val balanceOwedCents: Long
+    )
+
+    fun computeDepositReconciliation(
+        depositHeldCents: Long,
+        creditAppliedCents: Long,
+        arrearsIncludedCents: Long,
+        deductions: List<com.example.domain.model.DepositDeductionItem>
+    ): DepositReconciliationResult {
+        val held = depositHeldCents.coerceAtLeast(0L)
+        val credit = creditAppliedCents.coerceAtLeast(0L)
+        val arrears = arrearsIncludedCents.coerceAtLeast(0L)
+        val deductionsTotal = deductions.sumOf { it.amountCents.coerceAtLeast(0L) }
+        val totalAvailable = held + credit
+        val totalCharges = deductionsTotal + arrears
+        val netRefund = (totalAvailable - totalCharges).coerceAtLeast(0L)
+        val balanceOwed = (totalCharges - totalAvailable).coerceAtLeast(0L)
+        return DepositReconciliationResult(
+            depositHeldCents = held,
+            creditAppliedCents = credit,
+            arrearsIncludedCents = arrears,
+            deductionsTotalCents = deductionsTotal,
+            totalAvailableCents = totalAvailable,
+            totalChargesCents = totalCharges,
+            netRefundCents = netRefund,
+            balanceOwedCents = balanceOwed
+        )
+    }
+
+    fun computeLeaseUnpaidArrearsCents(leaseId: String, invoices: List<Invoice>): Long {
+        if (leaseId.isBlank()) return 0L
+        return invoices
+            .filter {
+                it.leaseId == leaseId &&
+                    it.statusEnum() != InvoiceStatus.CANCELLED &&
+                    it.statusEnum() != InvoiceStatus.PAID
+            }
+            .sumOf { it.outstandingCents.coerceAtLeast(0L) }
     }
 }

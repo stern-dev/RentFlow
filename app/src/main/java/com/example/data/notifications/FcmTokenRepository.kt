@@ -40,6 +40,7 @@ class FcmTokenRepository(
                 uid = user.uid,
                 token = token,
                 notifyMaintenance = profile.notifyMaintenance,
+                notifyRentDue = profile.notifyRentDue,
                 activeRole = profile.activeRole
             ).getOrThrow()
             Result.success(token)
@@ -60,11 +61,13 @@ class FcmTokenRepository(
         return try {
             val userDoc = db.collection("users").document(user.uid).get().await()
             val notifyMaint = userDoc.getBoolean("notifyMaintenance") ?: true
+            val notifyRent = userDoc.getBoolean("notifyRentDue") ?: true
             val activeRole = userDoc.getString("activeRole") ?: UserRole.TENANT.name
             upsertToken(
                 uid = user.uid,
                 token = cleanToken,
                 notifyMaintenance = notifyMaint,
+                notifyRentDue = notifyRent,
                 activeRole = activeRole
             )
         } catch (e: CancellationException) {
@@ -79,6 +82,7 @@ class FcmTokenRepository(
         uid: String,
         token: String,
         notifyMaintenance: Boolean,
+        notifyRentDue: Boolean = true,
         activeRole: String
     ): Result<Unit> {
         val cleanUid = uid.trim()
@@ -98,6 +102,7 @@ class FcmTokenRepository(
                         "token" to cleanToken,
                         "platform" to "ANDROID",
                         "notifyMaintenance" to notifyMaintenance,
+                        "notifyRentDue" to notifyRentDue,
                         "activeRole" to validRole,
                         "appVersion" to BuildConfig.VERSION_NAME.take(40),
                         "updatedAt" to FieldValue.serverTimestamp()
@@ -109,6 +114,7 @@ class FcmTokenRepository(
                     token = cleanToken,
                     platform = "ANDROID",
                     notifyMaintenance = notifyMaintenance,
+                    notifyRentDue = notifyRentDue,
                     activeRole = validRole,
                     appVersion = BuildConfig.VERSION_NAME.take(40)
                 ).toCreateMap()

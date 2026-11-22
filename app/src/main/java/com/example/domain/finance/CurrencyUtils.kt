@@ -49,6 +49,11 @@ object CurrencyUtils {
         return if (cents % 100L == 0L) bd.toBigInteger().toString() else bd.toPlainString()
     }
 
+    fun centsToWholeKesInput(cents: Long): String {
+        if (cents <= 0L) return ""
+        return (cents / 100L).toString()
+    }
+
     fun formatDate(epochMs: Long): String {
         if (epochMs <= 0L) return "N/A"
         val fmt = SimpleDateFormat("d MMM yyyy", kenyaLocale)

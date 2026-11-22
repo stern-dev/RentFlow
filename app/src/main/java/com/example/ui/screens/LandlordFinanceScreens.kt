@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -62,7 +63,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.domain.finance.CurrencyUtils
+import com.example.domain.finance.MpesaReceiptMatchEvaluation
 import com.example.domain.finance.MpesaSmsParser
+import com.example.domain.finance.ReceiptMatchOutcome
 import com.example.domain.finance.RentReminderEngine
 import com.example.domain.model.Expense
 import com.example.domain.model.ExpenseCategory
@@ -70,10 +73,16 @@ import com.example.domain.model.Invoice
 import com.example.domain.model.InvoiceStatus
 import com.example.domain.model.Lease
 import com.example.domain.model.LeaseStatus
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import com.example.domain.model.MpesaReceiptStatus
 import com.example.domain.model.Payment
+import com.example.domain.model.PaymentChannelType
 import com.example.domain.model.PaymentMethod
 import com.example.domain.model.PaymentStatus
+import com.example.domain.model.PaymentVerificationSource
 import com.example.domain.model.Property
+import com.example.domain.model.SavedPaymentMethod
 import com.example.domain.model.UserProfile
 import com.example.domain.security.PermissionPolicy
 import com.example.ui.components.CriticalActionConfirmationDialog
@@ -88,6 +97,7 @@ import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.StatusWarningBg
 import com.example.ui.theme.TabularMoneyStyle
 import com.example.ui.viewmodel.LandlordViewModel
+import com.example.ui.viewmodel.PaymentMethodViewModel
 import com.example.ui.viewmodel.UiState
 
 private enum class LandlordInvoiceFilter(val label: String) {
@@ -110,6 +120,12 @@ private enum class LandlordPaymentFilter(val label: String) {
 fun LandlordFinanceScreen(
     viewModel: LandlordViewModel,
     currentUser: UserProfile,
+    paymentMethodViewModel: PaymentMethodViewModel? = null,
+    onOpenPaymentMethods: () -> Unit = {},
+    stagedMpesaEvaluations: List<MpesaReceiptMatchEvaluation> = emptyList(),
+    mpesaReconcileBusy: Boolean = false,
+    onOpenMpesaReconcile: () -> Unit = {},
+    onStageMpesaSmsText: (String, () -> Unit) -> Unit = { _, onDone -> onDone() },
     isRecentlyAuthenticated: () -> Boolean = { true },
     onReauthenticate: suspend (Context) -> Result<Unit> = { Result.success(Unit) }
 ) {
@@ -120,6 +136,11 @@ fun LandlordFinanceScreen(
     val propertiesState by viewModel.properties.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
 
+    val savedMethodsState = paymentMethodViewModel?.methods?.collectAsStateWithLifecycle()
+    val effectiveSavedMethod = paymentMethodViewModel?.effectiveSelectedMethod?.collectAsStateWithLifecycle()
+    val savedMethods = (savedMethodsState?.value as? UiState.Success)?.data ?: emptyList()
+    val selectedSavedMethod = effectiveSavedMethod?.value
+
     val leases = (leasesState as? UiState.Success)?.data ?: emptyList()
     val properties = (propertiesState as? UiState.Success)?.data ?: emptyList()
 
@@ -127,6 +148,7 @@ fun LandlordFinanceScreen(
     var showGenerateInvoiceDialog by remember { mutableStateOf(false) }
     var showRecordPaymentDialog by remember { mutableStateOf(false) }
     var showRecordExpenseDialog by remember { mutableStateOf(false) }
+    var showQuickPasteMpesaDialog by remember { mutableStateOf(false) }
     var paymentToVerify by remember { mutableStateOf<Payment?>(null) }
     var paymentToReject by remember { mutableStateOf<Payment?>(null) }
     var paymentToReverse by remember { mutableStateOf<Payment?>(null) }
@@ -151,6 +173,13 @@ fun LandlordFinanceScreen(
             1 -> PaymentsTab(
                 paymentsState = paymentsState,
                 hasActiveLeases = leases.any { it.statusEnum() == LeaseStatus.ACTIVE },
+                selectedSavedMethod = selectedSavedMethod,
+                savedMethodsCount = savedMethods.size,
+                showPaymentMethodsCard = paymentMethodViewModel != null,
+                onOpenPaymentMethods = onOpenPaymentMethods,
+                stagedMpesaEvaluations = stagedMpesaEvaluations,
+                onOpenMpesaReconcile = onOpenMpesaReconcile,
+                onQuickPasteSms = { showQuickPasteMpesaDialog = true },
                 canReversePayment = { pay ->
                     PermissionPolicy.canReversePayment(currentUser.userId, currentUser.activeRoleEnum(), pay)
                 },
@@ -165,6 +194,19 @@ fun LandlordFinanceScreen(
                 onAddExpense = { showRecordExpenseDialog = true }
             )
         }
+    }
+
+    if (showQuickPasteMpesaDialog) {
+        BatchMpesaSmsPasteDialog(
+            isBusy = mpesaReconcileBusy,
+            onDismiss = { showQuickPasteMpesaDialog = false },
+            onStage = { rawSms ->
+                onStageMpesaSmsText(rawSms) {
+                    showQuickPasteMpesaDialog = false
+                    onOpenMpesaReconcile()
+                }
+            }
+        )
     }
 
     if (showGenerateInvoiceDialog) {
@@ -227,9 +269,26 @@ fun LandlordFinanceScreen(
         RecordLandlordPaymentDialog(
             leases = leases.filter { it.statusEnum() == LeaseStatus.ACTIVE },
             isBusy = busy,
+            savedMethods = savedMethods,
+            selectedSavedMethod = selectedSavedMethod,
+            onSelectSavedMethod = { methodId -> paymentMethodViewModel?.selectMethod(methodId) },
+            onOpenPaymentMethods = {
+                showRecordPaymentDialog = false
+                onOpenPaymentMethods()
+            },
             onDismiss = { showRecordPaymentDialog = false },
-            onSubmit = { lease, ref, amountCents, method, verifyNow ->
-                viewModel.recordLandlordPayment(lease, ref, amountCents, method, verifyNow, currentUser.fullName) {
+            onSubmit = { lease, ref, amountCents, method, verifyNow, paymentMethodId, channelType, shortcode ->
+                viewModel.recordLandlordPayment(
+                    lease = lease,
+                    referenceCode = ref,
+                    amountCents = amountCents,
+                    method = method,
+                    verifyImmediately = verifyNow,
+                    actorName = currentUser.fullName,
+                    paymentMethodId = paymentMethodId,
+                    paymentChannelType = channelType,
+                    paymentShortcode = shortcode
+                ) {
                     showRecordPaymentDialog = false
                 }
             }
@@ -582,6 +641,13 @@ private fun InvoiceBreakdownLine(
 private fun PaymentsTab(
     paymentsState: UiState<List<Payment>>,
     hasActiveLeases: Boolean,
+    selectedSavedMethod: SavedPaymentMethod?,
+    savedMethodsCount: Int,
+    showPaymentMethodsCard: Boolean,
+    onOpenPaymentMethods: () -> Unit,
+    stagedMpesaEvaluations: List<MpesaReceiptMatchEvaluation>,
+    onOpenMpesaReconcile: () -> Unit,
+    onQuickPasteSms: () -> Unit,
     canReversePayment: (Payment) -> Boolean,
     onRecordPayment: () -> Unit,
     onVerify: (Payment) -> Unit,
@@ -589,6 +655,22 @@ private fun PaymentsTab(
     onReverse: (Payment) -> Unit
 ) {
     var selectedFilter by remember { mutableStateOf(LandlordPaymentFilter.ALL) }
+    val readyMpesaCount = remember(stagedMpesaEvaluations) {
+        stagedMpesaEvaluations.count {
+            it.receipt.statusEnum() == MpesaReceiptStatus.STAGED &&
+                (it.outcome == ReceiptMatchOutcome.EXACT_MATCH ||
+                    it.outcome == ReceiptMatchOutcome.DISCREPANCY_REVIEW ||
+                    it.outcome == ReceiptMatchOutcome.ALREADY_VERIFIED)
+        }
+    }
+    val unmatchedMpesaCount = remember(stagedMpesaEvaluations) {
+        stagedMpesaEvaluations.count {
+            it.receipt.statusEnum() == MpesaReceiptStatus.STAGED &&
+                (it.outcome == ReceiptMatchOutcome.UNMATCHED_LEASE_SUGGESTION ||
+                    it.outcome == ReceiptMatchOutcome.UNMATCHED ||
+                    it.outcome == ReceiptMatchOutcome.OUTGOING_TENANT_ONLY)
+        }
+    }
 
     LazyColumn(
         contentPadding = PaddingValues(16.dp),
@@ -611,6 +693,113 @@ private fun PaymentsTab(
                     Icon(Icons.Filled.Add, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
                     Text("Record Payment")
+                }
+            }
+        }
+        item {
+            Card(
+                shape = MaterialTheme.shapes.medium,
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f)
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("mpesa_auto_reconcile_banner")
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text("M-Pesa SMS Auto-Verify", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                text = if (readyMpesaCount == 0 && unmatchedMpesaCount == 0) {
+                                    "Stage Safaricom M-Pesa confirmations automatically or paste SMS for 1-tap verification"
+                                } else {
+                                    "$readyMpesaCount ready for 1-tap verify • $unmatchedMpesaCount in unmatched queue"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (readyMpesaCount > 0) {
+                            StatusPill("$readyMpesaCount Ready", PillTone.SUCCESS)
+                        } else if (unmatchedMpesaCount > 0) {
+                            StatusPill("$unmatchedMpesaCount Unmatched", PillTone.WARNING)
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = onOpenMpesaReconcile,
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp)
+                                .testTag("open_mpesa_reconcile_button")
+                        ) {
+                            Icon(Icons.Filled.Sms, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Review & Verify")
+                        }
+                        OutlinedButton(
+                            onClick = onQuickPasteSms,
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("quick_paste_mpesa_button")
+                        ) {
+                            Text("Paste SMS")
+                        }
+                    }
+                }
+            }
+        }
+        if (showPaymentMethodsCard) {
+            item {
+                Card(
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("landlord_selected_method_card")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp)
+                    ) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp)
+                        ) {
+                            Text(
+                                text = selectedSavedMethod?.let { "Collection Channel: ${it.label}" }
+                                    ?: "Kenya M-Pesa Paybill & Till Channels",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                text = selectedSavedMethod?.summarySubtitle()
+                                    ?: "Save and validate Paybill, Till, STK Phone, Bank, or Cash methods",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onOpenPaymentMethods,
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("landlord_payment_methods_button")
+                        ) {
+                            Text(if (selectedSavedMethod != null) "Manage ($savedMethodsCount)" else "Select / Add")
+                        }
+                    }
                 }
             }
         }
@@ -727,7 +916,15 @@ private fun PaymentsTab(
                                                 "${pay.tenantName} • ${CurrencyUtils.formatKes(pay.amountCents, true)}",
                                                 style = TabularMoneyStyle.copy(fontSize = MaterialTheme.typography.titleMedium.fontSize)
                                             )
-                                            Text("${pay.propertyName} (${pay.unitNumber}) • ${pay.methodEnum().label}", style = MaterialTheme.typography.bodySmall)
+                                            val channelSuffix = buildString {
+                                                append(pay.channelTypeEnum()?.label ?: pay.methodEnum().label)
+                                                if (!pay.paymentShortcode.isNullOrBlank()) {
+                                                    append(" (")
+                                                    append(pay.paymentShortcode)
+                                                    append(")")
+                                                }
+                                            }
+                                            Text("${pay.propertyName} (${pay.unitNumber}) • $channelSuffix", style = MaterialTheme.typography.bodySmall)
                                             Text(
                                                 "Ref: ${pay.referenceCode}${if (pay.simulatedCheckout) " [Simulated Checkout]" else ""}",
                                                 style = MaterialTheme.typography.bodySmall,
@@ -740,7 +937,12 @@ private fun PaymentsTab(
                                                 Text("Note: ${pay.verificationNotes}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                             }
                                         }
-                                        StatusPill(pay.statusEnum().label, tone)
+                                        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            StatusPill(pay.statusEnum().label, tone)
+                                            if (pay.verificationSourceEnum() == PaymentVerificationSource.MPESA_SMS_MATCH) {
+                                                StatusPill("M-Pesa SMS Verified", PillTone.INFO)
+                                            }
+                                        }
                                     }
                                     when (pay.statusEnum()) {
                                         PaymentStatus.PENDING_VERIFICATION -> {
@@ -905,17 +1107,32 @@ private fun ExpensesTab(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun RecordLandlordPaymentDialog(
     leases: List<Lease>,
     isBusy: Boolean,
+    savedMethods: List<SavedPaymentMethod> = emptyList(),
+    selectedSavedMethod: SavedPaymentMethod? = null,
+    onSelectSavedMethod: (String?) -> Unit = {},
+    onOpenPaymentMethods: (() -> Unit)? = null,
     onDismiss: () -> Unit,
-    onSubmit: (Lease, String, Long, PaymentMethod, Boolean) -> Unit
+    onSubmit: (
+        Lease,
+        String,
+        Long,
+        PaymentMethod,
+        Boolean,
+        String?,
+        PaymentChannelType?,
+        String?
+    ) -> Unit
 ) {
     var selectedLease by remember { mutableStateOf(leases.firstOrNull()) }
     var leaseExpanded by remember { mutableStateOf(false) }
-    var method by remember { mutableStateOf(PaymentMethod.CASH) }
+    var method by remember(selectedSavedMethod?.id) {
+        mutableStateOf(selectedSavedMethod?.channelTypeEnum()?.baseMethod ?: PaymentMethod.CASH)
+    }
     var methodExpanded by remember { mutableStateOf(false) }
     var refCode by remember { mutableStateOf("") }
     var amountText by remember { mutableStateOf(selectedLease?.let { CurrencyUtils.centsToInputString(it.rentCents) } ?: "") }
@@ -928,6 +1145,41 @@ private fun RecordLandlordPaymentDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
                 if (!err.isNullOrBlank()) ErrorBannerCard(err!!)
+                if (savedMethods.isNotEmpty() || onOpenPaymentMethods != null) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Collection Channel", style = MaterialTheme.typography.labelMedium)
+                            if (onOpenPaymentMethods != null) {
+                                TextButton(
+                                    onClick = onOpenPaymentMethods,
+                                    modifier = Modifier.heightIn(min = 48.dp)
+                                ) {
+                                    Text("Select / Add")
+                                }
+                            }
+                        }
+                        if (savedMethods.isNotEmpty()) {
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                savedMethods.take(5).forEach { saved ->
+                                    FilterChip(
+                                        selected = selectedSavedMethod?.id == saved.id,
+                                        onClick = {
+                                            onSelectSavedMethod(saved.id)
+                                            method = saved.channelTypeEnum().baseMethod
+                                            err = null
+                                        },
+                                        label = { Text(saved.label) },
+                                        modifier = Modifier.heightIn(min = 48.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 ExposedDropdownMenuBox(expanded = leaseExpanded, onExpandedChange = { leaseExpanded = !leaseExpanded }) {
                     OutlinedTextField(
                         value = selectedLease?.let { "${it.tenantName} (${it.unitNumber})" } ?: "Select Lease",
@@ -993,7 +1245,16 @@ private fun RecordLandlordPaymentDialog(
                     if (lease == null) err = "Select a lease"
                     else if (!CurrencyUtils.isValidMpesaReference(refCode)) err = "Enter a 4–30 character alphanumeric/hyphen reference code"
                     else if (amount == null || amount <= 0L) err = "Enter valid amount greater than 0"
-                    else onSubmit(lease, refCode.trim().uppercase(), amount, method, verifyNow)
+                    else onSubmit(
+                        lease,
+                        refCode.trim().uppercase(),
+                        amount,
+                        method,
+                        verifyNow,
+                        selectedSavedMethod?.id,
+                        selectedSavedMethod?.channelTypeEnum(),
+                        selectedSavedMethod?.primaryShortcodeOrIdentifier()
+                    )
                 },
                 enabled = !isBusy
             ) { Text("Save Payment") }

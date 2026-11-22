@@ -34,6 +34,7 @@ import kotlinx.coroutines.launch
 
 class MainActivity : FragmentActivity() {
     private var pendingPushDeepLink by mutableStateOf<PushDeepLink?>(null)
+    private var pendingSharedSmsText by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,6 +42,7 @@ class MainActivity : FragmentActivity() {
         NotificationHelper.ensureChannels(this)
         RentReminderWorker.scheduleDaily(applicationContext)
         pendingPushDeepLink = NotificationHelper.parseDeepLinkIntent(intent)
+        pendingSharedSmsText = extractSharedSmsText(intent)
         enableEdgeToEdge()
         setContent {
             val themeRepo = remember { ThemePreferencesRepository(applicationContext) }
@@ -99,8 +101,10 @@ class MainActivity : FragmentActivity() {
                     onThemeChange = { mode ->
                         scope.launch { themeRepo.setThemeMode(mode) }
                     },
-                    pendingPushRoute = pendingPushDeepLink?.targetRoute,
-                    onConsumePushRoute = { pendingPushDeepLink = null },
+                    pendingPushDeepLink = pendingPushDeepLink,
+                    onConsumePushDeepLink = { pendingPushDeepLink = null },
+                    pendingSharedSmsText = pendingSharedSmsText,
+                    onConsumeSharedSms = { pendingSharedSmsText = null },
                     securityPrefs = securityPrefs,
                     biometricAvailability = biometricAvailability,
                     isAppLocked = isAppLocked,
@@ -166,5 +170,15 @@ class MainActivity : FragmentActivity() {
         NotificationHelper.parseDeepLinkIntent(intent)?.let { deepLink ->
             pendingPushDeepLink = deepLink
         }
+        extractSharedSmsText(intent)?.let { shared ->
+            pendingSharedSmsText = shared
+        }
+    }
+
+    private fun extractSharedSmsText(intent: Intent?): String? {
+        if (intent?.action != Intent.ACTION_SEND) return null
+        val type = intent.type ?: return null
+        if (!type.startsWith("text/")) return null
+        return intent.getStringExtra(Intent.EXTRA_TEXT)?.trim()?.takeIf { it.isNotBlank() }
     }
 }
