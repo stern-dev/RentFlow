@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.repository.FinanceRepository
 import com.example.data.repository.HandoverRepository
+import com.example.data.repository.MoveInChecklistRepository
 import com.example.data.repository.OperationsRepository
 import com.example.data.repository.PropertyRepository
 import com.example.domain.finance.FinancialEngine
@@ -20,6 +21,7 @@ import com.example.domain.model.MaintenanceCategory
 import com.example.domain.model.MaintenancePriority
 import com.example.domain.model.MaintenanceRequest
 import com.example.domain.model.MoveInChecklist
+import com.example.domain.model.MoveInConditionChecklist
 import com.example.domain.model.Payment
 import com.example.domain.model.PaymentChannelType
 import com.example.domain.model.PaymentMethod
@@ -42,7 +44,8 @@ class TenantViewModel(
     private val financeRepo: FinanceRepository,
     private val opsRepo: OperationsRepository,
     private val currentUserId: String,
-    private val handoverRepo: HandoverRepository? = null
+    private val handoverRepo: HandoverRepository? = null,
+    private val conditionChecklistRepo: MoveInChecklistRepository? = null
 ) : ViewModel() {
 
     val leases: StateFlow<UiState<List<Lease>>> = propertyRepo.observeMyLeases(currentUserId)
@@ -67,6 +70,10 @@ class TenantViewModel(
 
     val moveInChecklists: StateFlow<UiState<List<MoveInChecklist>>> = (handoverRepo?.observeChecklistsForTenant(currentUserId) ?: flowOf(emptyList()))
         .asUiState("TenantVM", "Failed to load move-in checklists")
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
+
+    val conditionChecklists: StateFlow<UiState<List<MoveInConditionChecklist>>> = (conditionChecklistRepo?.observeChecklistsForTenant(currentUserId) ?: flowOf(emptyList()))
+        .asUiState("TenantVM", "Failed to load room-by-room checklists")
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
     val depositSettlements: StateFlow<UiState<List<DepositSettlement>>> = (handoverRepo?.observeSettlementsForTenant(currentUserId) ?: flowOf(emptyList()))
@@ -304,6 +311,44 @@ class TenantViewModel(
                 },
                 onFailure = {
                     _feedback.value = it.localizedMessage ?: "Failed to submit checklist response"
+                }
+            )
+        }
+    }
+
+    fun submitConditionChecklistReview(
+        checklist: MoveInConditionChecklist,
+        acknowledge: Boolean,
+        tenantRemarksByItemId: Map<String, String>,
+        tenantSummary: String?,
+        actorName: String,
+        onSuccess: () -> Unit
+    ) {
+        val repo = conditionChecklistRepo ?: run {
+            _feedback.value = "Room-by-room checklist repository unavailable"
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            val res = repo.submitTenantReview(
+                checklist = checklist,
+                acknowledge = acknowledge,
+                tenantRemarksByItemId = tenantRemarksByItemId,
+                tenantSummary = tenantSummary,
+                actorName = actorName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = if (acknowledge) {
+                        "Room-by-room checklist signed off & locked"
+                    } else {
+                        "Discrepancy remarks sent to your landlord"
+                    }
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to submit checklist review"
                 }
             )
         }

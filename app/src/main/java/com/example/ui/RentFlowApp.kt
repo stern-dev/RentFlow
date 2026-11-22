@@ -86,6 +86,7 @@ import com.example.data.notifications.NotificationHelper
 import com.example.data.notifications.PushDeepLink
 import com.example.data.repository.FinanceRepository
 import com.example.data.repository.HandoverRepository
+import com.example.data.repository.MoveInChecklistRepository
 import com.example.data.repository.MpesaCapturePreferencesRepository
 import com.example.data.repository.MpesaReceiptRepository
 import com.example.data.repository.OperationsRepository
@@ -301,6 +302,7 @@ private fun AuthenticatedRentFlowShell(
     val financeRepo = remember(context) { FinanceRepository(context) }
     val opsRepo = remember(context) { OperationsRepository(context) }
     val handoverRepo = remember(context) { HandoverRepository(context) }
+    val conditionChecklistRepo = remember(context) { MoveInChecklistRepository(context) }
     val paymentMethodRepo = remember(context) { PaymentMethodRepository(context) }
     val mpesaReceiptRepo = remember(context) { MpesaReceiptRepository(context) }
     val mpesaPrefsRepo = remember(context) { MpesaCapturePreferencesRepository(context) }
@@ -370,6 +372,7 @@ private fun AuthenticatedRentFlowShell(
                         financeRepo = financeRepo,
                         opsRepo = opsRepo,
                         handoverRepo = handoverRepo,
+                        conditionChecklistRepo = conditionChecklistRepo,
                         paymentMethodRepo = paymentMethodRepo,
                         mpesaReceiptRepo = mpesaReceiptRepo,
                         mpesaPrefsRepo = mpesaPrefsRepo,
@@ -411,6 +414,7 @@ private fun RoleRoutedWorkspace(
     financeRepo: FinanceRepository,
     opsRepo: OperationsRepository,
     handoverRepo: HandoverRepository,
+    conditionChecklistRepo: MoveInChecklistRepository,
     paymentMethodRepo: PaymentMethodRepository,
     mpesaReceiptRepo: MpesaReceiptRepository,
     mpesaPrefsRepo: MpesaCapturePreferencesRepository,
@@ -438,7 +442,14 @@ private fun RoleRoutedWorkspace(
         factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                LandlordViewModel(propertyRepo, financeRepo, opsRepo, uid, handoverRepo = handoverRepo) as T
+                LandlordViewModel(
+                    propertyRepo,
+                    financeRepo,
+                    opsRepo,
+                    uid,
+                    handoverRepo = handoverRepo,
+                    conditionChecklistRepo = conditionChecklistRepo
+                ) as T
         }
     )
     val resolvedOrgId = remember(profile.activeOrgId, organizations) {
@@ -460,7 +471,14 @@ private fun RoleRoutedWorkspace(
         factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                TenantViewModel(propertyRepo, financeRepo, opsRepo, uid, handoverRepo = handoverRepo) as T
+                TenantViewModel(
+                    propertyRepo,
+                    financeRepo,
+                    opsRepo,
+                    uid,
+                    handoverRepo = handoverRepo,
+                    conditionChecklistRepo = conditionChecklistRepo
+                ) as T
         }
     )
     val opsVm: OperationsViewModel = viewModel(

@@ -2965,6 +2965,237 @@ test("Move-in checklists & deposit settlements: role permissions, KES math invar
   );
 });
 
+test("Move-in condition checklists (room-by-room): role permissions, grouped rooms, draft delete, tenant remarks, and ACKNOWLEDGED lock", async () => {
+  const now = pastDate(8000);
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Wanjiku Kamau", email: "owner@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: MANAGER_UID, fullName: "Grace Wambui", email: "manager@example.com", roles: ["PROPERTY_MANAGER"], now });
+    await seedUser(db, { uid: TENANT_UID, fullName: "Brian Ochieng", email: "tenant@example.com", roles: ["TENANT"], now });
+    await seedUser(db, { uid: OTHER_TENANT_UID, fullName: "Other Tenant", email: "other@example.com", roles: ["TENANT"], now });
+    await db.collection("organizations").doc("org_mcc").set({
+      name: "Kilimani Homes",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID, MANAGER_UID],
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("leases").doc("lease_mcc").set({
+      orgId: "org_mcc",
+      propertyId: "prop_mcc",
+      propertyName: "Kilimani Ridge",
+      unitId: "unit_mcc",
+      unitNumber: "B2",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      tenantPhone: "+254712345678",
+      rentCents: 3500000,
+      depositCents: 3500000,
+      startDateEpochMs: Date.now() - 864000000,
+      endDateEpochMs: Date.now() + 864000000,
+      dueDayOfMonth: 5,
+      status: "ACTIVE",
+      creditBalanceCents: 0,
+      termsSummary: "Standard KE lease",
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com", true);
+  const managerDb = authedDb(MANAGER_UID, "manager@example.com", true);
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com", true);
+  const otherDb = authedDb(OTHER_TENANT_UID, "other@example.com", true);
+
+  const mccRef = landlordDb.collection("move_in_condition_checklists").doc("mcc_lease_mcc");
+  const sampleRooms = [
+    {
+      roomId: "room_living",
+      roomName: "Living Room",
+      roomRemarks: "Freshly painted",
+      items: [
+        {
+          itemId: "living_walls",
+          label: "Walls & Ceiling",
+          status: "GOOD",
+          imageRefs: ["data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ=="],
+          landlordRemarks: "No scuffs",
+          tenantRemarks: "",
+        },
+      ],
+    },
+    {
+      roomId: "room_kitchen",
+      roomName: "Kitchen",
+      roomRemarks: "",
+      items: [
+        {
+          itemId: "kitchen_sink",
+          label: "Sink & Mixer",
+          status: "FAIR",
+          imageRefs: [],
+          landlordRemarks: "Minor water mark near tap",
+          tenantRemarks: "",
+        },
+      ],
+    },
+  ];
+
+  const baseMcc = {
+    leaseId: "lease_mcc",
+    orgId: "org_mcc",
+    propertyId: "prop_mcc",
+    propertyName: "Kilimani Ridge",
+    unitId: "unit_mcc",
+    unitNumber: "B2",
+    ownerUid: LANDLORD_UID,
+    managerUids: [MANAGER_UID],
+    authorizedUids: [LANDLORD_UID, MANAGER_UID],
+    tenantUid: TENANT_UID,
+    tenantName: "Brian Ochieng",
+    status: "DRAFT",
+    inspectionDateEpochMs: Date.now() - 1000,
+    waterMeterReading: "WM-301",
+    electricityMeterReading: "KPLC-882",
+    keysHandedOverCount: 3,
+    rooms: sampleRooms,
+    landlordSummary: "Initial handover inspection",
+    createdByUid: LANDLORD_UID,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  // Tenant cannot create, and empty rooms are rejected
+  await assertFails(
+    tenantDb.collection("move_in_condition_checklists").doc("mcc_lease_mcc").set({
+      ...baseMcc,
+      createdByUid: TENANT_UID,
+    })
+  );
+  await assertFails(
+    mccRef.set({
+      ...baseMcc,
+      rooms: [],
+    })
+  );
+
+  // Landlord creates DRAFT, owner can delete DRAFT, then re-creates
+  await assertSucceeds(mccRef.set(baseMcc));
+  await assertFails(managerDb.collection("move_in_condition_checklists").doc("mcc_lease_mcc").delete());
+  await assertSucceeds(mccRef.delete());
+  await assertSucceeds(mccRef.set(baseMcc));
+
+  // Manager submits for tenant sign-off
+  await assertSucceeds(
+    managerDb.collection("move_in_condition_checklists").doc("mcc_lease_mcc").update({
+      status: "PENDING_TENANT_REVIEW",
+      landlordSummary: "Ready for tenant walkthrough",
+      updatedAt: pastDate(700),
+    })
+  );
+
+  // Non-DRAFT cannot be deleted by owner; unrelated user cannot read/write
+  await assertFails(mccRef.delete());
+  await assertFails(otherDb.collection("move_in_condition_checklists").doc("mcc_lease_mcc").get());
+  await assertFails(
+    otherDb.collection("move_in_condition_checklists").doc("mcc_lease_mcc").update({
+      status: "DISPUTED",
+      tenantSummary: "Unauthorized",
+      updatedAt: pastDate(650),
+    })
+  );
+
+  // Tenant cannot change room count or keysHandedOverCount during review, nor dispute without summary
+  await assertFails(
+    tenantDb.collection("move_in_condition_checklists").doc("mcc_lease_mcc").update({
+      status: "DISPUTED",
+      updatedAt: pastDate(600),
+    })
+  );
+  await assertFails(
+    tenantDb.collection("move_in_condition_checklists").doc("mcc_lease_mcc").update({
+      status: "DISPUTED",
+      tenantSummary: "Trying to drop a room",
+      rooms: [sampleRooms[0]],
+      updatedAt: pastDate(600),
+    })
+  );
+  await assertFails(
+    tenantDb.collection("move_in_condition_checklists").doc("mcc_lease_mcc").update({
+      status: "ACKNOWLEDGED",
+      keysHandedOverCount: 1,
+      acknowledgedByUid: TENANT_UID,
+      acknowledgedAtEpochMs: Date.now(),
+      updatedAt: pastDate(600),
+    })
+  );
+
+  // Tenant records per-item tenantRemarks and disputes cleanly
+  const roomsWithTenantRemarks = sampleRooms.map((r, idx) =>
+    idx === 1
+      ? {
+          ...r,
+          items: r.items.map((it) => ({
+            ...it,
+            tenantRemarks: "Sink trap drips slightly when cold tap runs full.",
+          })),
+        }
+      : r
+  );
+  await assertSucceeds(
+    tenantDb.collection("move_in_condition_checklists").doc("mcc_lease_mcc").update({
+      status: "DISPUTED",
+      rooms: roomsWithTenantRemarks,
+      tenantSummary: "Noted kitchen sink drip on inspection.",
+      updatedAt: pastDate(550),
+    })
+  );
+
+  // Landlord updates remarks and re-submits for tenant acknowledgement
+  await assertSucceeds(
+    mccRef.update({
+      status: "PENDING_TENANT_REVIEW",
+      landlordSummary: "Plumber scheduled; pre-existing sink drip noted.",
+      updatedAt: pastDate(500),
+    })
+  );
+
+  // Tenant signs off -> ACKNOWLEDGED
+  await assertSucceeds(
+    tenantDb.collection("move_in_condition_checklists").doc("mcc_lease_mcc").update({
+      status: "ACKNOWLEDGED",
+      rooms: roomsWithTenantRemarks,
+      tenantSummary: "Agreed and signed off.",
+      acknowledgedByUid: TENANT_UID,
+      acknowledgedAtEpochMs: Date.now(),
+      updatedAt: pastDate(400),
+    })
+  );
+
+  // Permanently locked once ACKNOWLEDGED
+  await assertFails(
+    mccRef.update({
+      landlordSummary: "Post-signoff edit attempt",
+      updatedAt: pastDate(300),
+    })
+  );
+  await assertFails(
+    tenantDb.collection("move_in_condition_checklists").doc("mcc_lease_mcc").update({
+      status: "DISPUTED",
+      tenantSummary: "Cannot reopen after sign-off",
+      updatedAt: pastDate(300),
+    })
+  );
+});
+
+
 
 
 

@@ -188,6 +188,16 @@ enum class ChecklistCondition(val label: String) {
     DAMAGED("Damaged")
 }
 
+enum class InspectionItemStatus(val label: String) {
+    EXCELLENT("Excellent"),
+    GOOD("Good"),
+    FAIR("Fair"),
+    NEEDS_REPAIR("Needs Repair"),
+    DAMAGED("Damaged"),
+    MISSING("Missing"),
+    NOT_APPLICABLE("N/A")
+}
+
 enum class MoveInChecklistStatus(val label: String) {
     DRAFT("Draft"),
     PENDING_TENANT_REVIEW("Pending Sign-Off"),
@@ -1270,6 +1280,161 @@ data class MoveInChecklist(
             ChecklistItem("bedroom_wardrobe", "Bedroom", "Wardrobes, Doors & Handles", ChecklistCondition.GOOD.name, ""),
             ChecklistItem("utilities_power", "Utilities", "KPLC / Token Meter & Sockets", ChecklistCondition.GOOD.name, ""),
             ChecklistItem("security_locks", "Security", "Main Door Lock, Padlock Latch & Keys", ChecklistCondition.GOOD.name, "")
+        )
+    }
+}
+
+@Keep
+@IgnoreExtraProperties
+data class RoomInspectionItem(
+    val itemId: String = "",
+    val label: String = "",
+    val status: String = InspectionItemStatus.GOOD.name,
+    val imageRefs: List<String> = emptyList(),
+    val landlordRemarks: String = "",
+    val tenantRemarks: String = ""
+) {
+    fun statusEnum(): InspectionItemStatus = safeEnum(status, InspectionItemStatus.GOOD)
+
+    fun toMap(): Map<String, Any> = mapOf(
+        "itemId" to itemId.trim().take(64),
+        "label" to label.trim().take(100),
+        "status" to statusEnum().name,
+        "imageRefs" to imageRefs.map { it.trim() }.filter { it.isNotBlank() }.take(MAX_PHOTOS_PER_ITEM),
+        "landlordRemarks" to landlordRemarks.trim().take(400),
+        "tenantRemarks" to tenantRemarks.trim().take(400)
+    )
+
+    companion object {
+        const val MAX_PHOTOS_PER_ITEM = 2
+    }
+}
+
+@Keep
+@IgnoreExtraProperties
+data class InspectionRoom(
+    val roomId: String = "",
+    val roomName: String = "",
+    val roomRemarks: String = "",
+    val items: List<RoomInspectionItem> = emptyList()
+) {
+    fun toMap(): Map<String, Any> = mapOf(
+        "roomId" to roomId.trim().take(64),
+        "roomName" to roomName.trim().take(60),
+        "roomRemarks" to roomRemarks.trim().take(400),
+        "items" to items.map { it.toMap() }
+    )
+}
+
+@Keep
+@IgnoreExtraProperties
+data class MoveInConditionChecklist(
+    @DocumentId val id: String = "",
+    val leaseId: String = "",
+    val orgId: String = "",
+    val propertyId: String = "",
+    val propertyName: String = "",
+    val unitId: String = "",
+    val unitNumber: String = "",
+    val ownerUid: String = "",
+    val managerUids: List<String> = emptyList(),
+    val authorizedUids: List<String> = emptyList(),
+    val tenantUid: String = "",
+    val tenantName: String = "",
+    val status: String = MoveInChecklistStatus.DRAFT.name,
+    val inspectionDateEpochMs: Long = 0L,
+    val waterMeterReading: String? = null,
+    val electricityMeterReading: String? = null,
+    val keysHandedOverCount: Long = 0L,
+    val rooms: List<InspectionRoom> = emptyList(),
+    val landlordSummary: String? = null,
+    val tenantSummary: String? = null,
+    val acknowledgedAtEpochMs: Long? = null,
+    val acknowledgedByUid: String? = null,
+    val createdByUid: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun statusEnum(): MoveInChecklistStatus = safeEnum(status, MoveInChecklistStatus.DRAFT)
+
+    fun totalItemsCount(): Int = rooms.sumOf { it.items.size }
+
+    fun totalPhotoCount(): Int = rooms.sumOf { room -> room.items.sumOf { it.imageRefs.size } }
+
+    @Suppress("UNCHECKED_CAST")
+    fun toCreateMap(): Map<String, Any> = mapOf(
+        "leaseId" to leaseId,
+        "orgId" to orgId,
+        "propertyId" to propertyId,
+        "propertyName" to propertyName,
+        "unitId" to unitId,
+        "unitNumber" to unitNumber,
+        "ownerUid" to ownerUid,
+        "managerUids" to managerUids,
+        "authorizedUids" to authorizedUids,
+        "tenantUid" to tenantUid,
+        "tenantName" to tenantName,
+        "status" to status,
+        "inspectionDateEpochMs" to inspectionDateEpochMs,
+        "waterMeterReading" to waterMeterReading?.trim()?.take(40)?.takeIf { it.isNotBlank() },
+        "electricityMeterReading" to electricityMeterReading?.trim()?.take(40)?.takeIf { it.isNotBlank() },
+        "keysHandedOverCount" to keysHandedOverCount.coerceIn(0L, 50L),
+        "rooms" to rooms.map { it.toMap() },
+        "landlordSummary" to landlordSummary?.trim()?.take(800)?.takeIf { it.isNotBlank() },
+        "tenantSummary" to tenantSummary?.trim()?.take(800)?.takeIf { it.isNotBlank() },
+        "acknowledgedAtEpochMs" to acknowledgedAtEpochMs,
+        "acknowledgedByUid" to acknowledgedByUid?.takeIf { it.isNotBlank() },
+        "createdByUid" to createdByUid,
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp()
+    ).filterValues { it != null } as Map<String, Any>
+
+    companion object {
+        const val MAX_ROOMS = 15
+        const val MAX_ITEMS_PER_ROOM = 15
+
+        fun defaultKenyanRooms(): List<InspectionRoom> = listOf(
+            InspectionRoom(
+                roomId = "room_living",
+                roomName = "Living Room",
+                items = listOf(
+                    RoomInspectionItem("living_walls", "Walls, Paint & Ceiling", InspectionItemStatus.GOOD.name),
+                    RoomInspectionItem("living_floor", "Flooring, Tiles & Skirting", InspectionItemStatus.GOOD.name),
+                    RoomInspectionItem("living_windows", "Windows, Latches & Security Grilles", InspectionItemStatus.GOOD.name)
+                )
+            ),
+            InspectionRoom(
+                roomId = "room_kitchen",
+                roomName = "Kitchen",
+                items = listOf(
+                    RoomInspectionItem("kitchen_sink", "Sink, Taps & Drainage Trap", InspectionItemStatus.GOOD.name),
+                    RoomInspectionItem("kitchen_cabinets", "Cabinets, Worktop & Hinges", InspectionItemStatus.GOOD.name)
+                )
+            ),
+            InspectionRoom(
+                roomId = "room_bathroom",
+                roomName = "Bathroom & Toilet",
+                items = listOf(
+                    RoomInspectionItem("bath_plumbing", "Shower Head, Mixer & Drainage", InspectionItemStatus.GOOD.name),
+                    RoomInspectionItem("bath_toilet", "Toilet Cistern, Flush & Seat", InspectionItemStatus.GOOD.name)
+                )
+            ),
+            InspectionRoom(
+                roomId = "room_bedroom",
+                roomName = "Bedroom",
+                items = listOf(
+                    RoomInspectionItem("bedroom_wardrobe", "Wardrobes, Doors & Handles", InspectionItemStatus.GOOD.name),
+                    RoomInspectionItem("bedroom_lighting", "Lighting Fixtures & Wall Sockets", InspectionItemStatus.GOOD.name)
+                )
+            ),
+            InspectionRoom(
+                roomId = "room_utilities",
+                roomName = "Utilities & Security",
+                items = listOf(
+                    RoomInspectionItem("utilities_power", "KPLC / Token Meter & Main Switch", InspectionItemStatus.GOOD.name),
+                    RoomInspectionItem("security_locks", "Main Door Lock, Padlock Latch & Keys", InspectionItemStatus.GOOD.name)
+                )
+            )
         )
     }
 }

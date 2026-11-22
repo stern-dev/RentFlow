@@ -700,6 +700,39 @@ service cloud.firestore {
              isValidMoveInChecklistUpdate(d);
     }
 
+    function isValidMoveInConditionChecklistUpdate(d) {
+      return d.propertyName is string && d.propertyName.size() > 0 && d.propertyName.size() <= 120 &&
+             d.unitNumber is string && d.unitNumber.size() > 0 && d.unitNumber.size() <= 40 &&
+             d.managerUids is list && d.managerUids.size() <= 15 &&
+             d.authorizedUids is list && d.authorizedUids.size() >= 1 && d.authorizedUids.size() <= 20 &&
+             d.ownerUid in d.authorizedUids &&
+             d.tenantName is string && d.tenantName.size() > 0 && d.tenantName.size() <= 100 &&
+             d.status in ['DRAFT', 'PENDING_TENANT_REVIEW', 'ACKNOWLEDGED', 'DISPUTED'] &&
+             d.inspectionDateEpochMs is int && d.inspectionDateEpochMs > 0 &&
+             (!('waterMeterReading' in d) || (d.waterMeterReading is string && d.waterMeterReading.size() <= 40)) &&
+             (!('electricityMeterReading' in d) || (d.electricityMeterReading is string && d.electricityMeterReading.size() <= 40)) &&
+             d.keysHandedOverCount is int && d.keysHandedOverCount >= 0 && d.keysHandedOverCount <= 50 &&
+             d.rooms is list && d.rooms.size() >= 1 && d.rooms.size() <= 15 &&
+             d.rooms[0] is map && d.rooms[0].items is list && d.rooms[0].items.size() >= 1 &&
+             (!('landlordSummary' in d) || (d.landlordSummary is string && d.landlordSummary.size() <= 800)) &&
+             (!('tenantSummary' in d) || (d.tenantSummary is string && d.tenantSummary.size() <= 800)) &&
+             (!('acknowledgedAtEpochMs' in d) || (d.acknowledgedAtEpochMs is int && d.acknowledgedAtEpochMs >= 0)) &&
+             (!('acknowledgedByUid' in d) || (d.acknowledgedByUid is string && d.acknowledgedByUid.size() <= 128)) &&
+             d.updatedAt is timestamp && d.updatedAt <= request.time;
+    }
+
+    function isValidMoveInConditionChecklist(d) {
+      return d.leaseId is string && d.leaseId.size() > 0 &&
+             d.orgId is string && d.orgId.size() > 0 &&
+             d.propertyId is string && d.propertyId.size() > 0 &&
+             d.unitId is string && d.unitId.size() > 0 &&
+             d.ownerUid is string && d.ownerUid.size() > 0 &&
+             d.tenantUid is string && d.tenantUid.size() > 0 &&
+             d.createdByUid is string && d.createdByUid.size() > 0 &&
+             d.createdAt is timestamp && d.createdAt <= request.time &&
+             isValidMoveInConditionChecklistUpdate(d);
+    }
+
     function isValidDepositSettlementUpdate(d) {
       return d.propertyName is string && d.propertyName.size() > 0 && d.propertyName.size() <= 120 &&
              d.unitNumber is string && d.unitNumber.size() > 0 && d.unitNumber.size() <= 40 &&
@@ -816,6 +849,87 @@ service cloud.firestore {
                      (
                        (d.status == 'ACKNOWLEDGED' && d.acknowledgedByUid == uid && d.acknowledgedAtEpochMs is int && d.acknowledgedAtEpochMs > 0) ||
                        (d.status == 'DISPUTED' && 'tenantResponseNote' in d && d.tenantResponseNote is string && d.tenantResponseNote.size() >= 3 && d.tenantResponseNote.size() <= 800 && !('acknowledgedAtEpochMs' in d) && !('acknowledgedByUid' in d))
+                     )
+                   )
+                 )
+               )
+             );
+    }
+
+    function canCreateMoveInConditionChecklist(checklistId) {
+      let d = request.resource.data;
+      let uid = request.auth.uid;
+      let lPath = /databases/$(database)/documents/leases/$(d.leaseId);
+      let l = exists(lPath) ? get(lPath).data : null;
+      return isValidId(checklistId) &&
+             isValidMoveInConditionChecklist(d) &&
+             d.createdByUid == uid &&
+             d.status in ['DRAFT', 'PENDING_TENANT_REVIEW'] &&
+             !('acknowledgedAtEpochMs' in d) &&
+             !('acknowledgedByUid' in d) &&
+             d.keys().hasOnly(['leaseId', 'orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'status', 'inspectionDateEpochMs', 'waterMeterReading', 'electricityMeterReading', 'keysHandedOverCount', 'rooms', 'landlordSummary', 'tenantSummary', 'acknowledgedAtEpochMs', 'acknowledgedByUid', 'createdByUid', 'createdAt', 'updatedAt']) &&
+             l != null &&
+             l.orgId == d.orgId &&
+             l.propertyId == d.propertyId &&
+             l.unitId == d.unitId &&
+             l.ownerUid == d.ownerUid &&
+             l.tenantUid == d.tenantUid &&
+             d.authorizedUids == l.authorizedUids &&
+             (
+               isAdmin() ||
+               (
+                 hasAnyVerifiedRole(['LANDLORD', 'PROPERTY_MANAGER']) &&
+                 uid in d.authorizedUids &&
+                 isActiveOrgMember(d.orgId)
+               )
+             );
+    }
+
+    function canUpdateMoveInConditionChecklist(checklistId) {
+      let d = request.resource.data;
+      let e = resource.data;
+      let uid = request.auth.uid;
+      let u = loadActiveUser();
+      let changed = d.diff(e).affectedKeys();
+      return isValidId(checklistId) &&
+             isValidMoveInConditionChecklistUpdate(d) &&
+             d.leaseId == e.leaseId &&
+             d.orgId == e.orgId &&
+             d.propertyId == e.propertyId &&
+             d.unitId == e.unitId &&
+             d.ownerUid == e.ownerUid &&
+             d.tenantUid == e.tenantUid &&
+             d.createdByUid == e.createdByUid &&
+             d.createdAt == e.createdAt &&
+             (
+               isAdmin() ||
+               (
+                 e.status != 'ACKNOWLEDGED' &&
+                 isVerifiedEmail() &&
+                 isActiveUserDoc(u) &&
+                 (
+                   (
+                     u.roles.hasAny(['LANDLORD', 'PROPERTY_MANAGER']) &&
+                     uid in e.authorizedUids &&
+                     isActiveOrgMember(e.orgId) &&
+                     e.status in ['DRAFT', 'PENDING_TENANT_REVIEW', 'DISPUTED'] &&
+                     d.status in ['DRAFT', 'PENDING_TENANT_REVIEW'] &&
+                     d.managerUids == e.managerUids &&
+                     d.authorizedUids == e.authorizedUids &&
+                     !('acknowledgedAtEpochMs' in d) &&
+                     !('acknowledgedByUid' in d) &&
+                     changed.hasOnly(['inspectionDateEpochMs', 'waterMeterReading', 'electricityMeterReading', 'keysHandedOverCount', 'rooms', 'landlordSummary', 'status', 'updatedAt'])
+                   ) ||
+                   (
+                     'TENANT' in u.roles &&
+                     e.tenantUid == uid &&
+                     e.status == 'PENDING_TENANT_REVIEW' &&
+                     d.status in ['ACKNOWLEDGED', 'DISPUTED'] &&
+                     d.rooms.size() == e.rooms.size() &&
+                     changed.hasOnly(['status', 'rooms', 'tenantSummary', 'acknowledgedAtEpochMs', 'acknowledgedByUid', 'updatedAt']) &&
+                     (
+                       (d.status == 'ACKNOWLEDGED' && d.acknowledgedByUid == uid && d.acknowledgedAtEpochMs is int && d.acknowledgedAtEpochMs > 0) ||
+                       (d.status == 'DISPUTED' && 'tenantSummary' in d && d.tenantSummary is string && d.tenantSummary.size() >= 3 && d.tenantSummary.size() <= 800 && !('acknowledgedAtEpochMs' in d) && !('acknowledgedByUid' in d))
                      )
                    )
                  )
@@ -1677,6 +1791,23 @@ service cloud.firestore {
       );
       allow create: if isSignedIn() && canCreateMoveInChecklist(checklistId);
       allow update: if isSignedIn() && canUpdateMoveInChecklist(checklistId);
+      allow delete: if isSignedIn() && isValidId(checklistId) && (
+        isAdmin() ||
+        (hasVerifiedRole('LANDLORD') && resource.data.ownerUid == request.auth.uid && resource.data.status == 'DRAFT' && isActiveOrgOwner(resource.data.orgId))
+      );
+    }
+
+    match /move_in_condition_checklists/{checklistId} {
+      allow get: if isSignedIn() && isValidId(checklistId) && (
+        canReadTenantOrOrgRecord(resource.data, resource.data.tenantUid) ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        (isVerifiedEmail() && (resource.data.tenantUid == request.auth.uid || request.auth.uid in resource.data.authorizedUids)) ||
+        isAdmin()
+      );
+      allow create: if isSignedIn() && canCreateMoveInConditionChecklist(checklistId);
+      allow update: if isSignedIn() && canUpdateMoveInConditionChecklist(checklistId);
       allow delete: if isSignedIn() && isValidId(checklistId) && (
         isAdmin() ||
         (hasVerifiedRole('LANDLORD') && resource.data.ownerUid == request.auth.uid && resource.data.status == 'DRAFT' && isActiveOrgOwner(resource.data.orgId))

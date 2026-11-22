@@ -7,13 +7,16 @@ import com.example.data.ai.AiTaskState
 import com.example.data.ai.MaintenanceTriageSuggestion
 import com.example.data.repository.FinanceRepository
 import com.example.data.repository.HandoverRepository
+import com.example.data.repository.MoveInChecklistRepository
 import com.example.data.repository.OperationsRepository
 import com.example.data.repository.PropertyRepository
 import com.example.domain.model.ChecklistItem
 import com.example.domain.model.DepositDeductionItem
 import com.example.domain.model.DepositSettlement
 import com.example.domain.model.DepositSettlementStatus
+import com.example.domain.model.InspectionRoom
 import com.example.domain.model.MoveInChecklist
+import com.example.domain.model.MoveInConditionChecklist
 import com.example.domain.model.RefundMethod
 import com.example.domain.finance.FinancialEngine
 import com.example.domain.finance.MonthlyCashFlowPoint
@@ -68,7 +71,8 @@ class LandlordViewModel(
     private val opsRepo: OperationsRepository,
     private val currentUserId: String,
     private val aiRepo: AiAssistantRepository = AiAssistantRepository(),
-    private val handoverRepo: HandoverRepository? = null
+    private val handoverRepo: HandoverRepository? = null,
+    private val conditionChecklistRepo: MoveInChecklistRepository? = null
 ) : ViewModel() {
 
     private val _activeOrgId = MutableStateFlow<String?>(null)
@@ -174,6 +178,10 @@ class LandlordViewModel(
 
     val moveInChecklists: StateFlow<UiState<List<MoveInChecklist>>> = (handoverRepo?.observeChecklistsForLandlord(currentUserId) ?: flowOf(emptyList()))
         .asUiState("LandlordVM", "Failed to load move-in checklists")
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
+
+    val conditionChecklists: StateFlow<UiState<List<MoveInConditionChecklist>>> = (conditionChecklistRepo?.observeChecklistsForLandlord(currentUserId) ?: flowOf(emptyList()))
+        .asUiState("LandlordVM", "Failed to load room-by-room move-in checklists")
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
     val depositSettlements: StateFlow<UiState<List<DepositSettlement>>> = (handoverRepo?.observeSettlementsForLandlord(currentUserId) ?: flowOf(emptyList()))
@@ -602,6 +610,79 @@ class LandlordViewModel(
                 },
                 onFailure = {
                     _feedback.value = it.localizedMessage ?: "Failed to save move-in checklist"
+                }
+            )
+        }
+    }
+
+    fun saveMoveInConditionChecklist(
+        lease: Lease,
+        existingChecklist: MoveInConditionChecklist?,
+        inspectionDateEpochMs: Long,
+        waterMeterReading: String?,
+        electricityMeterReading: String?,
+        keysHandedOverCount: Long,
+        rooms: List<InspectionRoom>,
+        landlordSummary: String?,
+        submitForTenantSignOff: Boolean,
+        actorName: String,
+        onSuccess: () -> Unit
+    ) {
+        val repo = conditionChecklistRepo ?: run {
+            _feedback.value = "Room-by-room checklist repository unavailable"
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            val res = repo.saveChecklist(
+                lease = lease,
+                existingChecklist = existingChecklist,
+                inspectionDateEpochMs = inspectionDateEpochMs,
+                waterMeterReading = waterMeterReading,
+                electricityMeterReading = electricityMeterReading,
+                keysHandedOverCount = keysHandedOverCount,
+                rooms = rooms,
+                landlordSummary = landlordSummary,
+                submitForTenantSignOff = submitForTenantSignOff,
+                actorName = actorName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = if (submitForTenantSignOff) {
+                        "Room-by-room checklist sent to ${lease.tenantName} for sign-off"
+                    } else {
+                        "Room-by-room checklist draft saved"
+                    }
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to save room-by-room checklist"
+                }
+            )
+        }
+    }
+
+    fun deleteDraftMoveInConditionChecklist(
+        checklist: MoveInConditionChecklist,
+        actorName: String,
+        onSuccess: () -> Unit
+    ) {
+        val repo = conditionChecklistRepo ?: run {
+            _feedback.value = "Room-by-room checklist repository unavailable"
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            val res = repo.deleteDraftChecklist(checklist, actorName)
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = "Draft move-in checklist deleted"
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to delete draft checklist"
                 }
             )
         }

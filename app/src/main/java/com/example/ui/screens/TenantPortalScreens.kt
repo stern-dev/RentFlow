@@ -103,6 +103,7 @@ import com.example.domain.model.Lease
 import com.example.domain.model.MaintenanceRequest
 import com.example.domain.model.MaintenanceStatus
 import com.example.domain.model.MoveInChecklist
+import com.example.domain.model.MoveInConditionChecklist
 import com.example.domain.model.MpesaReceipt
 import com.example.domain.model.Payment
 import com.example.domain.model.PaymentChannelType
@@ -118,6 +119,8 @@ import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.ErrorBannerCard
 import com.example.ui.components.LoadingStateBox
 import com.example.ui.components.MoveInChecklistSummaryCard
+import com.example.ui.components.MoveInConditionChecklistFullScreenDialog
+import com.example.ui.components.MoveInConditionChecklistSummaryCard
 import com.example.ui.components.PillTone
 import com.example.ui.components.RentPaymentTrendsCard
 import com.example.ui.components.SectionHeader
@@ -126,6 +129,7 @@ import com.example.ui.components.TenantDepositSettlementReviewDialog
 import com.example.ui.components.TenantMoveInChecklistReviewDialog
 import com.example.ui.components.exportDepositSettlementPdf
 import com.example.ui.components.exportMoveInChecklistPdf
+import com.example.ui.components.exportMoveInConditionChecklistPdf
 import com.example.ui.theme.EmeraldAccent
 import com.example.ui.theme.NavyPrimary
 import com.example.ui.theme.NavySecondary
@@ -162,6 +166,7 @@ fun TenantDashboardScreen(
     val maintenanceState by viewModel.maintenanceRequests.collectAsStateWithLifecycle()
     val announcementsState by viewModel.announcements.collectAsStateWithLifecycle()
     val checklistsState by viewModel.moveInChecklists.collectAsStateWithLifecycle()
+    val conditionChecklistsState by viewModel.conditionChecklists.collectAsStateWithLifecycle()
     val settlementsState by viewModel.depositSettlements.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
 
@@ -171,34 +176,57 @@ fun TenantDashboardScreen(
     val tickets = (maintenanceState as? UiState.Success)?.data ?: emptyList()
     val announcements = (announcementsState as? UiState.Success)?.data ?: emptyList()
     val checklists = (checklistsState as? UiState.Success)?.data ?: emptyList()
+    val conditionChecklists = (conditionChecklistsState as? UiState.Success)?.data ?: emptyList()
     val settlements = (settlementsState as? UiState.Success)?.data ?: emptyList()
     val dueReminders = remember(invoices) {
         RentReminderEngine.evaluateInvoices(invoices, respectCooldown = false)
     }
 
     var checklistForReview by remember { mutableStateOf<MoveInChecklist?>(null) }
+    var conditionChecklistForReview by remember { mutableStateOf<MoveInConditionChecklist?>(null) }
     var settlementForReview by remember { mutableStateOf<DepositSettlement?>(null) }
 
-    LaunchedEffect(deepLinkTarget, checklists, settlements, checklistsState, settlementsState) {
+    LaunchedEffect(
+        deepLinkTarget,
+        checklists,
+        conditionChecklists,
+        settlements,
+        checklistsState,
+        conditionChecklistsState,
+        settlementsState
+    ) {
         val dl = deepLinkTarget ?: return@LaunchedEffect
+        val matchedConditionChecklist = dl.checklistId?.let { cid -> conditionChecklists.firstOrNull { it.id == cid } }
+            ?: dl.leaseId?.takeIf { dl.settlementId == null }?.let { lid -> conditionChecklists.firstOrNull { it.leaseId == lid } }
         val matchedChecklist = dl.checklistId?.let { cid -> checklists.firstOrNull { it.id == cid } }
             ?: dl.leaseId?.takeIf { dl.settlementId == null }?.let { lid -> checklists.firstOrNull { it.leaseId == lid } }
         val matchedSettlement = dl.settlementId?.let { sid -> settlements.firstOrNull { it.id == sid } }
             ?: dl.leaseId?.takeIf { dl.checklistId == null }?.let { lid -> settlements.firstOrNull { it.leaseId == lid } }
 
-        if (matchedChecklist != null) {
+        if (matchedConditionChecklist != null) {
+            conditionChecklistForReview = matchedConditionChecklist
+            onConsumeDeepLinkTarget()
+        } else if (matchedChecklist != null) {
             checklistForReview = matchedChecklist
             onConsumeDeepLinkTarget()
         } else if (matchedSettlement != null) {
             settlementForReview = matchedSettlement
             onConsumeDeepLinkTarget()
-        } else if (checklistsState is UiState.Success && settlementsState is UiState.Success) {
+        } else if (
+            checklistsState is UiState.Success &&
+            conditionChecklistsState is UiState.Success &&
+            settlementsState is UiState.Success
+        ) {
             onConsumeDeepLinkTarget()
         }
     }
 
     val activeChecklist = remember(activeLease, checklists) {
         activeLease?.let { lease -> checklists.firstOrNull { it.leaseId == lease.id } } ?: checklists.firstOrNull()
+    }
+    val activeConditionChecklist = remember(activeLease, conditionChecklists) {
+        activeLease?.let { lease -> conditionChecklists.firstOrNull { it.leaseId == lease.id } }
+            ?: conditionChecklists.firstOrNull()
     }
     val primarySettlement = remember(activeLease, settlements) {
         settlements.firstOrNull {
@@ -482,19 +510,35 @@ fun TenantDashboardScreen(
             }
         }
 
-        if (activeLease != null || activeChecklist != null) {
+        if (activeLease != null || activeConditionChecklist != null) {
+            item(key = "tenant_condition_checklist_summary") {
+                val label = activeLease?.let { "${it.propertyName} • Unit ${it.unitNumber}" }
+                    ?: activeConditionChecklist?.let { "${it.propertyName} • Unit ${it.unitNumber}" }
+                    ?: "Move-In Room Inspection"
+                MoveInConditionChecklistSummaryCard(
+                    checklist = activeConditionChecklist,
+                    isTenantView = true,
+                    propertyUnitLabel = label,
+                    onOpenChecklist = {
+                        if (activeConditionChecklist != null) {
+                            conditionChecklistForReview = activeConditionChecklist
+                        }
+                    },
+                    onExportPdf = { cl -> exportMoveInConditionChecklistPdf(context, cl) }
+                )
+            }
+        }
+
+        if (activeChecklist != null) {
             item(key = "tenant_checklist_summary") {
                 val label = activeLease?.let { "${it.propertyName} • Unit ${it.unitNumber}" }
-                    ?: activeChecklist?.let { "${it.propertyName} • Unit ${it.unitNumber}" }
-                    ?: "Move-In Handover"
+                    ?: "${activeChecklist.propertyName} • Unit ${activeChecklist.unitNumber}"
                 MoveInChecklistSummaryCard(
                     checklist = activeChecklist,
                     isTenantView = true,
                     propertyUnitLabel = label,
                     onOpenChecklist = {
-                        if (activeChecklist != null) {
-                            checklistForReview = activeChecklist
-                        }
+                        checklistForReview = activeChecklist
                     },
                     onExportPdf = { cl -> exportMoveInChecklistPdf(context, cl) }
                 )
@@ -582,6 +626,28 @@ fun TenantDashboardScreen(
                     responseNote = note,
                     actorName = currentUser.fullName,
                     onSuccess = { checklistForReview = null }
+                )
+            }
+        )
+    }
+
+    conditionChecklistForReview?.let { cl ->
+        val matchingLease = tenantLeases.firstOrNull { it.id == cl.leaseId } ?: activeLease
+        MoveInConditionChecklistFullScreenDialog(
+            lease = matchingLease,
+            existingChecklist = cl,
+            isTenantView = true,
+            canDeleteDraft = false,
+            isBusy = busy,
+            onDismiss = { conditionChecklistForReview = null },
+            onSubmitTenantReview = { targetChecklist, acknowledge, tenantRemarksByItemId, tenantSummary, onSuccess ->
+                viewModel.submitConditionChecklistReview(
+                    checklist = targetChecklist,
+                    acknowledge = acknowledge,
+                    tenantRemarksByItemId = tenantRemarksByItemId,
+                    tenantSummary = tenantSummary,
+                    actorName = currentUser.fullName,
+                    onSuccess = onSuccess
                 )
             }
         )

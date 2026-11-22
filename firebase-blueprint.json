@@ -542,6 +542,38 @@
       },
       "required": ["leaseId", "orgId", "propertyId", "propertyName", "unitId", "unitNumber", "ownerUid", "managerUids", "authorizedUids", "tenantUid", "tenantName", "status", "inspectionDateEpochMs", "keysHandedOverCount", "items", "imageRefs", "createdByUid", "createdAt", "updatedAt"]
     },
+    "MoveInConditionChecklist": {
+      "title": "MoveInConditionChecklist",
+      "description": "Structured room-by-room move-in condition checklist containing grouped InspectionRoom sections with per-item condition status, up to 2 compressed inline photos per item, and dual landlord/tenant remarks.",
+      "type": "object",
+      "properties": {
+        "leaseId": { "type": "string" },
+        "orgId": { "type": "string" },
+        "propertyId": { "type": "string" },
+        "propertyName": { "type": "string" },
+        "unitId": { "type": "string" },
+        "unitNumber": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "managerUids": { "type": "array" },
+        "authorizedUids": { "type": "array" },
+        "tenantUid": { "type": "string" },
+        "tenantName": { "type": "string" },
+        "status": { "type": "string", "enum": ["DRAFT", "PENDING_TENANT_REVIEW", "ACKNOWLEDGED", "DISPUTED"] },
+        "inspectionDateEpochMs": { "type": "integer" },
+        "waterMeterReading": { "type": "string" },
+        "electricityMeterReading": { "type": "string" },
+        "keysHandedOverCount": { "type": "integer" },
+        "rooms": { "type": "array" },
+        "landlordSummary": { "type": "string" },
+        "tenantSummary": { "type": "string" },
+        "acknowledgedAtEpochMs": { "type": "integer" },
+        "acknowledgedByUid": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["leaseId", "orgId", "propertyId", "propertyName", "unitId", "unitNumber", "ownerUid", "managerUids", "authorizedUids", "tenantUid", "tenantName", "status", "inspectionDateEpochMs", "keysHandedOverCount", "rooms", "createdByUid", "createdAt", "updatedAt"]
+    },
     "DepositSettlement": {
       "title": "DepositSettlement",
       "description": "Move-out inspection and itemized KES security deposit deduction and refund settlement ledger.",
@@ -632,6 +664,10 @@
     "/move_in_checklists/{checklistId}": {
       "schema": { "$ref": "#/entities/MoveInChecklist" },
       "description": "Move-in unit condition inspection checklists linked to tenancy leases."
+    },
+    "/move_in_condition_checklists/{checklistId}": {
+      "schema": { "$ref": "#/entities/MoveInConditionChecklist" },
+      "description": "Structured room-by-room move-in condition checklists with per-item statuses, compressed photos, and landlord/tenant remarks."
     },
     "/deposit_settlements/{settlementId}": {
       "schema": { "$ref": "#/entities/DepositSettlement" },

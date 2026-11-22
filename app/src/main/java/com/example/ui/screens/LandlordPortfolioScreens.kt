@@ -116,6 +116,7 @@ import com.example.domain.model.DepositSettlement
 import com.example.domain.model.DepositSettlementStatus
 import com.example.domain.model.MoveInChecklist
 import com.example.domain.model.MoveInChecklistStatus
+import com.example.domain.model.MoveInConditionChecklist
 import com.example.ui.components.BuildingLocationPickerDialog
 import com.example.ui.components.CriticalActionConfirmationDialog
 import com.example.ui.components.EmptyStateCard
@@ -123,9 +124,11 @@ import com.example.ui.components.ErrorBannerCard
 import com.example.ui.components.LandlordDepositSettlementDialog
 import com.example.ui.components.LandlordMoveInChecklistDialog
 import com.example.ui.components.LoadingStateBox
+import com.example.ui.components.MoveInConditionChecklistFullScreenDialog
 import com.example.ui.components.PillTone
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusPill
+import com.example.ui.components.exportMoveInConditionChecklistPdf
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusInfo
 import com.example.ui.theme.StatusSuccess
@@ -164,6 +167,7 @@ fun LandlordPortfolioScreen(
     val leasesState by viewModel.leases.collectAsStateWithLifecycle()
     val invoicesState by viewModel.invoices.collectAsStateWithLifecycle()
     val checklistsState by viewModel.moveInChecklists.collectAsStateWithLifecycle()
+    val conditionChecklistsState by viewModel.conditionChecklists.collectAsStateWithLifecycle()
     val settlementsState by viewModel.depositSettlements.collectAsStateWithLifecycle()
     val activeOrgId by viewModel.activeOrgId.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
@@ -174,6 +178,7 @@ fun LandlordPortfolioScreen(
     val leases = (leasesState as? UiState.Success)?.data ?: emptyList()
     val invoices = (invoicesState as? UiState.Success)?.data ?: emptyList()
     val checklists = (checklistsState as? UiState.Success)?.data ?: emptyList()
+    val conditionChecklists = (conditionChecklistsState as? UiState.Success)?.data ?: emptyList()
     val settlements = (settlementsState as? UiState.Success)?.data ?: emptyList()
 
     val uid = currentUser.userId
@@ -197,9 +202,20 @@ fun LandlordPortfolioScreen(
     var leaseToTerminate by remember { mutableStateOf<Lease?>(null) }
     var leaseToRenew by remember { mutableStateOf<Lease?>(null) }
     var leaseForChecklistDialog by remember { mutableStateOf<Lease?>(null) }
+    var leaseForConditionChecklistScreen by remember { mutableStateOf<Lease?>(null) }
     var leaseForSettlementDialog by remember { mutableStateOf<Lease?>(null) }
 
-    LaunchedEffect(deepLinkTarget, leases, checklists, settlements, leasesState, checklistsState, settlementsState) {
+    LaunchedEffect(
+        deepLinkTarget,
+        leases,
+        checklists,
+        conditionChecklists,
+        settlements,
+        leasesState,
+        checklistsState,
+        conditionChecklistsState,
+        settlementsState
+    ) {
         val dl = deepLinkTarget ?: return@LaunchedEffect
         if (dl.targetTab == NotificationHelper.TAB_LANDLORD_LEASES ||
             dl.checklistId != null ||
@@ -208,12 +224,16 @@ fun LandlordPortfolioScreen(
         ) {
             selectedTab = NotificationHelper.TAB_LANDLORD_LEASES
         }
+        val targetConditionChecklist = dl.checklistId?.let { cid -> conditionChecklists.firstOrNull { it.id == cid } }
         val targetChecklist = dl.checklistId?.let { cid -> checklists.firstOrNull { it.id == cid } }
         val targetSettlement = dl.settlementId?.let { sid -> settlements.firstOrNull { it.id == sid } }
-        val resolvedLeaseId = dl.leaseId ?: targetChecklist?.leaseId ?: targetSettlement?.leaseId
+        val resolvedLeaseId = dl.leaseId ?: targetConditionChecklist?.leaseId ?: targetChecklist?.leaseId ?: targetSettlement?.leaseId
         val matchedLease = resolvedLeaseId?.let { lid -> leases.firstOrNull { it.id == lid } }
         if (matchedLease != null) {
-            if (dl.checklistId != null || targetChecklist != null) {
+            if (targetConditionChecklist != null || dl.checklistId?.startsWith("mcc_") == true) {
+                leaseForConditionChecklistScreen = matchedLease
+                onConsumeDeepLinkTarget()
+            } else if (dl.checklistId != null || targetChecklist != null) {
                 leaseForChecklistDialog = matchedLease
                 onConsumeDeepLinkTarget()
             } else if (dl.settlementId != null || targetSettlement != null) {
@@ -222,7 +242,12 @@ fun LandlordPortfolioScreen(
             } else if (leasesState is UiState.Success) {
                 onConsumeDeepLinkTarget()
             }
-        } else if (leasesState is UiState.Success && checklistsState is UiState.Success && settlementsState is UiState.Success) {
+        } else if (
+            leasesState is UiState.Success &&
+            checklistsState is UiState.Success &&
+            conditionChecklistsState is UiState.Success &&
+            settlementsState is UiState.Success
+        ) {
             onConsumeDeepLinkTarget()
         }
     }
@@ -366,6 +391,7 @@ fun LandlordPortfolioScreen(
                 3 -> LeasesTab(
                     leasesState = leasesState,
                     checklists = checklists,
+                    conditionChecklists = conditionChecklists,
                     settlements = settlements,
                     canTerminateLease = { lease -> PermissionPolicy.canTerminateLease(uid, activeRole, lease) },
                     canManageChecklist = { lease -> PermissionPolicy.canManageLeaseChecklist(uid, activeRole, lease) },
@@ -394,6 +420,7 @@ fun LandlordPortfolioScreen(
                         )
                     },
                     onOpenChecklist = { lease -> leaseForChecklistDialog = lease },
+                    onOpenConditionChecklist = { lease -> leaseForConditionChecklistScreen = lease },
                     onOpenSettlement = { lease -> leaseForSettlementDialog = lease },
                     onRenew = { lease -> leaseToRenew = lease },
                     onTerminate = { lease -> leaseToTerminate = lease }
@@ -630,6 +657,41 @@ fun LandlordPortfolioScreen(
                     submitForTenantSignOff = submitToTenant,
                     actorName = currentUser.fullName,
                     onSuccess = { leaseForChecklistDialog = null }
+                )
+            }
+        )
+    }
+
+    leaseForConditionChecklistScreen?.let { lease ->
+        val existingConditionChecklist = conditionChecklists.firstOrNull { it.leaseId == lease.id }
+        val isOwner = existingConditionChecklist?.ownerUid == uid || lease.ownerUid == uid
+        MoveInConditionChecklistFullScreenDialog(
+            lease = lease,
+            existingChecklist = existingConditionChecklist,
+            isTenantView = false,
+            canDeleteDraft = isOwner && existingConditionChecklist?.statusEnum() == MoveInChecklistStatus.DRAFT,
+            isBusy = busy,
+            onDismiss = { leaseForConditionChecklistScreen = null },
+            onSaveLandlordChecklist = { waterMeter, powerMeter, keysCount, rooms, landlordSummary, submitToTenant, onSuccess ->
+                viewModel.saveMoveInConditionChecklist(
+                    lease = lease,
+                    existingChecklist = existingConditionChecklist,
+                    inspectionDateEpochMs = existingConditionChecklist?.inspectionDateEpochMs ?: System.currentTimeMillis(),
+                    waterMeterReading = waterMeter,
+                    electricityMeterReading = powerMeter,
+                    keysHandedOverCount = keysCount,
+                    rooms = rooms,
+                    landlordSummary = landlordSummary,
+                    submitForTenantSignOff = submitToTenant,
+                    actorName = currentUser.fullName,
+                    onSuccess = onSuccess
+                )
+            },
+            onDeleteDraft = { draftChecklist, onSuccess ->
+                viewModel.deleteDraftMoveInConditionChecklist(
+                    checklist = draftChecklist,
+                    actorName = currentUser.fullName,
+                    onSuccess = onSuccess
                 )
             }
         )
@@ -1670,12 +1732,14 @@ private fun ApplicationsTab(
 private fun LeasesTab(
     leasesState: UiState<List<Lease>>,
     checklists: List<MoveInChecklist>,
+    conditionChecklists: List<MoveInConditionChecklist>,
     settlements: List<DepositSettlement>,
     canTerminateLease: (Lease) -> Boolean,
     canManageChecklist: (Lease) -> Boolean,
     canManageSettlement: (Lease) -> Boolean,
     onExportPdf: (Lease) -> Unit,
     onOpenChecklist: (Lease) -> Unit,
+    onOpenConditionChecklist: (Lease) -> Unit,
     onOpenSettlement: (Lease) -> Unit,
     onRenew: (Lease) -> Unit,
     onTerminate: (Lease) -> Unit
@@ -1700,6 +1764,7 @@ private fun LeasesTab(
                 ) {
                     items(leases, key = { it.id }) { lease ->
                         val checklist = checklists.firstOrNull { it.leaseId == lease.id }
+                        val conditionChecklist = conditionChecklists.firstOrNull { it.leaseId == lease.id }
                         val settlement = settlements.firstOrNull { it.leaseId == lease.id }
                         val tone = when (lease.statusEnum()) {
                             LeaseStatus.ACTIVE, LeaseStatus.RENEWED -> PillTone.SUCCESS
@@ -1729,8 +1794,20 @@ private fun LeasesTab(
                                     }
                                     StatusPill(lease.statusEnum().label, tone)
                                 }
-                                if (checklist != null || settlement != null) {
+                                if (conditionChecklist != null || checklist != null || settlement != null) {
                                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        conditionChecklist?.let { mcc ->
+                                            val clTone = when (mcc.statusEnum()) {
+                                                MoveInChecklistStatus.ACKNOWLEDGED -> PillTone.SUCCESS
+                                                MoveInChecklistStatus.PENDING_TENANT_REVIEW -> PillTone.WARNING
+                                                MoveInChecklistStatus.DISPUTED -> PillTone.ERROR
+                                                MoveInChecklistStatus.DRAFT -> PillTone.INFO
+                                            }
+                                            StatusPill(
+                                                "Room Checklist: ${mcc.statusEnum().label} (${mcc.rooms.size} rooms)",
+                                                clTone
+                                            )
+                                        }
                                         checklist?.let { cl ->
                                             val clTone = when (cl.statusEnum()) {
                                                 MoveInChecklistStatus.ACKNOWLEDGED -> PillTone.SUCCESS
@@ -1738,7 +1815,7 @@ private fun LeasesTab(
                                                 MoveInChecklistStatus.DISPUTED -> PillTone.ERROR
                                                 MoveInChecklistStatus.DRAFT -> PillTone.INFO
                                             }
-                                            StatusPill("Checklist: ${cl.statusEnum().label}", clTone)
+                                            StatusPill("Handover Summary: ${cl.statusEnum().label}", clTone)
                                         }
                                         settlement?.let { ds ->
                                             val dsTone = when (ds.statusEnum()) {
@@ -1782,18 +1859,21 @@ private fun LeasesTab(
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                                         if (canManageChecklist(lease)) {
                                             OutlinedButton(
-                                                onClick = { onOpenChecklist(lease) },
-                                                modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("lease_checklist_button_${lease.id}")
+                                                onClick = { onOpenConditionChecklist(lease) },
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .heightIn(min = 48.dp)
+                                                    .testTag("lease_condition_checklist_button_${lease.id}")
                                             ) {
                                                 Icon(Icons.Filled.Checklist, contentDescription = null, modifier = Modifier.size(16.dp))
                                                 Spacer(Modifier.width(4.dp))
                                                 Text(
-                                                    when (checklist?.statusEnum()) {
-                                                        MoveInChecklistStatus.DISPUTED -> "Resolve Checklist"
-                                                        MoveInChecklistStatus.ACKNOWLEDGED -> "Signed Checklist"
+                                                    when (conditionChecklist?.statusEnum()) {
+                                                        MoveInChecklistStatus.DISPUTED -> "Resolve Rooms"
+                                                        MoveInChecklistStatus.ACKNOWLEDGED -> "Signed Rooms"
                                                         MoveInChecklistStatus.PENDING_TENANT_REVIEW -> "Pending Sign-Off"
-                                                        MoveInChecklistStatus.DRAFT -> "Edit Checklist"
-                                                        null -> "Move-In Checklist"
+                                                        MoveInChecklistStatus.DRAFT -> "Edit Rooms"
+                                                        null -> "Room Checklist"
                                                     },
                                                     maxLines = 1
                                                 )
@@ -1818,6 +1898,17 @@ private fun LeasesTab(
                                                     maxLines = 1
                                                 )
                                             }
+                                        }
+                                    }
+                                    if (canManageChecklist(lease) && checklist != null) {
+                                        TextButton(
+                                            onClick = { onOpenChecklist(lease) },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .heightIn(min = 48.dp)
+                                                .testTag("lease_checklist_button_${lease.id}")
+                                        ) {
+                                            Text("View Legacy Handover Summary (${checklist.statusEnum().label})")
                                         }
                                     }
                                 }
