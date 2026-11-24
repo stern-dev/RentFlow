@@ -40,13 +40,16 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -958,125 +961,141 @@ private fun RoleRoutedWorkspace(
             contentWindowInsets = WindowInsets.safeDrawing,
             snackbarHost = { SnackbarHost(snackbarHostState) },
             topBar = {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text(
-                                text = when {
-                                    showMpesaReconcileOverlay -> "M-Pesa SMS Auto-Verify"
-                                    showPaymentMethodsOverlay -> "Payment Methods"
-                                    showNotificationsOverlay -> "Notifications"
-                                    else -> "RentFlow"
-                                },
-                                style = MaterialTheme.typography.titleMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = "${activeRole.label}${activeOrganization?.let { " • ${it.name}" } ?: ""}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.secondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
-                    actions = {
-                        Box {
-                            TextButton(
-                                onClick = { roleMenuExpanded = true },
-                                modifier = Modifier.testTag("switch_role_button")
+                Column {
+                    TopAppBar(
+                        title = {
+                            Column {
+                                Text(
+                                    text = when {
+                                        showMpesaReconcileOverlay -> "M-Pesa SMS Auto-Verify"
+                                        showPaymentMethodsOverlay -> "Payment Methods"
+                                        showNotificationsOverlay -> "Notifications"
+                                        else -> "RentFlow"
+                                    },
+                                    style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${activeRole.label}${activeOrganization?.let { " • ${it.name}" } ?: ""}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+                        actions = {
+                            Box {
+                                TextButton(
+                                    onClick = { roleMenuExpanded = true },
+                                    modifier = Modifier.testTag("switch_role_button")
+                                ) {
+                                    BadgedBox(
+                                        badge = {
+                                            if (pendingInviteCount > 0) {
+                                                Badge { Text(pendingInviteCount.toString()) }
+                                            }
+                                        }
+                                    ) {
+                                        Text("Switch Role", maxLines = 1)
+                                    }
+                                }
+                                DropdownMenu(expanded = roleMenuExpanded, onDismissRequest = { roleMenuExpanded = false }) {
+                                    availableRoles.forEach { role ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    if (role == activeRole) "${role.label} (Active)" else role.label
+                                                )
+                                            },
+                                            onClick = {
+                                                roleMenuExpanded = false
+                                                showNotificationsOverlay = false
+                                                showMpesaReconcileOverlay = false
+                                                authViewModel.switchRole(role, profile.roles, profile.fullName)
+                                            }
+                                        )
+                                    }
+                                    if (availableRoles.size <= 1) {
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    "New roles require an invite or Admin grant",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            },
+                                            enabled = false,
+                                            onClick = {}
+                                        )
+                                    }
+                                    if (pendingInviteCount > 0) {
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    "Review $pendingInviteCount pending invite(s) in Profile",
+                                                    color = MaterialTheme.colorScheme.secondary
+                                                )
+                                            },
+                                            onClick = {
+                                                roleMenuExpanded = false
+                                                showNotificationsOverlay = false
+                                                moreSubTab = 0
+                                                tenantAccountSubTab = 0
+                                                currentRoute = when (activeRole) {
+                                                    UserRole.LANDLORD, UserRole.PROPERTY_MANAGER -> "more"
+                                                    UserRole.TENANT -> "inbox_profile"
+                                                    UserRole.MAINTENANCE_STAFF, UserRole.ADMIN -> "profile"
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                            IconButton(
+                                onClick = { showNotificationsOverlay = !showNotificationsOverlay },
+                                modifier = Modifier.testTag("notifications_bell_button")
                             ) {
                                 BadgedBox(
                                     badge = {
-                                        if (pendingInviteCount > 0) {
-                                            Badge { Text(pendingInviteCount.toString()) }
+                                        if (unreadCount > 0) {
+                                            Badge { Text(unreadCount.toString()) }
                                         }
                                     }
                                 ) {
-                                    Text("Switch Role", maxLines = 1)
-                                }
-                            }
-                            DropdownMenu(expanded = roleMenuExpanded, onDismissRequest = { roleMenuExpanded = false }) {
-                                availableRoles.forEach { role ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                if (role == activeRole) "${role.label} (Active)" else role.label
-                                            )
-                                        },
-                                        onClick = {
-                                            roleMenuExpanded = false
-                                            showNotificationsOverlay = false
-                                            showMpesaReconcileOverlay = false
-                                            authViewModel.switchRole(role, profile.roles, profile.fullName)
-                                        }
-                                    )
-                                }
-                                if (availableRoles.size <= 1) {
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                "New roles require an invite or Admin grant",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        },
-                                        enabled = false,
-                                        onClick = {}
-                                    )
-                                }
-                                if (pendingInviteCount > 0) {
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                "Review $pendingInviteCount pending invite(s) in Profile",
-                                                color = MaterialTheme.colorScheme.secondary
-                                            )
-                                        },
-                                        onClick = {
-                                            roleMenuExpanded = false
-                                            showNotificationsOverlay = false
-                                            moreSubTab = 0
-                                            tenantAccountSubTab = 0
-                                            currentRoute = when (activeRole) {
-                                                UserRole.LANDLORD, UserRole.PROPERTY_MANAGER -> "more"
-                                                UserRole.TENANT -> "inbox_profile"
-                                                UserRole.MAINTENANCE_STAFF, UserRole.ADMIN -> "profile"
-                                            }
-                                        }
-                                    )
+                                    Icon(Icons.Filled.Notifications, contentDescription = "Notifications")
                                 }
                             }
                         }
-                        IconButton(
-                            onClick = { showNotificationsOverlay = !showNotificationsOverlay },
-                            modifier = Modifier.testTag("notifications_bell_button")
-                        ) {
-                            BadgedBox(
-                                badge = {
-                                    if (unreadCount > 0) {
-                                        Badge { Text(unreadCount.toString()) }
-                                    }
-                                }
-                            ) {
-                                Icon(Icons.Filled.Notifications, contentDescription = "Notifications")
-                            }
-                        }
-                    }
-                )
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                }
             },
             bottomBar = {
                 if (!useRail && !showNotificationsOverlay && !showPaymentMethodsOverlay && !showMpesaReconcileOverlay) {
-                    NavigationBar {
-                        navItems.forEach { item ->
-                            NavigationBarItem(
-                                selected = currentRoute == item.route,
-                                onClick = { currentRoute = item.route },
-                                icon = { Icon(item.icon, contentDescription = item.label) },
-                                label = { Text(item.label, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                            )
+                    Column {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                        NavigationBar(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            tonalElevation = 0.dp
+                        ) {
+                            navItems.forEach { item ->
+                                NavigationBarItem(
+                                    selected = currentRoute == item.route,
+                                    onClick = { currentRoute = item.route },
+                                    icon = { Icon(item.icon, contentDescription = item.label) },
+                                    label = { Text(item.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = MaterialTheme.colorScheme.secondary,
+                                        selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                                        indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
+                                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                )
+                            }
                         }
                     }
                 }
@@ -1084,14 +1103,21 @@ private fun RoleRoutedWorkspace(
         ) { innerPadding ->
             Row(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
                 if (useRail && !showNotificationsOverlay && !showPaymentMethodsOverlay && !showMpesaReconcileOverlay) {
-                    NavigationRail {
+                    NavigationRail(containerColor = MaterialTheme.colorScheme.surface) {
                         Spacer(Modifier.height(8.dp))
                         navItems.forEach { item ->
                             NavigationRailItem(
                                 selected = currentRoute == item.route,
                                 onClick = { currentRoute = item.route },
                                 icon = { Icon(item.icon, contentDescription = item.label) },
-                                label = { Text(item.label, maxLines = 1) }
+                                label = { Text(item.label, maxLines = 1) },
+                                colors = NavigationRailItemDefaults.colors(
+                                    selectedIconColor = MaterialTheme.colorScheme.secondary,
+                                    selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                                    indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             )
                         }
                     }

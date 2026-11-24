@@ -97,11 +97,18 @@ import com.example.domain.model.InviteStatus
 import com.example.domain.model.RoleInvite
 import com.example.domain.model.UserRole
 import com.example.ui.components.ErrorBannerCard
-import com.example.ui.theme.EmeraldAccent
-import com.example.ui.theme.NavyPrimary
-import com.example.ui.theme.NavySecondary
+import com.example.ui.theme.ChampagneAccent
+import com.example.ui.theme.ChampagneLight
+import com.example.ui.theme.DarkOutline
+import com.example.ui.theme.DarkSurfaceVariant
+import com.example.ui.theme.DarkTextPrimary
+import com.example.ui.theme.DarkTextSecondary
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.ObsidianPrimary
 import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.StatusSuccessBg
+import com.example.ui.theme.StatusSuccessBgDark
+import com.example.ui.theme.StatusSuccessLight
 import com.example.ui.theme.StatusWarning
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
@@ -244,41 +251,45 @@ fun AuthScreen(
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
-                                listOf(NavyPrimary.copy(alpha = 0.25f), NavyPrimary.copy(alpha = 0.90f))
+                                listOf(ObsidianPrimary.copy(alpha = 0.22f), ObsidianPrimary.copy(alpha = 0.92f))
                             )
                         )
                         .padding(20.dp),
                     contentAlignment = Alignment.BottomStart
                 ) {
                     Column {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        Surface(
+                            color = ChampagneAccent.copy(alpha = 0.24f),
+                            shape = RoundedCornerShape(999.dp)
                         ) {
-                            Surface(color = EmeraldAccent, shape = RoundedCornerShape(10.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            ) {
                                 Icon(
                                     imageVector = Icons.Filled.Apartment,
                                     contentDescription = "RentFlow Logo",
-                                    tint = Color.White,
-                                    modifier = Modifier.padding(6.dp).size(20.dp)
+                                    tint = ChampagneLight,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "RENTFLOW",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = ChampagneLight
                                 )
                             }
-                            Text(
-                                text = "RENTFLOW",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = Color(0xFFCCFBF1)
-                            )
                         }
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(10.dp))
                         Text(
                             text = "Unified Rental Operations & Tenant Home",
                             style = MaterialTheme.typography.headlineSmall,
-                            color = Color.White
+                            color = DarkTextPrimary
                         )
                         Text(
                             text = "Built for landlords, property managers & tenants in Kenya (KES • M-Pesa).",
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFFE2E8F0)
+                            color = DarkTextSecondary
                         )
                     }
                 }
@@ -289,7 +300,8 @@ fun AuthScreen(
             Card(
                 shape = MaterialTheme.shapes.large,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
@@ -473,7 +485,11 @@ fun AuthScreen(
                     Button(
                         onClick = { submitEmailForm() },
                         enabled = !effectiveLoading,
-                        colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary),
+                        shape = RoundedCornerShape(999.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = 52.dp)
@@ -481,7 +497,7 @@ fun AuthScreen(
                     ) {
                         if (effectiveLoading) {
                             CircularProgressIndicator(
-                                color = Color.White,
+                                color = MaterialTheme.colorScheme.onPrimary,
                                 strokeWidth = 2.dp,
                                 modifier = Modifier.size(22.dp)
                             )
@@ -542,7 +558,7 @@ fun AuthScreen(
                         Icon(
                             Icons.Filled.VerifiedUser,
                             contentDescription = null,
-                            tint = EmeraldAccent,
+                            tint = MaterialTheme.colorScheme.secondary,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(Modifier.width(8.dp))
@@ -691,10 +707,13 @@ private fun PasswordStrengthMeter(password: String) {
 
 @Composable
 private fun InfoBannerCard(message: String) {
+    val isDark = LocalIsDarkTheme.current
+    val bg = if (isDark) StatusSuccessBgDark else StatusSuccessBg
+    val fg = if (isDark) StatusSuccessLight else StatusSuccess
     Surface(
-        color = StatusSuccessBg,
+        color = bg,
         shape = MaterialTheme.shapes.small,
-        border = BorderStroke(1.dp, StatusSuccess.copy(alpha = 0.35f)),
+        border = BorderStroke(1.dp, fg.copy(alpha = 0.35f)),
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
@@ -702,11 +721,11 @@ private fun InfoBannerCard(message: String) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.padding(12.dp)
         ) {
-            Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = StatusSuccess, modifier = Modifier.size(18.dp))
+            Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = fg, modifier = Modifier.size(18.dp))
             Text(
                 text = message,
                 style = MaterialTheme.typography.bodySmall,
-                color = StatusSuccess
+                color = fg
             )
         }
     }
@@ -743,7 +762,8 @@ fun EmailVerificationScreen(
         Card(
             shape = MaterialTheme.shapes.large,
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
             modifier = Modifier.widthIn(max = 520.dp).fillMaxWidth()
         ) {
             Column(
@@ -757,7 +777,7 @@ fun EmailVerificationScreen(
                     Icon(
                         imageVector = Icons.Filled.MarkEmailRead,
                         contentDescription = "Email Verification Required",
-                        tint = EmeraldAccent,
+                        tint = MaterialTheme.colorScheme.secondary,
                         modifier = Modifier.padding(12.dp).size(32.dp)
                     )
                 }
@@ -785,7 +805,11 @@ fun EmailVerificationScreen(
                 Button(
                     onClick = onCheckVerified,
                     enabled = !isBusy,
-                    colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary),
+                    shape = RoundedCornerShape(999.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = 52.dp)
@@ -793,7 +817,7 @@ fun EmailVerificationScreen(
                 ) {
                     if (isBusy) {
                         CircularProgressIndicator(
-                            color = Color.White,
+                            color = MaterialTheme.colorScheme.onPrimary,
                             strokeWidth = 2.dp,
                             modifier = Modifier.size(20.dp)
                         )
@@ -838,11 +862,12 @@ private fun FeatureBadgeCard(icon: ImageVector, title: String, subtitle: String,
     Card(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = modifier
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Icon(icon, contentDescription = title, tint = EmeraldAccent, modifier = Modifier.size(20.dp))
+            Icon(icon, contentDescription = title, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(20.dp))
             Text(title, style = MaterialTheme.typography.titleSmall)
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -919,20 +944,33 @@ fun RoleOnboardingScreen(
             .widthIn(max = 600.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(MaterialTheme.shapes.large)
-                .background(Brush.horizontalGradient(listOf(NavyPrimary, NavySecondary)))
-                .padding(20.dp)
+        val isDark = LocalIsDarkTheme.current
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            color = if (isDark) DarkSurfaceVariant else ObsidianPrimary,
+            border = if (isDark) BorderStroke(1.dp, DarkOutline) else null,
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Column {
-                Text("Complete Your RentFlow Profile", style = MaterialTheme.typography.headlineSmall, color = Color.White)
-                Spacer(Modifier.height(4.dp))
+            Column(
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(20.dp)
+            ) {
+                Surface(
+                    color = ChampagneAccent.copy(alpha = 0.22f),
+                    shape = RoundedCornerShape(999.dp)
+                ) {
+                    Text(
+                        text = "ONBOARDING",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = ChampagneLight,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+                Text("Complete Your RentFlow Profile", style = MaterialTheme.typography.headlineSmall, color = DarkTextPrimary)
                 Text(
                     "Your selected roles are locked after setup. New roles later require an organization invite or Administrator grant.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFFCCFBF1)
+                    color = DarkTextSecondary
                 )
             }
         }
@@ -944,7 +982,8 @@ fun RoleOnboardingScreen(
             Card(
                 shape = MaterialTheme.shapes.medium,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)),
-                border = BorderStroke(1.dp, EmeraldAccent.copy(alpha = 0.5f)),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                 modifier = Modifier.fillMaxWidth().testTag("onboarding_pending_invites_card")
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1080,7 +1119,7 @@ fun RoleOnboardingScreen(
                                 }
                             }
                         )
-                        Icon(icon, contentDescription = null, tint = EmeraldAccent, modifier = Modifier.size(20.dp))
+                        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(10.dp))
                         Text(title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                         if (checked) {
@@ -1130,13 +1169,17 @@ fun RoleOnboardingScreen(
                 }
             },
             enabled = !isBusy,
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+            shape = RoundedCornerShape(999.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.secondary,
+                contentColor = MaterialTheme.colorScheme.onSecondary
+            ),
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 52.dp)
                 .testTag("submit_onboarding_button")
         ) {
-            if (isBusy) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+            if (isBusy) CircularProgressIndicator(color = MaterialTheme.colorScheme.onSecondary, modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
             else Text("Launch RentFlow Workspace")
         }
 

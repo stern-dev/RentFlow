@@ -72,12 +72,14 @@ import com.example.domain.model.Lease
 import com.example.domain.model.RefundMethod
 import com.example.ui.media.MaintenancePhotoProcessor
 import com.example.ui.screens.MaintenancePhotoStrip
-import com.example.ui.theme.EmeraldAccent
+import com.example.ui.theme.LocalIsDarkTheme
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusErrorBg
 import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.StatusWarningBg
+import com.example.ui.theme.StatusWarningBgDark
+import com.example.ui.theme.StatusWarningLight
 import com.example.ui.theme.TabularMoneyStyle
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -102,19 +104,23 @@ fun DepositSettlementSummaryCard(
     val actionHighlight = (isTenantView && status == DepositSettlementStatus.ISSUED) ||
         (!isTenantView && status == DepositSettlementStatus.DISPUTED)
 
+    val isDark = LocalIsDarkTheme.current
+    val warnBg = if (isDark) StatusWarningBgDark else StatusWarningBg
+    val warnFg = if (isDark) StatusWarningLight else StatusWarning
     Card(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
             containerColor = if (actionHighlight) {
-                StatusWarningBg.copy(alpha = 0.55f)
+                warnBg.copy(alpha = 0.75f)
             } else {
                 MaterialTheme.colorScheme.surface
             }
         ),
         border = BorderStroke(
             width = 1.dp,
-            color = if (actionHighlight) StatusWarning.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+            color = if (actionHighlight) warnFg.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
         ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = modifier
             .fillMaxWidth()
             .testTag(if (isTenantView) "tenant_deposit_settlement_card" else "landlord_deposit_settlement_card")
@@ -128,7 +134,7 @@ fun DepositSettlementSummaryCard(
                 Icon(
                     imageVector = Icons.Filled.AccountBalanceWallet,
                     contentDescription = "Security deposit settlement",
-                    tint = if (actionHighlight) StatusWarning else EmeraldAccent
+                    tint = if (actionHighlight) warnFg else MaterialTheme.colorScheme.secondary
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Security Deposit & Settlement", style = MaterialTheme.typography.titleSmall)

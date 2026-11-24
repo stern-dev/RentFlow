@@ -548,6 +548,34 @@ data class RentalApplication(
 
 @Keep
 @IgnoreExtraProperties
+data class DigitalSignature(
+    val signerUid: String = "",
+    val signerName: String = "",
+    val signerRole: String = UserRole.TENANT.name,
+    val signedAtEpochMs: Long = 0L,
+    val signatureImageRef: String = "",
+    val coversInspectionReport: Boolean = true,
+    val coversLeaseReport: Boolean = true
+) {
+    fun signerRoleEnum(): UserRole = safeEnum(signerRole, UserRole.TENANT)
+
+    fun toMap(): Map<String, Any> = mapOf(
+        "signerUid" to signerUid.trim().take(128),
+        "signerName" to signerName.trim().take(100),
+        "signerRole" to signerRoleEnum().name,
+        "signedAtEpochMs" to signedAtEpochMs.coerceAtLeast(1L),
+        "signatureImageRef" to signatureImageRef.trim(),
+        "coversInspectionReport" to coversInspectionReport,
+        "coversLeaseReport" to coversLeaseReport
+    )
+
+    companion object {
+        const val MAX_SIGNATURE_IMAGE_CHARS = 70_000
+    }
+}
+
+@Keep
+@IgnoreExtraProperties
 data class Lease(
     @DocumentId val id: String = "",
     val orgId: String = "",
@@ -570,10 +598,15 @@ data class Lease(
     val creditBalanceCents: Long = 0L,
     val termsSummary: String = "",
     val terminationNotice: String? = null,
+    val landlordSignature: DigitalSignature? = null,
+    val tenantSignature: DigitalSignature? = null,
+    val signedChecklistId: String? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
     fun statusEnum(): LeaseStatus = safeEnum(status, LeaseStatus.ACTIVE)
+
+    fun isMutuallySigned(): Boolean = landlordSignature != null && tenantSignature != null
 
     @Suppress("UNCHECKED_CAST")
     fun toCreateMap(): Map<String, Any> = mapOf(
@@ -597,6 +630,9 @@ data class Lease(
         "creditBalanceCents" to creditBalanceCents,
         "termsSummary" to termsSummary,
         "terminationNotice" to terminationNotice?.takeIf { it.isNotBlank() },
+        "landlordSignature" to landlordSignature?.toMap(),
+        "tenantSignature" to tenantSignature?.toMap(),
+        "signedChecklistId" to signedChecklistId?.trim()?.take(128)?.takeIf { it.isNotBlank() },
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     ).filterValues { it != null } as Map<String, Any>
@@ -1349,6 +1385,8 @@ data class MoveInConditionChecklist(
     val rooms: List<InspectionRoom> = emptyList(),
     val landlordSummary: String? = null,
     val tenantSummary: String? = null,
+    val landlordSignature: DigitalSignature? = null,
+    val tenantSignature: DigitalSignature? = null,
     val acknowledgedAtEpochMs: Long? = null,
     val acknowledgedByUid: String? = null,
     val createdByUid: String = "",
@@ -1360,6 +1398,8 @@ data class MoveInConditionChecklist(
     fun totalItemsCount(): Int = rooms.sumOf { it.items.size }
 
     fun totalPhotoCount(): Int = rooms.sumOf { room -> room.items.sumOf { it.imageRefs.size } }
+
+    fun isMutuallySigned(): Boolean = landlordSignature != null && tenantSignature != null
 
     @Suppress("UNCHECKED_CAST")
     fun toCreateMap(): Map<String, Any> = mapOf(
@@ -1382,6 +1422,8 @@ data class MoveInConditionChecklist(
         "rooms" to rooms.map { it.toMap() },
         "landlordSummary" to landlordSummary?.trim()?.take(800)?.takeIf { it.isNotBlank() },
         "tenantSummary" to tenantSummary?.trim()?.take(800)?.takeIf { it.isNotBlank() },
+        "landlordSignature" to landlordSignature?.toMap(),
+        "tenantSignature" to tenantSignature?.toMap(),
         "acknowledgedAtEpochMs" to acknowledgedAtEpochMs,
         "acknowledgedByUid" to acknowledgedByUid?.takeIf { it.isNotBlank() },
         "createdByUid" to createdByUid,

@@ -180,7 +180,7 @@ fun PaymentMethodSelectionScreen(
                     showAddDialog = true
                 },
                 containerColor = MaterialTheme.colorScheme.secondary,
-                contentColor = Color.White,
+                contentColor = MaterialTheme.colorScheme.onSecondary,
                 modifier = Modifier.testTag("add_payment_method_button")
             ) {
                 Icon(Icons.Filled.Add, contentDescription = "Add Payment Method")
@@ -189,8 +189,9 @@ fun PaymentMethodSelectionScreen(
         bottomBar = {
             if (effectiveSelected != null) {
                 Surface(
-                    tonalElevation = 4.dp,
-                    shadowElevation = 6.dp,
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
                     color = MaterialTheme.colorScheme.surface,
                     modifier = Modifier.fillMaxWidth()
                 ) {

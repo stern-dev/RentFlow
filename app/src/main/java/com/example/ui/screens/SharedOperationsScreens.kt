@@ -113,7 +113,6 @@ import com.example.ui.components.LoadingStateBox
 import com.example.ui.components.PillTone
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusPill
-import com.example.ui.theme.EmeraldAccent
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusInfo
 import com.example.ui.theme.StatusInfoBg
@@ -754,12 +753,16 @@ fun ConversationsScreen(
                                         Text(
                                             text = msg.senderName,
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = if (isMine) Color(0xFFCCFBF1) else MaterialTheme.colorScheme.onSurfaceVariant
+                                            color = if (isMine) {
+                                                MaterialTheme.colorScheme.onSecondary.copy(alpha = 0.8f)
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            }
                                         )
                                         Text(
                                             text = msg.body,
                                             style = MaterialTheme.typography.bodyMedium,
-                                            color = if (isMine) Color.White else MaterialTheme.colorScheme.onSurface
+                                            color = if (isMine) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.onSurface
                                         )
                                     }
                                 }
@@ -799,7 +802,7 @@ fun ConversationsScreen(
                 FloatingActionButton(
                     onClick = { showNewConvDialog = true },
                     containerColor = MaterialTheme.colorScheme.secondary,
-                    contentColor = Color.White,
+                    contentColor = MaterialTheme.colorScheme.onSecondary,
                     modifier = Modifier.testTag("new_conversation_fab")
                 ) {
                     Icon(Icons.Filled.Add, contentDescription = "New Conversation")
@@ -1090,13 +1093,13 @@ fun NotificationsScreen(opsViewModel: OperationsViewModel) {
                                 Icon(
                                     imageVector = Icons.Filled.Notifications,
                                     contentDescription = notif.typeEnum().label,
-                                    tint = if (notif.read) MaterialTheme.colorScheme.onSurfaceVariant else EmeraldAccent
+                                    tint = if (notif.read) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.secondary
                                 )
                                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                                         Text(notif.title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                                         if (!notif.read) {
-                                            Surface(color = EmeraldAccent, shape = CircleShape, modifier = Modifier.size(10.dp)) {}
+                                            Surface(color = MaterialTheme.colorScheme.secondary, shape = CircleShape, modifier = Modifier.size(10.dp)) {}
                                         }
                                     }
                                     Text(notif.body, style = MaterialTheme.typography.bodySmall)

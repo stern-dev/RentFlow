@@ -3195,8 +3195,207 @@ test("Move-in condition checklists (room-by-room): role permissions, grouped roo
   );
 });
 
+test("Dual-party digital signatures: atomic checklist + lease sign-off, spoofing rejection, and mutual lock", async () => {
+  const now = pastDate(8000);
+  const validPngSig = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Wanjiku Kamau", email: "owner@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: TENANT_UID, fullName: "Brian Ochieng", email: "tenant@example.com", roles: ["TENANT"], now });
+    await seedUser(db, { uid: OTHER_TENANT_UID, fullName: "Other Tenant", email: "other@example.com", roles: ["TENANT"], now });
+    await db.collection("organizations").doc("org_sig").set({
+      name: "Signature Homes",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID],
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("leases").doc("lease_sig").set({
+      orgId: "org_sig",
+      propertyId: "prop_sig",
+      propertyName: "Lavington Court",
+      unitId: "unit_sig",
+      unitNumber: "C4",
+      ownerUid: LANDLORD_UID,
+      managerUids: [],
+      authorizedUids: [LANDLORD_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      tenantPhone: "+254712345678",
+      rentCents: 4500000,
+      depositCents: 4500000,
+      startDateEpochMs: Date.now() - 864000000,
+      endDateEpochMs: Date.now() + 864000000,
+      dueDayOfMonth: 5,
+      status: "ACTIVE",
+      creditBalanceCents: 0,
+      termsSummary: "12-month tenancy agreement.",
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
 
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com", true);
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com", true);
 
+  const landlordLeaseRef = landlordDb.collection("leases").doc("lease_sig");
+  const landlordMccRef = landlordDb.collection("move_in_condition_checklists").doc("mcc_lease_sig");
+  const tenantLeaseRef = tenantDb.collection("leases").doc("lease_sig");
+  const tenantMccRef = tenantDb.collection("move_in_condition_checklists").doc("mcc_lease_sig");
 
+  const landlordSig = {
+    signerUid: LANDLORD_UID,
+    signerName: "Wanjiku Kamau",
+    signerRole: "LANDLORD",
+    signedAtEpochMs: Date.now(),
+    signatureImageRef: validPngSig,
+    coversInspectionReport: true,
+    coversLeaseReport: true,
+  };
 
+  const tenantSig = {
+    signerUid: TENANT_UID,
+    signerName: "Brian Ochieng",
+    signerRole: "TENANT",
+    signedAtEpochMs: Date.now(),
+    signatureImageRef: validPngSig,
+    coversInspectionReport: true,
+    coversLeaseReport: true,
+  };
+
+  const baseChecklist = {
+    leaseId: "lease_sig",
+    orgId: "org_sig",
+    propertyId: "prop_sig",
+    propertyName: "Lavington Court",
+    unitId: "unit_sig",
+    unitNumber: "C4",
+    ownerUid: LANDLORD_UID,
+    managerUids: [],
+    authorizedUids: [LANDLORD_UID],
+    tenantUid: TENANT_UID,
+    tenantName: "Brian Ochieng",
+    status: "PENDING_TENANT_REVIEW",
+    inspectionDateEpochMs: Date.now() - 500,
+    waterMeterReading: "WM-500",
+    electricityMeterReading: "KPLC-500",
+    keysHandedOverCount: 2,
+    rooms: [
+      {
+        roomId: "room_living",
+        roomName: "Living Room",
+        roomRemarks: "",
+        items: [
+          {
+            itemId: "living_walls",
+            label: "Walls & Ceiling",
+            status: "GOOD",
+            imageRefs: [],
+            landlordRemarks: "Fresh paint",
+            tenantRemarks: "",
+          },
+        ],
+      },
+    ],
+    landlordSummary: "Signed and ready for tenant.",
+    landlordSignature: landlordSig,
+    createdByUid: LANDLORD_UID,
+    createdAt: now,
+    updatedAt: pastDate(700),
+  };
+
+  // Spoofed signerUid or invalid non-image signature payload must be rejected
+  await assertFails(
+    landlordMccRef.set({
+      ...baseChecklist,
+      landlordSignature: { ...landlordSig, signerUid: TENANT_UID },
+    })
+  );
+  await assertFails(
+    landlordMccRef.set({
+      ...baseChecklist,
+      landlordSignature: { ...landlordSig, signatureImageRef: "https://evil.example/sig.png" },
+    })
+  );
+
+  // Landlord cannot pre-forge tenantSignature at creation
+  await assertFails(
+    landlordMccRef.set({
+      ...baseChecklist,
+      tenantSignature: tenantSig,
+    })
+  );
+
+  // Landlord commits checklist + lease landlordSignature atomically
+  const landlordBatch = landlordDb.batch();
+  landlordBatch.set(landlordMccRef, baseChecklist);
+  landlordBatch.update(landlordLeaseRef, {
+    landlordSignature: landlordSig,
+    signedChecklistId: "mcc_lease_sig",
+    updatedAt: pastDate(700),
+  });
+  await assertSucceeds(landlordBatch.commit());
+
+  // Tenant cannot attach tenantSignature onto Lease standalone without atomic ACKNOWLEDGED checklist batch
+  await assertFails(
+    tenantLeaseRef.update({
+      tenantSignature: tenantSig,
+      signedChecklistId: "mcc_lease_sig",
+      updatedAt: pastDate(600),
+    })
+  );
+
+  // Tenant cannot attach tenantSignature on a DISPUTED checklist
+  await assertFails(
+    tenantMccRef.update({
+      status: "DISPUTED",
+      tenantSummary: "Window latch loose",
+      tenantSignature: tenantSig,
+      updatedAt: pastDate(550),
+    })
+  );
+
+  // Tenant counter-signs both checklist and lease atomically in one batch
+  const tenantBatch = tenantDb.batch();
+  tenantBatch.update(tenantMccRef, {
+    status: "ACKNOWLEDGED",
+    tenantSummary: "Reviewed and signed.",
+    acknowledgedByUid: TENANT_UID,
+    acknowledgedAtEpochMs: Date.now(),
+    tenantSignature: tenantSig,
+    updatedAt: pastDate(500),
+  });
+  tenantBatch.update(tenantLeaseRef, {
+    tenantSignature: tenantSig,
+    signedChecklistId: "mcc_lease_sig",
+    updatedAt: pastDate(500),
+  });
+  await assertSucceeds(tenantBatch.commit());
+
+  // Mutual lock: Landlord cannot alter lease termsSummary or signatures after mutual sign-off
+  await assertFails(
+    landlordLeaseRef.update({
+      termsSummary: "Tampered terms after tenant signed",
+      updatedAt: pastDate(400),
+    })
+  );
+  await assertFails(
+    landlordLeaseRef.update({
+      landlordSignature: { ...landlordSig, signerName: "Tampered Name" },
+      updatedAt: pastDate(400),
+    })
+  );
+  // Landlord CAN still lawfully terminate the lease later without touching signatures/terms
+  await assertSucceeds(
+    landlordLeaseRef.update({
+      status: "TERMINATED",
+      terminationNotice: "Mutual end of tenancy notice",
+      updatedAt: pastDate(300),
+    })
+  );
+});

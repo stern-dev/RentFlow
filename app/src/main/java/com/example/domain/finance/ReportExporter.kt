@@ -2,17 +2,27 @@ package com.example.domain.finance
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
+import android.util.Base64
 import androidx.core.content.FileProvider
+import com.example.domain.model.DigitalSignature
 import com.example.domain.model.Expense
 import com.example.domain.model.Invoice
 import com.example.domain.model.Lease
 import com.example.domain.model.Payment
 import java.io.File
 import java.io.FileOutputStream
+
+data class PdfSignatureBlock(
+    val roleTitle: String,
+    val signature: DigitalSignature?
+)
 
 object ReportExporter {
 
@@ -161,12 +171,72 @@ object ReportExporter {
         shareFile(context, file, "text/csv", "Export Rent Statement (CSV)")
     }
 
+    internal fun buildSignedLeaseSignatureBlocks(
+        lease: Lease,
+        landlordFallbackSignature: DigitalSignature? = null,
+        tenantFallbackSignature: DigitalSignature? = null
+    ): List<PdfSignatureBlock> {
+        val landlordSig = lease.landlordSignature ?: landlordFallbackSignature
+        val tenantSig = lease.tenantSignature ?: tenantFallbackSignature
+        return listOf(
+            PdfSignatureBlock("LANDLORD / AUTHORIZED AGENT", landlordSig),
+            PdfSignatureBlock("TENANT", tenantSig)
+        )
+    }
+
+    internal fun buildSignedLeaseAgreementLines(
+        lease: Lease,
+        landlordFallbackSignature: DigitalSignature? = null,
+        tenantFallbackSignature: DigitalSignature? = null
+    ): List<String> {
+        val landlordSig = lease.landlordSignature ?: landlordFallbackSignature
+        val tenantSig = lease.tenantSignature ?: tenantFallbackSignature
+        val execStatus = when {
+            landlordSig != null && tenantSig != null -> "Mutually Signed & Locked"
+            landlordSig != null -> "Signed by Landlord / Pending Tenant Signature"
+            else -> "Unsigned"
+        }
+        return listOf(
+            "[H]TENANCY PARTIES & TERM",
+            "Tenant: ${lease.tenantName} (${lease.tenantPhone})",
+            "Lease Status: ${lease.statusEnum().label}",
+            "Execution Status: $execStatus",
+            "Term: ${CurrencyUtils.formatDate(lease.startDateEpochMs)} to ${CurrencyUtils.formatDate(lease.endDateEpochMs)}",
+            "---",
+            "[H]FINANCIAL TERMS (KES)",
+            "Monthly Rent: ${CurrencyUtils.formatKes(lease.rentCents, true)}",
+            "Security Deposit: ${CurrencyUtils.formatKes(lease.depositCents, true)}",
+            "Rent Due Day: Day ${lease.dueDayOfMonth} of each month",
+            "Account Credit Balance: ${CurrencyUtils.formatKes(lease.creditBalanceCents, true)}",
+            "---",
+            "[H]AGREEMENT SUMMARY",
+            lease.termsSummary.ifBlank { "Standard Kenyan residential tenancy terms apply." }
+        )
+    }
+
+    fun exportSignedLeaseAgreementPdf(
+        context: Context,
+        lease: Lease,
+        landlordFallbackSignature: DigitalSignature? = null,
+        tenantFallbackSignature: DigitalSignature? = null
+    ) {
+        exportPdfDocument(
+            context = context,
+            fileName = "lease_${lease.unitNumber}.pdf",
+            title = "RentFlow Tenancy Agreement",
+            subtitle = "${lease.propertyName} • Unit ${lease.unitNumber}",
+            lines = buildSignedLeaseAgreementLines(lease, landlordFallbackSignature, tenantFallbackSignature),
+            signatureBlocks = buildSignedLeaseSignatureBlocks(lease, landlordFallbackSignature, tenantFallbackSignature)
+        )
+    }
+
     fun exportPdfDocument(
         context: Context,
         fileName: String,
         title: String,
         subtitle: String,
-        lines: List<String>
+        lines: List<String>,
+        signatureBlocks: List<PdfSignatureBlock> = emptyList()
     ) {
         val doc = PdfDocument()
         val pageWidth = 595
@@ -218,6 +288,121 @@ object ReportExporter {
                 y += 18f
             }
         }
+
+        if (signatureBlocks.isNotEmpty()) {
+            val blockHeight = 148f
+            if (y > pageHeight - blockHeight - 36f) {
+                doc.finishPage(page)
+                pageNum++
+                page = doc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNum).create())
+                canvas = page.canvas
+                y = 48f
+            } else {
+                y += 10f
+            }
+
+            val dividerPaint = Paint().apply { color = Color.LTGRAY; strokeWidth = 1f }
+            canvas.drawLine(margin, y, pageWidth - margin, y, dividerPaint)
+            y += 18f
+
+            bodyPaint.isFakeBoldText = true
+            bodyPaint.textSize = 11f
+            canvas.drawText("DIGITAL EXECUTION & SIGNATURES", margin, y, bodyPaint)
+            y += 12f
+
+            val gap = 14f
+            val columns = 2
+            val boxWidth = (pageWidth - (2f * margin) - gap) / columns
+            val boxHeight = 120f
+
+            val cardBgPaint = Paint().apply {
+                color = Color.rgb(248, 250, 252)
+                style = Paint.Style.FILL
+            }
+            val cardBorderPaint = Paint().apply {
+                color = Color.rgb(203, 213, 225)
+                style = Paint.Style.STROKE
+                strokeWidth = 1f
+            }
+            val sigPaperPaint = Paint().apply {
+                color = Color.WHITE
+                style = Paint.Style.FILL
+            }
+            val rolePaint = Paint().apply {
+                color = Color.rgb(11, 31, 58)
+                textSize = 9.5f
+                isFakeBoldText = true
+            }
+            val metaPaint = Paint().apply {
+                color = Color.rgb(51, 65, 85)
+                textSize = 9f
+            }
+            val pendingPaint = Paint().apply {
+                color = Color.rgb(148, 163, 184)
+                textSize = 9.5f
+            }
+
+            signatureBlocks.chunked(columns).forEach { rowBlocks ->
+                if (y > pageHeight - boxHeight - 24f) {
+                    doc.finishPage(page)
+                    pageNum++
+                    page = doc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNum).create())
+                    canvas = page.canvas
+                    y = 48f
+                }
+                rowBlocks.forEachIndexed { colIndex, block ->
+                    val left = margin + colIndex * (boxWidth + gap)
+                    val top = y
+                    val right = left + boxWidth
+                    val bottom = top + boxHeight
+
+                    val cardRect = RectF(left, top, right, bottom)
+                    canvas.drawRoundRect(cardRect, 6f, 6f, cardBgPaint)
+                    canvas.drawRoundRect(cardRect, 6f, 6f, cardBorderPaint)
+                    canvas.drawText(block.roleTitle.take(36), left + 10f, top + 16f, rolePaint)
+
+                    val sigRect = RectF(left + 10f, top + 24f, right - 10f, top + 74f)
+                    canvas.drawRect(sigRect, sigPaperPaint)
+                    canvas.drawRect(sigRect, cardBorderPaint)
+
+                    val sig = block.signature
+                    if (sig != null) {
+                        val bmp = decodeSignatureDataUri(sig.signatureImageRef)
+                        if (bmp != null) {
+                            val srcRect = Rect(0, 0, bmp.width, bmp.height)
+                            canvas.drawBitmap(bmp, srcRect, sigRect, null)
+                            bmp.recycle()
+                        } else {
+                            canvas.drawText("[Signed Digitally]", left + 18f, top + 53f, metaPaint)
+                        }
+                        canvas.drawText(
+                            "Signed by: ${sig.signerName.take(34)}",
+                            left + 10f,
+                            top + 90f,
+                            metaPaint
+                        )
+                        val dateText = CurrencyUtils.formatDateTime(sig.signedAtEpochMs)
+                        val scopeText = if (sig.coversInspectionReport && sig.coversLeaseReport) {
+                            "Scope: Inspection & Lease"
+                        } else {
+                            "Scope: Condition Report"
+                        }
+                        canvas.drawText(
+                            "$dateText • $scopeText".take(42),
+                            left + 10f,
+                            top + 106f,
+                            metaPaint
+                        )
+                    } else {
+                        canvas.drawText("Pending Signature", left + 18f, top + 53f, pendingPaint)
+                        canvas.drawText("Name: ________________________", left + 10f, top + 90f, pendingPaint)
+                        canvas.drawText("Date: Pending execution", left + 10f, top + 106f, pendingPaint)
+                    }
+                }
+                y += boxHeight + 12f
+            }
+        }
+
         doc.finishPage(page)
 
         val file = File(ensureExportDir(context), fileName)
@@ -225,4 +410,18 @@ object ReportExporter {
         doc.close()
         shareFile(context, file, "application/pdf", "Share PDF Document")
     }
+
+    internal fun decodeSignatureDataUri(dataUri: String): android.graphics.Bitmap? {
+        val trimmed = dataUri.trim()
+        val marker = ";base64,"
+        val idx = trimmed.indexOf(marker, ignoreCase = true)
+        if (!trimmed.startsWith("data:image/", ignoreCase = true) || idx < 0) return null
+        val payload = trimmed.substring(idx + marker.length)
+        if (payload.isBlank()) return null
+        return runCatching {
+            val bytes = Base64.decode(payload, Base64.DEFAULT)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        }.getOrNull()
+    }
 }
+

@@ -86,9 +86,12 @@ import com.example.domain.location.BuildingLocationResolver
 import com.example.domain.location.BuildingPinGroup
 import com.example.domain.location.ResolvedBuildingLocation
 import com.example.domain.model.RentalUnit
-import com.example.ui.theme.EmeraldAccent
-import com.example.ui.theme.NavyPrimary
-import com.example.ui.theme.NavySecondary
+import com.example.ui.theme.ChampagneAccent
+import com.example.ui.theme.ChampagneContainer
+import com.example.ui.theme.ChampagneLight
+import com.example.ui.theme.DarkTextPrimary
+import com.example.ui.theme.ObsidianPrimary
+import com.example.ui.theme.ObsidianSecondary
 import com.example.ui.theme.StatusInfo
 import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.TabularMoneyStyle
@@ -331,14 +334,14 @@ private fun StyledKenyaMapFallbackSurface(
             .background(
                 Brush.linearGradient(
                     listOf(
-                        NavyPrimary.copy(alpha = 0.92f),
-                        NavySecondary.copy(alpha = 0.88f)
+                        ObsidianPrimary.copy(alpha = 0.94f),
+                        ObsidianSecondary.copy(alpha = 0.92f)
                     )
                 )
             )
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val gridColor = Color(0xFF5EEAD4).copy(alpha = 0.14f)
+            val gridColor = ChampagneLight.copy(alpha = 0.14f)
             val stepX = size.width / 8f
             val stepY = size.height / 5f
             for (i in 1..7) {
@@ -359,12 +362,12 @@ private fun StyledKenyaMapFallbackSurface(
             }
             val center = Offset(size.width / 2f, size.height / 2f)
             drawCircle(
-                color = (if (isExactPin) EmeraldAccent else StatusWarning).copy(alpha = 0.22f),
+                color = (if (isExactPin) ChampagneAccent else StatusWarning).copy(alpha = 0.22f),
                 radius = 34.dp.toPx(),
                 center = center
             )
             drawCircle(
-                color = (if (isExactPin) EmeraldAccent else StatusWarning).copy(alpha = 0.45f),
+                color = (if (isExactPin) ChampagneAccent else StatusWarning).copy(alpha = 0.45f),
                 radius = 16.dp.toPx(),
                 center = center
             )
@@ -382,12 +385,12 @@ private fun StyledKenyaMapFallbackSurface(
                 modifier = Modifier
                     .size(40.dp)
                     .clip(CircleShape)
-                    .background(if (isExactPin) EmeraldAccent else StatusWarning)
+                    .background(if (isExactPin) ChampagneAccent else StatusWarning)
             ) {
                 Icon(
                     imageVector = Icons.Filled.LocationOn,
                     contentDescription = "Map Pin",
-                    tint = Color.White,
+                    tint = ObsidianPrimary,
                     modifier = Modifier.size(24.dp)
                 )
             }
@@ -395,14 +398,14 @@ private fun StyledKenyaMapFallbackSurface(
             Text(
                 text = title.ifBlank { "Kenya Building Pin" },
                 style = MaterialTheme.typography.titleSmall,
-                color = Color.White,
+                color = DarkTextPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = BuildingLocationResolver.formatCoordinates(latitude, longitude),
                 style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFFCCFBF1)
+                color = ChampagneContainer
             )
         }
     }
@@ -552,8 +555,8 @@ fun DiscoveryMapView(
             Card(
                 shape = MaterialTheme.shapes.large,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
-                elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp)

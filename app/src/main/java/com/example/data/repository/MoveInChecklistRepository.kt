@@ -8,12 +8,14 @@ import com.example.data.firebase.guardFirestoreReads
 import com.example.data.firebase.handleFirestoreError
 import com.example.domain.model.AppNotification
 import com.example.domain.model.AuditLog
+import com.example.domain.model.DigitalSignature
 import com.example.domain.model.InspectionRoom
 import com.example.domain.model.Lease
 import com.example.domain.model.MoveInChecklistStatus
 import com.example.domain.model.MoveInConditionChecklist
 import com.example.domain.model.NotificationType
 import com.example.domain.model.RoomInspectionItem
+import com.example.domain.model.UserRole
 import com.example.ui.media.MaintenancePhotoProcessor
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
@@ -144,6 +146,7 @@ class MoveInChecklistRepository(
         keysHandedOverCount: Long,
         rooms: List<InspectionRoom>,
         landlordSummary: String?,
+        landlordSignature: DigitalSignature? = null,
         submitForTenantSignOff: Boolean,
         actorName: String
     ): Result<String> {
@@ -152,9 +155,12 @@ class MoveInChecklistRepository(
         val path = "$COLLECTION_NAME/$docId"
         return try {
             val uid = requireUserId()
-            if (existingChecklist?.statusEnum() == MoveInChecklistStatus.ACKNOWLEDGED) {
+            if (existingChecklist?.statusEnum() == MoveInChecklistStatus.ACKNOWLEDGED ||
+                existingChecklist?.isMutuallySigned() == true ||
+                lease.isMutuallySigned()
+            ) {
                 return Result.failure(
-                    IllegalStateException("Signed-off move-in checklists are permanently locked and cannot be edited.")
+                    IllegalStateException("Signed-off move-in checklists and lease reports are permanently locked and cannot be edited.")
                 )
             }
             require(lease.id.isNotBlank() && lease.orgId.isNotBlank() && lease.tenantUid.isNotBlank()) {
@@ -166,6 +172,30 @@ class MoveInChecklistRepository(
                 preserveTenantRemarksFrom = existingChecklist?.rooms
             ).getOrThrow()
 
+            val effectiveRole = if (lease.ownerUid == uid) {
+                UserRole.LANDLORD
+            } else {
+                UserRole.PROPERTY_MANAGER
+            }
+
+            val cleanLandlordSignature: DigitalSignature? = if (submitForTenantSignOff) {
+                sanitizeAndValidateSignature(
+                    signature = landlordSignature ?: existingChecklist?.landlordSignature,
+                    expectedUid = uid,
+                    allowedRoles = setOf(UserRole.LANDLORD, UserRole.PROPERTY_MANAGER),
+                    roleOverride = effectiveRole
+                ).getOrThrow()
+            } else {
+                landlordSignature?.let {
+                    sanitizeAndValidateSignature(
+                        signature = it,
+                        expectedUid = uid,
+                        allowedRoles = setOf(UserRole.LANDLORD, UserRole.PROPERTY_MANAGER),
+                        roleOverride = effectiveRole
+                    ).getOrThrow()
+                } ?: existingChecklist?.landlordSignature
+            }
+
             val nextStatus = if (submitForTenantSignOff) {
                 MoveInChecklistStatus.PENDING_TENANT_REVIEW
             } else {
@@ -176,6 +206,9 @@ class MoveInChecklistRepository(
             val cleanSummary = landlordSummary?.trim()?.take(800)?.takeIf { it.isNotBlank() }
             val cleanDateMs = inspectionDateEpochMs.takeIf { it > 0L } ?: System.currentTimeMillis()
             val cleanKeys = keysHandedOverCount.coerceIn(0L, 50L)
+
+            val batch = db.batch()
+            val checklistRef = db.collection(COLLECTION_NAME).document(docId)
 
             if (existingChecklist == null) {
                 val checklist = MoveInConditionChecklist(
@@ -198,9 +231,10 @@ class MoveInChecklistRepository(
                     keysHandedOverCount = cleanKeys,
                     rooms = cleanRooms,
                     landlordSummary = cleanSummary,
+                    landlordSignature = cleanLandlordSignature,
                     createdByUid = uid
                 )
-                db.collection(COLLECTION_NAME).document(docId).set(checklist.toCreateMap()).await()
+                batch.set(checklistRef, checklist.toCreateMap())
             } else {
                 val updates = hashMapOf<String, Any>(
                     "inspectionDateEpochMs" to cleanDateMs,
@@ -212,8 +246,25 @@ class MoveInChecklistRepository(
                     "status" to nextStatus.name,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
-                db.collection(COLLECTION_NAME).document(docId).update(updates).await()
+                if (cleanLandlordSignature != null) {
+                    updates["landlordSignature"] = cleanLandlordSignature.toMap()
+                }
+                batch.update(checklistRef, updates)
             }
+
+            if (submitForTenantSignOff && cleanLandlordSignature != null) {
+                val leaseRef = db.collection("leases").document(lease.id)
+                batch.update(
+                    leaseRef,
+                    mapOf(
+                        "landlordSignature" to cleanLandlordSignature.toMap(),
+                        "signedChecklistId" to docId,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+            }
+
+            batch.commit().await()
 
             if (nextStatus == MoveInChecklistStatus.PENDING_TENANT_REVIEW && lease.tenantUid.isNotBlank()) {
                 val itemCount = cleanRooms.sumOf { it.items.size }
@@ -222,8 +273,8 @@ class MoveInChecklistRepository(
                     senderUid = uid,
                     orgId = lease.orgId,
                     type = NotificationType.LEASE.name,
-                    title = "Move-In Condition Checklist Ready: Unit ${lease.unitNumber}",
-                    body = "${lease.propertyName} • Unit ${lease.unitNumber}: Inspect ${cleanRooms.size} rooms ($itemCount items) and add remarks or sign off.",
+                    title = "Inspection & Lease Ready to Sign: Unit ${lease.unitNumber}",
+                    body = "${lease.propertyName} • Unit ${lease.unitNumber}: ${cleanLandlordSignature?.signerName ?: actorName} signed. Review ${cleanRooms.size} rooms ($itemCount items) & lease terms to counter-sign.",
                     relatedEntityId = docId,
                     read = false
                 )
@@ -236,7 +287,7 @@ class MoveInChecklistRepository(
                     actorUid = uid,
                     actorName = actorName,
                     action = if (submitForTenantSignOff) {
-                        "SUBMIT_MOVE_IN_CONDITION_CHECKLIST"
+                        "SUBMIT_SIGNED_CONDITION_AND_LEASE_CHECKLIST"
                     } else {
                         "SAVE_MOVE_IN_CONDITION_CHECKLIST_DRAFT"
                     },
@@ -264,6 +315,7 @@ class MoveInChecklistRepository(
         acknowledge: Boolean,
         tenantRemarksByItemId: Map<String, String>,
         tenantSummary: String?,
+        tenantSignature: DigitalSignature? = null,
         actorName: String
     ): Result<Unit> {
         val path = "$COLLECTION_NAME/${checklist.id}"
@@ -276,7 +328,7 @@ class MoveInChecklistRepository(
             }
             if (checklist.statusEnum() != MoveInChecklistStatus.PENDING_TENANT_REVIEW) {
                 return Result.failure(
-                    IllegalStateException("This move-in condition checklist is not awaiting tenant review.")
+                    IllegalStateException("This move-in condition checklist is not awaiting tenant sign-off.")
                 )
             }
 
@@ -285,6 +337,17 @@ class MoveInChecklistRepository(
                 return Result.failure(
                     IllegalArgumentException("Provide a summary note (at least 3 characters) when flagging discrepancies.")
                 )
+            }
+
+            val cleanTenantSignature = if (acknowledge) {
+                sanitizeAndValidateSignature(
+                    signature = tenantSignature,
+                    expectedUid = uid,
+                    allowedRoles = setOf(UserRole.TENANT),
+                    roleOverride = UserRole.TENANT
+                ).getOrThrow()
+            } else {
+                null
             }
 
             val updatedRooms = mergeTenantRemarksPreservingLandlordFields(
@@ -304,11 +367,30 @@ class MoveInChecklistRepository(
                 "tenantSummary" to (cleanSummary ?: FieldValue.delete()),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
-            if (acknowledge) {
-                updates["acknowledgedAtEpochMs"] = System.currentTimeMillis()
+            if (acknowledge && cleanTenantSignature != null) {
+                val signedAtMs = cleanTenantSignature.signedAtEpochMs
+                updates["acknowledgedAtEpochMs"] = signedAtMs
                 updates["acknowledgedByUid"] = uid
+                updates["tenantSignature"] = cleanTenantSignature.toMap()
             }
-            db.collection(COLLECTION_NAME).document(checklist.id).update(updates).await()
+
+            val batch = db.batch()
+            val checklistRef = db.collection(COLLECTION_NAME).document(checklist.id)
+            batch.update(checklistRef, updates)
+
+            if (acknowledge && cleanTenantSignature != null && checklist.leaseId.isNotBlank()) {
+                val leaseRef = db.collection("leases").document(checklist.leaseId)
+                batch.update(
+                    leaseRef,
+                    mapOf(
+                        "tenantSignature" to cleanTenantSignature.toMap(),
+                        "signedChecklistId" to checklist.id,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+            }
+
+            batch.commit().await()
 
             checklist.authorizedUids
                 .filter { it.isNotBlank() && it != uid }
@@ -320,12 +402,12 @@ class MoveInChecklistRepository(
                         orgId = checklist.orgId,
                         type = NotificationType.LEASE.name,
                         title = if (acknowledge) {
-                            "Condition Checklist Signed Off: Unit ${checklist.unitNumber}"
+                            "Inspection & Lease Signed & Locked: Unit ${checklist.unitNumber}"
                         } else {
                             "Condition Discrepancy Flagged: Unit ${checklist.unitNumber}"
                         },
                         body = if (acknowledge) {
-                            "${checklist.tenantName} acknowledged the room-by-room condition checklist for ${checklist.propertyName}."
+                            "${cleanTenantSignature?.signerName ?: checklist.tenantName} counter-signed the condition checklist and lease agreement for ${checklist.propertyName}."
                         } else {
                             "${checklist.tenantName} flagged items on ${checklist.propertyName}: ${cleanSummary.orEmpty()}"
                         }.take(500),
@@ -341,7 +423,7 @@ class MoveInChecklistRepository(
                     actorUid = uid,
                     actorName = actorName,
                     action = if (acknowledge) {
-                        "ACKNOWLEDGE_MOVE_IN_CONDITION_CHECKLIST"
+                        "SIGN_AND_LOCK_INSPECTION_AND_LEASE"
                     } else {
                         "DISPUTE_MOVE_IN_CONDITION_CHECKLIST"
                     },
@@ -533,6 +615,59 @@ class MoveInChecklistRepository(
             }
 
             return Result.success(sanitizedRooms)
+        }
+
+        /**
+         * Validates a drawn + named DigitalSignature covering both the inspection report and
+         * linked tenancy lease agreement before batch persistence in Firestore.
+         */
+        fun sanitizeAndValidateSignature(
+            signature: DigitalSignature?,
+            expectedUid: String,
+            allowedRoles: Set<UserRole>,
+            roleOverride: UserRole? = null
+        ): Result<DigitalSignature> {
+            if (signature == null) {
+                return Result.failure(
+                    IllegalArgumentException("Draw your signature and confirm your legal name before signing off.")
+                )
+            }
+            val cleanName = signature.signerName.trim().take(100)
+            if (cleanName.isBlank()) {
+                return Result.failure(IllegalArgumentException("Enter your typed legal full name to sign."))
+            }
+            val cleanImage = signature.signatureImageRef.trim()
+            val validPrefix = cleanImage.startsWith("data:image/png;base64,") ||
+                cleanImage.startsWith("data:image/jpeg;base64,")
+            if (!validPrefix || cleanImage.length < 25) {
+                return Result.failure(IllegalArgumentException("Draw your signature in the signature pad before submitting."))
+            }
+            if (cleanImage.length > DigitalSignature.MAX_SIGNATURE_IMAGE_CHARS) {
+                return Result.failure(
+                    IllegalArgumentException("Digital signature image exceeds the maximum size limit. Clear and redraw.")
+                )
+            }
+            if (!signature.coversInspectionReport || !signature.coversLeaseReport) {
+                return Result.failure(
+                    IllegalArgumentException("Confirm the attestation covering both the Move-In Inspection Report and Lease Agreement.")
+                )
+            }
+            val resolvedRole = roleOverride ?: signature.signerRoleEnum()
+            if (resolvedRole !in allowedRoles) {
+                return Result.failure(SecurityException("Role $resolvedRole is not permitted to execute this signature."))
+            }
+            val cleanTimestamp = signature.signedAtEpochMs.takeIf { it > 0L } ?: System.currentTimeMillis()
+            return Result.success(
+                DigitalSignature(
+                    signerUid = expectedUid.trim().take(128),
+                    signerName = cleanName,
+                    signerRole = resolvedRole.name,
+                    signedAtEpochMs = cleanTimestamp,
+                    signatureImageRef = cleanImage,
+                    coversInspectionReport = true,
+                    coversLeaseReport = true
+                )
+            )
         }
 
         /**

@@ -58,8 +58,6 @@ import com.example.domain.finance.CurrencyUtils
 import com.example.domain.finance.TenantMonthTrendStatus
 import com.example.domain.finance.TenantPaymentTrendPoint
 import com.example.domain.finance.TenantPaymentTrendsSummary
-import com.example.ui.theme.EmeraldAccent
-import com.example.ui.theme.NavyPrimary
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.StatusWarning
@@ -84,7 +82,8 @@ fun RentPaymentTrendsCard(
     Card(
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = modifier
             .fillMaxWidth()
             .testTag("tenant_payment_trends_card")
@@ -133,9 +132,9 @@ fun RentPaymentTrendsCard(
                         TrendBadgeChip(
                             label = "${summary.consistencyPercent}%",
                             icon = Icons.Filled.Verified,
-                            tint = if (summary.consistencyPercent >= 80) EmeraldAccent else StatusWarning,
+                            tint = if (summary.consistencyPercent >= 80) MaterialTheme.colorScheme.secondary else StatusWarning,
                             containerColor = if (summary.consistencyPercent >= 80) {
-                                EmeraldAccent.copy(alpha = 0.14f)
+                                MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f)
                             } else {
                                 StatusWarning.copy(alpha = 0.14f)
                             },
@@ -194,8 +193,8 @@ fun RentPaymentTrendsCard(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                TrendLegendItem("Billed", NavyPrimary.copy(alpha = 0.42f))
-                TrendLegendItem("Paid", EmeraldAccent)
+                TrendLegendItem("Billed", MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f))
+                TrendLegendItem("Paid", MaterialTheme.colorScheme.secondary)
                 TrendLegendItem("Partial / Arrears", StatusWarning)
             }
 
@@ -309,7 +308,7 @@ fun RentPaymentTrendsCard(
 
                                 val paidColor = when (pt.status) {
                                     TenantMonthTrendStatus.PAID_ON_TIME,
-                                    TenantMonthTrendStatus.PAID_LATE -> EmeraldAccent
+                                    TenantMonthTrendStatus.PAID_LATE -> dueBarColor
                                     TenantMonthTrendStatus.PARTIAL -> StatusWarning
                                     TenantMonthTrendStatus.OVERDUE -> StatusError
                                     TenantMonthTrendStatus.DUE -> dueBarColor
@@ -382,10 +381,10 @@ fun RentPaymentTrendsCard(
                                         .background(
                                             when (pt.status) {
                                                 TenantMonthTrendStatus.PAID_ON_TIME,
-                                                TenantMonthTrendStatus.PAID_LATE -> EmeraldAccent
+                                                TenantMonthTrendStatus.PAID_LATE,
+                                                TenantMonthTrendStatus.DUE -> MaterialTheme.colorScheme.secondary
                                                 TenantMonthTrendStatus.PARTIAL -> StatusWarning
                                                 TenantMonthTrendStatus.OVERDUE -> StatusError
-                                                TenantMonthTrendStatus.DUE -> MaterialTheme.colorScheme.secondary
                                                 TenantMonthTrendStatus.NO_INVOICE -> Color.Transparent
                                             }
                                         )

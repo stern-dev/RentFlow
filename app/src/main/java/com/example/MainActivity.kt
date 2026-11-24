@@ -1,12 +1,15 @@
 package com.example
 
 import android.content.Intent
+import android.graphics.Color as AndroidColor
 import android.os.Bundle
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,7 +50,7 @@ class MainActivity : FragmentActivity() {
         setContent {
             val themeRepo = remember { ThemePreferencesRepository(applicationContext) }
             val securityRepo = remember { SecurityPreferencesRepository(applicationContext) }
-            val themeMode by themeRepo.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.SYSTEM)
+            val themeMode by themeRepo.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.LIGHT)
             val securityPrefs by securityRepo.securityPreferences.collectAsStateWithLifecycle(initialValue = SecurityPreferences())
             val scope = rememberCoroutineScope()
             val lifecycleOwner = LocalLifecycleOwner.current
@@ -94,6 +97,20 @@ class MainActivity : FragmentActivity() {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
                 ThemeMode.LIGHT -> false
                 ThemeMode.DARK -> true
+            }
+            SideEffect {
+                enableEdgeToEdge(
+                    statusBarStyle = if (darkTheme) {
+                        SystemBarStyle.dark(AndroidColor.TRANSPARENT)
+                    } else {
+                        SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT)
+                    },
+                    navigationBarStyle = if (darkTheme) {
+                        SystemBarStyle.dark(AndroidColor.TRANSPARENT)
+                    } else {
+                        SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT)
+                    }
+                )
             }
             RentFlowTheme(darkTheme = darkTheme) {
                 RentFlowApp(

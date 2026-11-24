@@ -63,7 +63,7 @@ import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SecondaryTabRow
+import androidx.compose.material3.SecondaryScrollableTabRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -118,17 +118,18 @@ import com.example.domain.model.MoveInChecklist
 import com.example.domain.model.MoveInChecklistStatus
 import com.example.domain.model.MoveInConditionChecklist
 import com.example.ui.components.BuildingLocationPickerDialog
+import com.example.ui.components.ChecklistOverviewTab
 import com.example.ui.components.CriticalActionConfirmationDialog
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.ErrorBannerCard
 import com.example.ui.components.LandlordDepositSettlementDialog
 import com.example.ui.components.LandlordMoveInChecklistDialog
 import com.example.ui.components.LoadingStateBox
+import com.example.ui.components.MoveInChecklistPdfViewerDialog
 import com.example.ui.components.MoveInConditionChecklistFullScreenDialog
 import com.example.ui.components.PillTone
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusPill
-import com.example.ui.components.exportMoveInConditionChecklistPdf
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusInfo
 import com.example.ui.theme.StatusSuccess
@@ -168,6 +169,8 @@ fun LandlordPortfolioScreen(
     val invoicesState by viewModel.invoices.collectAsStateWithLifecycle()
     val checklistsState by viewModel.moveInChecklists.collectAsStateWithLifecycle()
     val conditionChecklistsState by viewModel.conditionChecklists.collectAsStateWithLifecycle()
+    val checklistOverviewState by viewModel.checklistOverviewState.collectAsStateWithLifecycle()
+    val checklistOverviewFilter by viewModel.checklistOverviewFilter.collectAsStateWithLifecycle()
     val settlementsState by viewModel.depositSettlements.collectAsStateWithLifecycle()
     val activeOrgId by viewModel.activeOrgId.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
@@ -203,6 +206,7 @@ fun LandlordPortfolioScreen(
     var leaseToRenew by remember { mutableStateOf<Lease?>(null) }
     var leaseForChecklistDialog by remember { mutableStateOf<Lease?>(null) }
     var leaseForConditionChecklistScreen by remember { mutableStateOf<Lease?>(null) }
+    var conditionChecklistForPdfViewer by remember { mutableStateOf<Pair<MoveInConditionChecklist, Lease?>?>(null) }
     var leaseForSettlementDialog by remember { mutableStateOf<Lease?>(null) }
 
     LaunchedEffect(
@@ -256,11 +260,14 @@ fun LandlordPortfolioScreen(
         onConsumeAddPropertyTrigger()
     }
 
+    val checklistTabCount = (checklistOverviewState as? UiState.Success)?.data?.totalCount
+        ?: conditionChecklists.size
     val tabs = listOf(
         "Properties (${properties.size})",
         "Units (${units.size})",
         "Applications (${applications.count { it.statusEnum() in listOf(ApplicationStatus.SUBMITTED, ApplicationStatus.UNDER_REVIEW) }})",
-        "Leases (${leases.count { it.statusEnum() == LeaseStatus.ACTIVE }})"
+        "Leases (${leases.count { it.statusEnum() == LeaseStatus.ACTIVE }})",
+        "Checklists ($checklistTabCount)"
     )
 
     Scaffold(
@@ -275,7 +282,7 @@ fun LandlordPortfolioScreen(
                         else propertyForUnitDialog = creatableProperties.firstOrNull()
                     },
                     containerColor = MaterialTheme.colorScheme.secondary,
-                    contentColor = Color.White,
+                    contentColor = MaterialTheme.colorScheme.onSecondary,
                     modifier = Modifier.testTag("add_portfolio_fab")
                 ) {
                     Icon(
@@ -287,12 +294,16 @@ fun LandlordPortfolioScreen(
         }
     ) { innerPadding ->
         Column(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-            SecondaryTabRow(selectedTabIndex = selectedTab) {
+            SecondaryScrollableTabRow(
+                selectedTabIndex = selectedTab,
+                edgePadding = 12.dp
+            ) {
                 tabs.forEachIndexed { idx, label ->
                     Tab(
                         selected = selectedTab == idx,
                         onClick = { selectedTab = idx },
-                        text = { Text(label, maxLines = 1) }
+                        text = { Text(label, maxLines = 1) },
+                        modifier = Modifier.testTag("landlord_portfolio_tab_$idx")
                     )
                 }
             }
@@ -397,33 +408,35 @@ fun LandlordPortfolioScreen(
                     canManageChecklist = { lease -> PermissionPolicy.canManageLeaseChecklist(uid, activeRole, lease) },
                     canManageSettlement = { lease -> PermissionPolicy.canManageDepositSettlement(uid, activeRole, lease) },
                     onExportPdf = { lease ->
-                        ReportExporter.exportPdfDocument(
+                        val linkedChecklist = conditionChecklists.firstOrNull { it.leaseId == lease.id }
+                        ReportExporter.exportSignedLeaseAgreementPdf(
                             context = context,
-                            fileName = "lease_${lease.unitNumber}.pdf",
-                            title = "RentFlow Tenancy Agreement",
-                            subtitle = "${lease.propertyName} • Unit ${lease.unitNumber}",
-                            lines = listOf(
-                                "[H]TENANCY PARTIES & TERM",
-                                "Tenant: ${lease.tenantName} (${lease.tenantPhone})",
-                                "Lease Status: ${lease.statusEnum().label}",
-                                "Term: ${CurrencyUtils.formatDate(lease.startDateEpochMs)} to ${CurrencyUtils.formatDate(lease.endDateEpochMs)}",
-                                "---",
-                                "[H]FINANCIAL TERMS (KES)",
-                                "Monthly Rent: ${CurrencyUtils.formatKes(lease.rentCents, true)}",
-                                "Security Deposit: ${CurrencyUtils.formatKes(lease.depositCents, true)}",
-                                "Rent Due Day: Day ${lease.dueDayOfMonth} of each month",
-                                "Account Credit Balance: ${CurrencyUtils.formatKes(lease.creditBalanceCents, true)}",
-                                "---",
-                                "[H]AGREEMENT SUMMARY",
-                                lease.termsSummary.ifBlank { "Standard Kenyan residential tenancy terms apply." }
-                            )
+                            lease = lease,
+                            landlordFallbackSignature = linkedChecklist?.landlordSignature,
+                            tenantFallbackSignature = linkedChecklist?.tenantSignature
                         )
                     },
                     onOpenChecklist = { lease -> leaseForChecklistDialog = lease },
                     onOpenConditionChecklist = { lease -> leaseForConditionChecklistScreen = lease },
+                    onOpenConditionChecklistPdf = { mcc, lease ->
+                        conditionChecklistForPdfViewer = mcc to lease
+                    },
                     onOpenSettlement = { lease -> leaseForSettlementDialog = lease },
                     onRenew = { lease -> leaseToRenew = lease },
                     onTerminate = { lease -> leaseToTerminate = lease }
+                )
+                4 -> ChecklistOverviewTab(
+                    overviewState = checklistOverviewState,
+                    filterState = checklistOverviewFilter,
+                    canManageChecklist = { lease -> PermissionPolicy.canManageLeaseChecklist(uid, activeRole, lease) },
+                    onBucketFilterToggle = { bucket -> viewModel.setChecklistBucketFilter(bucket) },
+                    onPropertyFilterToggle = { propId -> viewModel.setChecklistPropertyFilter(propId) },
+                    onSearchQueryChange = { query -> viewModel.setChecklistSearchQuery(query) },
+                    onClearFilters = { viewModel.clearChecklistFilters() },
+                    onOpenChecklist = { lease -> leaseForConditionChecklistScreen = lease },
+                    onOpenPdfPreview = { mcc, lease ->
+                        conditionChecklistForPdfViewer = mcc to lease
+                    }
                 )
             }
         }
@@ -671,8 +684,11 @@ fun LandlordPortfolioScreen(
             isTenantView = false,
             canDeleteDraft = isOwner && existingConditionChecklist?.statusEnum() == MoveInChecklistStatus.DRAFT,
             isBusy = busy,
+            currentUserUid = uid,
+            currentUserName = currentUser.fullName,
+            currentUserRole = activeRole,
             onDismiss = { leaseForConditionChecklistScreen = null },
-            onSaveLandlordChecklist = { waterMeter, powerMeter, keysCount, rooms, landlordSummary, submitToTenant, onSuccess ->
+            onSaveLandlordChecklist = { waterMeter, powerMeter, keysCount, rooms, landlordSummary, submitToTenant, landlordSignature, onSuccess ->
                 viewModel.saveMoveInConditionChecklist(
                     lease = lease,
                     existingChecklist = existingConditionChecklist,
@@ -684,6 +700,7 @@ fun LandlordPortfolioScreen(
                     landlordSummary = landlordSummary,
                     submitForTenantSignOff = submitToTenant,
                     actorName = currentUser.fullName,
+                    landlordSignature = landlordSignature,
                     onSuccess = onSuccess
                 )
             },
@@ -694,6 +711,14 @@ fun LandlordPortfolioScreen(
                     onSuccess = onSuccess
                 )
             }
+        )
+    }
+
+    conditionChecklistForPdfViewer?.let { (mcc, lease) ->
+        MoveInChecklistPdfViewerDialog(
+            checklist = mcc,
+            lease = lease,
+            onDismiss = { conditionChecklistForPdfViewer = null }
         )
     }
 
@@ -1740,6 +1765,7 @@ private fun LeasesTab(
     onExportPdf: (Lease) -> Unit,
     onOpenChecklist: (Lease) -> Unit,
     onOpenConditionChecklist: (Lease) -> Unit,
+    onOpenConditionChecklistPdf: (MoveInConditionChecklist, Lease) -> Unit,
     onOpenSettlement: (Lease) -> Unit,
     onRenew: (Lease) -> Unit,
     onTerminate: (Lease) -> Unit
@@ -1794,8 +1820,15 @@ private fun LeasesTab(
                                     }
                                     StatusPill(lease.statusEnum().label, tone)
                                 }
-                                if (conditionChecklist != null || checklist != null || settlement != null) {
+                                val leaseHasLandlordSig = lease.landlordSignature != null || conditionChecklist?.landlordSignature != null
+                                val leaseMutuallySigned = lease.isMutuallySigned() || conditionChecklist?.isMutuallySigned() == true
+                                if (leaseMutuallySigned || leaseHasLandlordSig || conditionChecklist != null || checklist != null || settlement != null) {
                                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        if (leaseMutuallySigned) {
+                                            StatusPill("Lease & Inspection Signed", PillTone.SUCCESS)
+                                        } else if (leaseHasLandlordSig) {
+                                            StatusPill("Landlord Signed • Pending Tenant", PillTone.WARNING)
+                                        }
                                         conditionChecklist?.let { mcc ->
                                             val clTone = when (mcc.statusEnum()) {
                                                 MoveInChecklistStatus.ACKNOWLEDGED -> PillTone.SUCCESS
@@ -1877,6 +1910,20 @@ private fun LeasesTab(
                                                     },
                                                     maxLines = 1
                                                 )
+                                            }
+                                            if (conditionChecklist != null) {
+                                                OutlinedButton(
+                                                    onClick = { onOpenConditionChecklistPdf(conditionChecklist, lease) },
+                                                    modifier = Modifier
+                                                        .heightIn(min = 48.dp)
+                                                        .testTag("lease_condition_checklist_pdf_button_${lease.id}")
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Filled.Description,
+                                                        contentDescription = "Open room-by-room condition report PDF viewer",
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
                                             }
                                         }
                                         if (canManageSettlement(lease)) {

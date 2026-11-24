@@ -69,17 +69,31 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.domain.finance.CurrencyUtils
 import com.example.domain.finance.MonthlyCashFlowPoint
-import com.example.ui.theme.EmeraldAccent
-import com.example.ui.theme.NavyPrimary
-import com.example.ui.theme.NavySecondary
+import com.example.ui.theme.ChampagneAccent
+import com.example.ui.theme.ChampagneContainer
+import com.example.ui.theme.ChampagneLight
+import com.example.ui.theme.DarkOutline
+import com.example.ui.theme.DarkSurfaceVariant
+import com.example.ui.theme.DarkTextPrimary
+import com.example.ui.theme.DarkTextSecondary
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.ObsidianPrimary
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusErrorBg
+import com.example.ui.theme.StatusErrorBgDark
+import com.example.ui.theme.StatusErrorLight
 import com.example.ui.theme.StatusInfo
 import com.example.ui.theme.StatusInfoBg
+import com.example.ui.theme.StatusInfoBgDark
+import com.example.ui.theme.StatusInfoLight
 import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.StatusSuccessBg
+import com.example.ui.theme.StatusSuccessBgDark
+import com.example.ui.theme.StatusSuccessLight
 import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.StatusWarningBg
+import com.example.ui.theme.StatusWarningBgDark
+import com.example.ui.theme.StatusWarningLight
 import com.example.ui.theme.TabularMoneyStyle
 import com.google.firebase.Firebase
 import com.google.firebase.auth.EmailAuthProvider
@@ -98,11 +112,12 @@ fun StatusPill(
     tone: PillTone,
     modifier: Modifier = Modifier
 ) {
+    val isDark = LocalIsDarkTheme.current
     val (bg, fg) = when (tone) {
-        PillTone.SUCCESS -> StatusSuccessBg to StatusSuccess
-        PillTone.WARNING -> StatusWarningBg to StatusWarning
-        PillTone.ERROR -> StatusErrorBg to StatusError
-        PillTone.INFO -> StatusInfoBg to StatusInfo
+        PillTone.SUCCESS -> if (isDark) StatusSuccessBgDark to StatusSuccessLight else StatusSuccessBg to StatusSuccess
+        PillTone.WARNING -> if (isDark) StatusWarningBgDark to StatusWarningLight else StatusWarningBg to StatusWarning
+        PillTone.ERROR -> if (isDark) StatusErrorBgDark to StatusErrorLight else StatusErrorBg to StatusError
+        PillTone.INFO -> if (isDark) StatusInfoBgDark to StatusInfoLight else StatusInfoBg to StatusInfo
         PillTone.NEUTRAL -> MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant
     }
     Surface(
@@ -134,8 +149,8 @@ fun RentFlowKpiCard(
     Card(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = modifier
             .then(if (onClick != null) Modifier.minimumInteractiveComponentSize().clickable { onClick() } else Modifier)
     ) {
@@ -238,7 +253,8 @@ fun EmptyStateCard(
     Card(
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = modifier.fillMaxWidth()
     ) {
         Column(
@@ -272,7 +288,11 @@ fun EmptyStateCard(
             if (!ctaLabel.isNullOrBlank() && onCtaClick != null) {
                 Button(
                     onClick = onCtaClick,
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                    shape = RoundedCornerShape(999.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary,
+                        contentColor = MaterialTheme.colorScheme.onSecondary
+                    ),
                     modifier = Modifier.heightIn(min = 48.dp)
                 ) {
                     Text(ctaLabel)
@@ -310,10 +330,14 @@ fun ErrorBannerCard(
     modifier: Modifier = Modifier,
     onRetry: (() -> Unit)? = null
 ) {
+    val isDark = LocalIsDarkTheme.current
+    val bg = if (isDark) StatusErrorBgDark else StatusErrorBg
+    val fg = if (isDark) StatusErrorLight else StatusError
     Card(
         shape = MaterialTheme.shapes.medium,
-        colors = CardDefaults.cardColors(containerColor = StatusErrorBg),
-        border = BorderStroke(1.dp, StatusError.copy(alpha = 0.35f)),
+        colors = CardDefaults.cardColors(containerColor = bg),
+        border = BorderStroke(1.dp, fg.copy(alpha = 0.35f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = modifier.fillMaxWidth()
     ) {
         Row(
@@ -324,18 +348,18 @@ fun ErrorBannerCard(
             Text(
                 text = message,
                 style = MaterialTheme.typography.bodyMedium,
-                color = StatusError,
+                color = fg,
                 modifier = Modifier.weight(1f)
             )
             if (onRetry != null) {
                 OutlinedButton(
                     onClick = onRetry,
-                    border = BorderStroke(1.dp, StatusError.copy(alpha = 0.5f)),
+                    border = BorderStroke(1.dp, fg.copy(alpha = 0.5f)),
                     modifier = Modifier.heightIn(min = 48.dp)
                 ) {
-                    Icon(Icons.Filled.Refresh, contentDescription = null, tint = StatusError, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Filled.Refresh, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Retry", color = StatusError)
+                    Text("Retry", color = fg)
                 }
             }
         }
@@ -465,31 +489,45 @@ fun GuidedOnboardingCard(
     steps: List<OnboardingStepItem>,
     modifier: Modifier = Modifier
 ) {
+    val isDark = LocalIsDarkTheme.current
     Card(
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(MaterialTheme.shapes.medium)
-                    .background(Brush.horizontalGradient(listOf(NavyPrimary, NavySecondary)))
-                    .padding(16.dp)
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = if (isDark) DarkSurfaceVariant else ObsidianPrimary,
+                border = if (isDark) BorderStroke(1.dp, DarkOutline) else null,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Column {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Surface(
+                        color = ChampagneAccent.copy(alpha = 0.22f),
+                        shape = RoundedCornerShape(999.dp)
+                    ) {
+                        Text(
+                            text = "WORKSPACE SETUP",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = ChampagneLight,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
                     Text(
                         text = "Guided Portfolio Setup",
                         style = MaterialTheme.typography.titleMedium,
-                        color = Color.White
+                        color = DarkTextPrimary
                     )
-                    Spacer(Modifier.height(4.dp))
                     Text(
                         text = "Complete these steps to activate your Kenyan rental workspace.",
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFFCCFBF1)
+                        color = DarkTextSecondary
                     )
                 }
             }
@@ -546,10 +584,12 @@ fun OccupancyDonutChart(
     val total = (occupied + vacant + other).coerceAtLeast(1)
     val rate = ((occupied.toFloat() / total.toFloat()) * 100f).toInt()
     val trackColor = MaterialTheme.colorScheme.surfaceVariant
+    val occupiedColor = MaterialTheme.colorScheme.secondary
     Card(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = modifier.fillMaxWidth()
     ) {
         Row(
@@ -580,7 +620,7 @@ fun OccupancyDonutChart(
                     if (occupied > 0) {
                         val occSweep = (occupied.toFloat() / total.toFloat()) * 360f
                         drawArc(
-                            color = EmeraldAccent,
+                            color = occupiedColor,
                             startAngle = -90f,
                             sweepAngle = occSweep,
                             useCenter = false,
@@ -598,7 +638,7 @@ fun OccupancyDonutChart(
             }
             Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
                 Text("Unit Occupancy", style = MaterialTheme.typography.titleSmall)
-                LegendRow("Occupied", occupied.toString(), EmeraldAccent)
+                LegendRow("Occupied", occupied.toString(), occupiedColor)
                 LegendRow("Vacant", vacant.toString(), StatusInfo)
                 LegendRow("Reserved / Maint.", other.toString(), StatusWarning)
             }
@@ -627,10 +667,12 @@ fun IncomeExpenseBarChart(
     modifier: Modifier = Modifier
 ) {
     val maxVal = (points.maxOfOrNull { maxOf(it.incomeCents, it.expenseCents) } ?: 1L).coerceAtLeast(100L)
+    val incomeColor = MaterialTheme.colorScheme.secondary
     Card(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -641,7 +683,7 @@ fun IncomeExpenseBarChart(
             ) {
                 Text("Rent Income vs. Expenses", style = MaterialTheme.typography.titleSmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    LegendDot("Income", EmeraldAccent)
+                    LegendDot("Income", incomeColor)
                     LegendDot("Expenses", StatusWarning)
                 }
             }
@@ -659,7 +701,7 @@ fun IncomeExpenseBarChart(
                     val incH = ((pt.incomeCents.toFloat() / maxVal.toFloat()) * chartHeight).coerceAtLeast(4f)
                     val expH = ((pt.expenseCents.toFloat() / maxVal.toFloat()) * chartHeight).coerceAtLeast(4f)
                     drawRoundRect(
-                        color = EmeraldAccent,
+                        color = incomeColor,
                         topLeft = Offset(centerX - barWidth - 3f, size.height - incH),
                         size = Size(barWidth, incH),
                         cornerRadius = CornerRadius(6f, 6f)
@@ -682,7 +724,7 @@ fun IncomeExpenseBarChart(
                         Text(
                             CurrencyUtils.formatKesCompact(pt.incomeCents),
                             style = MaterialTheme.typography.labelSmall,
-                            color = EmeraldAccent
+                            color = incomeColor
                         )
                     }
                 }
@@ -716,7 +758,8 @@ fun ConfirmationDialog(
             Button(
                 onClick = onConfirm,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isDestructive) StatusError else MaterialTheme.colorScheme.secondary
+                    containerColor = if (isDestructive) StatusError else MaterialTheme.colorScheme.secondary,
+                    contentColor = if (isDestructive) Color.White else MaterialTheme.colorScheme.onSecondary
                 )
             ) {
                 Text(confirmLabel)
@@ -763,26 +806,31 @@ fun CriticalActionConfirmationDialog(
         onDismissRequest = { if (!isVerifying) onDismiss() },
         title = { Text(title) },
         text = {
+            val isDark = LocalIsDarkTheme.current
+            val errBg = if (isDark) StatusErrorBgDark else StatusErrorBg
+            val errFg = if (isDark) StatusErrorLight else StatusError
+            val warnBg = if (isDark) StatusWarningBgDark else StatusWarningBg
+            val warnFg = if (isDark) StatusWarningLight else StatusWarning
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Surface(
-                    color = StatusErrorBg,
+                    color = errBg,
                     shape = MaterialTheme.shapes.small,
-                    border = BorderStroke(1.dp, StatusError.copy(alpha = 0.35f)),
+                    border = BorderStroke(1.dp, errFg.copy(alpha = 0.35f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
                         text = impactSummary,
                         style = MaterialTheme.typography.bodySmall,
-                        color = StatusError,
+                        color = errFg,
                         modifier = Modifier.padding(10.dp)
                     )
                 }
 
                 if (!isRecentlyAuthenticated) {
                     Surface(
-                        color = StatusWarningBg,
+                        color = warnBg,
                         shape = MaterialTheme.shapes.small,
-                        border = BorderStroke(1.dp, StatusWarning.copy(alpha = 0.35f)),
+                        border = BorderStroke(1.dp, warnFg.copy(alpha = 0.35f)),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
@@ -792,7 +840,7 @@ fun CriticalActionConfirmationDialog(
                                 "Security verification required: you will be prompted to confirm your Google account before this action completes."
                             },
                             style = MaterialTheme.typography.labelSmall,
-                            color = StatusWarning,
+                            color = warnFg,
                             modifier = Modifier.padding(10.dp)
                         )
                     }

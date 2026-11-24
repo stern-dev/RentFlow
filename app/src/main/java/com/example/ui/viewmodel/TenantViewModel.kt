@@ -14,6 +14,7 @@ import com.example.domain.location.BuildingLocationResolver
 import com.example.domain.location.ResolvedBuildingLocation
 import com.example.domain.model.Announcement
 import com.example.domain.model.DepositSettlement
+import com.example.domain.model.DigitalSignature
 import com.example.domain.model.Invoice
 import com.example.domain.model.Lease
 import com.example.domain.model.LeaseStatus
@@ -321,6 +322,7 @@ class TenantViewModel(
         acknowledge: Boolean,
         tenantRemarksByItemId: Map<String, String>,
         tenantSummary: String?,
+        tenantSignature: DigitalSignature? = null,
         actorName: String,
         onSuccess: () -> Unit
     ) {
@@ -335,6 +337,7 @@ class TenantViewModel(
                 acknowledge = acknowledge,
                 tenantRemarksByItemId = tenantRemarksByItemId,
                 tenantSummary = tenantSummary,
+                tenantSignature = tenantSignature,
                 actorName = actorName
             )
             _busy.value = false

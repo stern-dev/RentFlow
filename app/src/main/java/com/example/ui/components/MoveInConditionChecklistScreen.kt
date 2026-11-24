@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -72,19 +73,24 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.data.repository.MoveInChecklistRepository
 import com.example.domain.finance.CurrencyUtils
+import com.example.domain.finance.PdfSignatureBlock
 import com.example.domain.finance.ReportExporter
+import com.example.domain.model.DigitalSignature
 import com.example.domain.model.InspectionItemStatus
 import com.example.domain.model.InspectionRoom
 import com.example.domain.model.Lease
 import com.example.domain.model.MoveInChecklistStatus
 import com.example.domain.model.MoveInConditionChecklist
 import com.example.domain.model.RoomInspectionItem
+import com.example.domain.model.UserRole
 import com.example.ui.media.MaintenancePhotoProcessor
-import com.example.ui.theme.EmeraldAccent
+import com.example.ui.theme.LocalIsDarkTheme
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusInfo
 import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.StatusWarningBg
+import com.example.ui.theme.StatusWarningBgDark
+import com.example.ui.theme.StatusWarningLight
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -108,19 +114,23 @@ fun MoveInConditionChecklistSummaryCard(
     val needsUrgentAction = (isTenantView && status == MoveInChecklistStatus.PENDING_TENANT_REVIEW) ||
         (!isTenantView && status == MoveInChecklistStatus.DISPUTED)
 
+    val isDark = LocalIsDarkTheme.current
+    val warnBg = if (isDark) StatusWarningBgDark else StatusWarningBg
+    val warnFg = if (isDark) StatusWarningLight else StatusWarning
     Card(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
             containerColor = if (needsUrgentAction) {
-                StatusWarningBg.copy(alpha = 0.55f)
+                warnBg.copy(alpha = 0.75f)
             } else {
                 MaterialTheme.colorScheme.surface
             }
         ),
         border = BorderStroke(
             width = 1.dp,
-            color = if (needsUrgentAction) StatusWarning.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+            color = if (needsUrgentAction) warnFg.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
         ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = modifier
             .fillMaxWidth()
             .testTag(if (isTenantView) "tenant_condition_checklist_card" else "landlord_condition_checklist_card")
@@ -134,7 +144,7 @@ fun MoveInConditionChecklistSummaryCard(
                 Icon(
                     imageVector = Icons.Filled.MeetingRoom,
                     contentDescription = "Room-by-room move-in condition checklist",
-                    tint = if (needsUrgentAction) StatusWarning else EmeraldAccent
+                    tint = if (needsUrgentAction) warnFg else MaterialTheme.colorScheme.secondary
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Room-by-Room Move-In Checklist", style = MaterialTheme.typography.titleSmall)
@@ -228,6 +238,9 @@ fun MoveInConditionChecklistFullScreenDialog(
     isTenantView: Boolean,
     canDeleteDraft: Boolean,
     isBusy: Boolean,
+    currentUserUid: String = "",
+    currentUserName: String = "",
+    currentUserRole: UserRole = if (isTenantView) UserRole.TENANT else UserRole.LANDLORD,
     onDismiss: () -> Unit,
     onSaveLandlordChecklist: (
         waterMeter: String?,
@@ -236,16 +249,18 @@ fun MoveInConditionChecklistFullScreenDialog(
         rooms: List<InspectionRoom>,
         landlordSummary: String?,
         submitForTenantSignOff: Boolean,
+        landlordSignature: DigitalSignature?,
         onSuccess: () -> Unit
-    ) -> Unit = { _, _, _, _, _, _, _ -> },
+    ) -> Unit = { _, _, _, _, _, _, _, _ -> },
     onDeleteDraft: (MoveInConditionChecklist, onSuccess: () -> Unit) -> Unit = { _, _ -> },
     onSubmitTenantReview: (
         checklist: MoveInConditionChecklist,
         acknowledge: Boolean,
         tenantRemarksByItemId: Map<String, String>,
         tenantSummary: String?,
+        tenantSignature: DigitalSignature?,
         onSuccess: () -> Unit
-    ) -> Unit = { _, _, _, _, _ -> }
+    ) -> Unit = { _, _, _, _, _, _ -> }
 ) {
     Dialog(
         onDismissRequest = { if (!isBusy) onDismiss() },
@@ -260,6 +275,9 @@ fun MoveInConditionChecklistFullScreenDialog(
             isTenantView = isTenantView,
             canDeleteDraft = canDeleteDraft,
             isBusy = isBusy,
+            currentUserUid = currentUserUid,
+            currentUserName = currentUserName,
+            currentUserRole = currentUserRole,
             onDismiss = onDismiss,
             onSaveLandlordChecklist = onSaveLandlordChecklist,
             onDeleteDraft = onDeleteDraft,
@@ -276,6 +294,9 @@ fun MoveInConditionChecklistFullScreen(
     isTenantView: Boolean,
     canDeleteDraft: Boolean,
     isBusy: Boolean,
+    currentUserUid: String = "",
+    currentUserName: String = "",
+    currentUserRole: UserRole = if (isTenantView) UserRole.TENANT else UserRole.LANDLORD,
     onDismiss: () -> Unit,
     onSaveLandlordChecklist: (
         waterMeter: String?,
@@ -284,29 +305,48 @@ fun MoveInConditionChecklistFullScreen(
         rooms: List<InspectionRoom>,
         landlordSummary: String?,
         submitForTenantSignOff: Boolean,
+        landlordSignature: DigitalSignature?,
         onSuccess: () -> Unit
-    ) -> Unit = { _, _, _, _, _, _, _ -> },
+    ) -> Unit = { _, _, _, _, _, _, _, _ -> },
     onDeleteDraft: (MoveInConditionChecklist, onSuccess: () -> Unit) -> Unit = { _, _ -> },
     onSubmitTenantReview: (
         checklist: MoveInConditionChecklist,
         acknowledge: Boolean,
         tenantRemarksByItemId: Map<String, String>,
         tenantSummary: String?,
+        tenantSignature: DigitalSignature?,
         onSuccess: () -> Unit
-    ) -> Unit = { _, _, _, _, _ -> }
+    ) -> Unit = { _, _, _, _, _, _ -> }
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
 
     val statusEnum = existingChecklist?.statusEnum()
-    val isLocked = statusEnum == MoveInChecklistStatus.ACKNOWLEDGED
+    val isLocked = statusEnum == MoveInChecklistStatus.ACKNOWLEDGED ||
+        existingChecklist?.isMutuallySigned() == true
     val canLandlordEdit = !isTenantView && !isLocked
-    val canTenantReview = isTenantView && statusEnum == MoveInChecklistStatus.PENDING_TENANT_REVIEW
+    val canTenantReview = isTenantView && statusEnum == MoveInChecklistStatus.PENDING_TENANT_REVIEW && !isLocked
 
     val propertyName = existingChecklist?.propertyName ?: lease?.propertyName.orEmpty()
     val unitNumber = existingChecklist?.unitNumber ?: lease?.unitNumber.orEmpty()
     val tenantName = existingChecklist?.tenantName ?: lease?.tenantName.orEmpty()
     val inspectionDateMs = existingChecklist?.inspectionDateEpochMs?.takeIf { it > 0L } ?: System.currentTimeMillis()
+
+    val resolvedSignerUid = remember(currentUserUid, isTenantView, lease, existingChecklist) {
+        currentUserUid.ifBlank {
+            if (isTenantView) {
+                lease?.tenantUid ?: existingChecklist?.tenantUid.orEmpty()
+            } else {
+                lease?.ownerUid ?: existingChecklist?.ownerUid.orEmpty()
+            }
+        }
+    }
+    val resolvedLandlordRole = if (currentUserRole in listOf(UserRole.ADMIN, UserRole.LANDLORD, UserRole.PROPERTY_MANAGER)) {
+        currentUserRole
+    } else {
+        UserRole.LANDLORD
+    }
 
     val resetKey = "${existingChecklist?.id.orEmpty()}_${lease?.id.orEmpty()}_${existingChecklist?.updatedAt?.seconds ?: 0L}"
 
@@ -352,6 +392,27 @@ fun MoveInConditionChecklistFullScreen(
     var landlordSummary by remember(resetKey) { mutableStateOf(existingChecklist?.landlordSummary.orEmpty()) }
     var tenantSummary by remember(resetKey) { mutableStateOf(existingChecklist?.tenantSummary.orEmpty()) }
 
+    val existingLandlordSig = existingChecklist?.landlordSignature ?: lease?.landlordSignature
+    val existingTenantSig = existingChecklist?.tenantSignature ?: lease?.tenantSignature
+
+    var landlordSigDraft by remember(resetKey) {
+        mutableStateOf(
+            SignatureDraftState(
+                typedName = existingLandlordSig?.signerName ?: currentUserName,
+                priorSignature = existingLandlordSig
+            )
+        )
+    }
+    var tenantSigDraft by remember(resetKey) {
+        mutableStateOf(
+            SignatureDraftState(
+                typedName = existingTenantSig?.signerName ?: currentUserName.ifBlank { tenantName },
+                priorSignature = existingTenantSig
+            )
+        )
+    }
+    var pendingValidatedTenantSignature by remember(resetKey) { mutableStateOf<DigitalSignature?>(null) }
+
     var showAddRoomDialog by remember { mutableStateOf(false) }
     var roomForNewItem by remember { mutableStateOf<InspectionRoom?>(null) }
     var showConfirmSignOffDialog by remember { mutableStateOf(false) }
@@ -359,6 +420,49 @@ fun MoveInConditionChecklistFullScreen(
     var activePhotoTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var isProcessingPhotos by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
+    var checklistForPdfViewer by remember { mutableStateOf<MoveInConditionChecklist?>(null) }
+
+    fun buildPreviewChecklistSnapshot(): MoveInConditionChecklist {
+        val base = existingChecklist ?: MoveInConditionChecklist(
+            id = lease?.id?.let { "draft_$it" } ?: "draft_preview",
+            leaseId = lease?.id.orEmpty(),
+            orgId = lease?.orgId.orEmpty(),
+            propertyId = lease?.propertyId.orEmpty(),
+            propertyName = propertyName,
+            unitId = lease?.unitId.orEmpty(),
+            unitNumber = unitNumber,
+            ownerUid = lease?.ownerUid.orEmpty(),
+            tenantUid = lease?.tenantUid.orEmpty(),
+            tenantName = tenantName,
+            status = MoveInChecklistStatus.DRAFT.name,
+            inspectionDateEpochMs = inspectionDateMs
+        )
+        if (isLocked) return base
+        val mergedRooms = if (canTenantReview) {
+            base.rooms.map { room ->
+                room.copy(
+                    items = room.items.map { item ->
+                        val draftRemark = tenantRemarksDraft[item.itemId]
+                        if (draftRemark != null) item.copy(tenantRemarks = draftRemark) else item
+                    }
+                )
+            }
+        } else {
+            rooms.toList()
+        }
+        return base.copy(
+            propertyName = propertyName,
+            unitNumber = unitNumber,
+            tenantName = tenantName,
+            inspectionDateEpochMs = inspectionDateMs,
+            waterMeterReading = waterMeter.takeIf { it.isNotBlank() },
+            electricityMeterReading = powerMeter.takeIf { it.isNotBlank() },
+            keysHandedOverCount = keysCount.toLongOrNull()?.coerceIn(0L, 50L) ?: base.keysHandedOverCount,
+            rooms = mergedRooms,
+            landlordSummary = landlordSummary.takeIf { it.isNotBlank() } ?: base.landlordSummary,
+            tenantSummary = tenantSummary.takeIf { it.isNotBlank() } ?: base.tenantSummary
+        )
+    }
 
     val totalItemsCount = rooms.sumOf { it.items.size }
     val inspectedCount = rooms.sumOf { room -> room.items.count { it.itemId in inspectedItemIds } }
@@ -487,16 +591,16 @@ fun MoveInConditionChecklistFullScreen(
                                 MoveInChecklistStatus.DRAFT, null -> PillTone.INFO
                             }
                         )
-                        if (existingChecklist != null) {
+                        if (existingChecklist != null || canLandlordEdit) {
                             IconButton(
-                                onClick = { exportMoveInConditionChecklistPdf(context, existingChecklist) },
+                                onClick = { checklistForPdfViewer = buildPreviewChecklistSnapshot() },
                                 modifier = Modifier
                                     .minimumInteractiveComponentSize()
                                     .testTag("condition_checklist_export_pdf_button")
                             ) {
                                 Icon(
                                     imageVector = Icons.Filled.Description,
-                                    contentDescription = "Export room-by-room condition report PDF"
+                                    contentDescription = "Open room-by-room condition report PDF viewer"
                                 )
                             }
                         }
@@ -540,7 +644,13 @@ fun MoveInConditionChecklistFullScreen(
                                 }
                                 OutlinedButton(
                                     onClick = {
+                                        errorText = null
                                         val keys = keysCount.toLongOrNull()?.coerceIn(0L, 50L) ?: 0L
+                                        val optionalDraftSig = DigitalSignatureCodec.buildDigitalSignature(
+                                            draft = landlordSigDraft,
+                                            signerUid = resolvedSignerUid,
+                                            signerRole = resolvedLandlordRole
+                                        ).getOrNull()
                                         onSaveLandlordChecklist(
                                             waterMeter,
                                             powerMeter,
@@ -548,6 +658,7 @@ fun MoveInConditionChecklistFullScreen(
                                             rooms.toList(),
                                             landlordSummary,
                                             false,
+                                            optionalDraftSig,
                                             onDismiss
                                         )
                                     },
@@ -561,16 +672,28 @@ fun MoveInConditionChecklistFullScreen(
                                 }
                                 Button(
                                     onClick = {
-                                        val keys = keysCount.toLongOrNull()?.coerceIn(0L, 50L) ?: 0L
-                                        onSaveLandlordChecklist(
-                                            waterMeter,
-                                            powerMeter,
-                                            keys,
-                                            rooms.toList(),
-                                            landlordSummary,
-                                            true,
-                                            onDismiss
+                                        val sigResult = DigitalSignatureCodec.buildDigitalSignature(
+                                            draft = landlordSigDraft,
+                                            signerUid = resolvedSignerUid,
+                                            signerRole = resolvedLandlordRole
                                         )
+                                        sigResult.onFailure { err ->
+                                            errorText = err.message ?: "Complete your landlord signature before submitting."
+                                            scope.launch { listState.animateScrollToItem(0) }
+                                        }.onSuccess { sig ->
+                                            errorText = null
+                                            val keys = keysCount.toLongOrNull()?.coerceIn(0L, 50L) ?: 0L
+                                            onSaveLandlordChecklist(
+                                                waterMeter,
+                                                powerMeter,
+                                                keys,
+                                                rooms.toList(),
+                                                landlordSummary,
+                                                true,
+                                                sig,
+                                                onDismiss
+                                            )
+                                        }
                                     },
                                     enabled = !isBusy && !isProcessingPhotos,
                                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
@@ -579,7 +702,7 @@ fun MoveInConditionChecklistFullScreen(
                                         .heightIn(min = 48.dp)
                                         .testTag("condition_checklist_submit_button")
                                 ) {
-                                    Text(if (isBusy) "Saving..." else "Submit for Sign-Off", maxLines = 1)
+                                    Text(if (isBusy) "Saving..." else "Sign & Submit", maxLines = 1)
                                 }
                             }
                             canTenantReview -> {
@@ -588,6 +711,7 @@ fun MoveInConditionChecklistFullScreen(
                                         onClick = {
                                             if (tenantSummary.trim().length < 3) {
                                                 errorText = "Enter an overall discrepancy note (at least 3 characters) before flagging."
+                                                scope.launch { listState.animateScrollToItem(0) }
                                             } else {
                                                 errorText = null
                                                 onSubmitTenantReview(
@@ -595,6 +719,7 @@ fun MoveInConditionChecklistFullScreen(
                                                     false,
                                                     tenantRemarksDraft.toMap(),
                                                     tenantSummary.trim(),
+                                                    null,
                                                     onDismiss
                                                 )
                                             }
@@ -608,7 +733,21 @@ fun MoveInConditionChecklistFullScreen(
                                         Text("Flag Discrepancy", color = StatusError, maxLines = 1)
                                     }
                                     Button(
-                                        onClick = { showConfirmSignOffDialog = true },
+                                        onClick = {
+                                            val sigResult = DigitalSignatureCodec.buildDigitalSignature(
+                                                draft = tenantSigDraft,
+                                                signerUid = resolvedSignerUid,
+                                                signerRole = UserRole.TENANT
+                                            )
+                                            sigResult.onFailure { err ->
+                                                errorText = err.message ?: "Complete your tenant counter-signature before signing off."
+                                                scope.launch { listState.animateScrollToItem(0) }
+                                            }.onSuccess { sig ->
+                                                errorText = null
+                                                pendingValidatedTenantSignature = sig
+                                                showConfirmSignOffDialog = true
+                                            }
+                                        },
                                         enabled = !isBusy,
                                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
                                         modifier = Modifier
@@ -616,21 +755,22 @@ fun MoveInConditionChecklistFullScreen(
                                             .heightIn(min = 48.dp)
                                             .testTag("condition_checklist_signoff_button")
                                     ) {
-                                        Text(if (isBusy) "Signing..." else "Sign Off", maxLines = 1)
+                                        Text(if (isBusy) "Signing..." else "Sign & Lock", maxLines = 1)
                                     }
                                 }
                             }
                             else -> {
                                 if (existingChecklist != null) {
                                     OutlinedButton(
-                                        onClick = { exportMoveInConditionChecklistPdf(context, existingChecklist) },
+                                        onClick = { checklistForPdfViewer = existingChecklist },
                                         modifier = Modifier
                                             .weight(1f)
                                             .heightIn(min = 48.dp)
+                                            .testTag("condition_checklist_bottom_pdf_button")
                                     ) {
                                         Icon(Icons.Filled.Description, contentDescription = null, modifier = Modifier.size(18.dp))
                                         Spacer(Modifier.width(6.dp))
-                                        Text("Export PDF", maxLines = 1)
+                                        Text("View PDF", maxLines = 1)
                                     }
                                 }
                                 Button(
@@ -676,7 +816,7 @@ fun MoveInConditionChecklistFullScreen(
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (inspectedCount == totalItemsCount && totalItemsCount > 0) {
-                                    EmeraldAccent
+                                    MaterialTheme.colorScheme.secondary
                                 } else {
                                     MaterialTheme.colorScheme.onSurface
                                 },
@@ -690,7 +830,7 @@ fun MoveInConditionChecklistFullScreen(
                         }
                         LinearProgressIndicator(
                             progress = { progressFraction },
-                            color = EmeraldAccent,
+                            color = MaterialTheme.colorScheme.secondary,
                             trackColor = MaterialTheme.colorScheme.surfaceVariant,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -707,6 +847,7 @@ fun MoveInConditionChecklistFullScreen(
 
                 // Scrollable Room-by-Room LazyColumn
                 LazyColumn(
+                    state = listState,
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier
@@ -735,7 +876,7 @@ fun MoveInConditionChecklistFullScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.padding(12.dp)
                                 ) {
-                                    Icon(Icons.Filled.Lock, contentDescription = "Signed off and locked", tint = EmeraldAccent)
+                                    Icon(Icons.Filled.Lock, contentDescription = "Signed off and locked", tint = MaterialTheme.colorScheme.secondary)
                                     Text(
                                         text = "Permanently signed off by ${lockedChecklist.tenantName}" +
                                             (lockedChecklist.acknowledgedAtEpochMs?.let { " on ${CurrencyUtils.formatDate(it)}" } ?: "") +
@@ -747,8 +888,11 @@ fun MoveInConditionChecklistFullScreen(
                         }
                     } else if (statusEnum == MoveInChecklistStatus.DISPUTED && !existingChecklist?.tenantSummary.isNullOrBlank()) {
                         item(key = "disputed_banner") {
+                            val isDarkBanner = LocalIsDarkTheme.current
                             Card(
-                                colors = CardDefaults.cardColors(containerColor = StatusWarningBg.copy(alpha = 0.65f)),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isDarkBanner) StatusWarningBgDark else StatusWarningBg.copy(alpha = 0.65f)
+                                ),
                                 shape = MaterialTheme.shapes.medium,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
@@ -1023,6 +1167,79 @@ fun MoveInConditionChecklistFullScreen(
                             }
                         }
                     }
+
+                    // Final Combined Lease & Digital Signature Sign-Off Section
+                    item(key = "signature_signoff_section_header") {
+                        SectionHeader(
+                            title = "Digital Sign-Off & Lease Execution",
+                            modifier = Modifier.testTag("signature_signoff_section")
+                        )
+                    }
+
+                    if (lease != null) {
+                        item(key = "combined_lease_summary_item") {
+                            LeaseAgreementSummaryAccordionCard(
+                                lease = lease,
+                                checklist = existingChecklist,
+                                onExportLeasePdf = { targetLease ->
+                                    ReportExporter.exportSignedLeaseAgreementPdf(
+                                        context = context,
+                                        lease = targetLease,
+                                        landlordFallbackSignature = existingChecklist?.landlordSignature,
+                                        tenantFallbackSignature = existingChecklist?.tenantSignature
+                                    )
+                                }
+                            )
+                        }
+                    }
+
+                    item(key = "landlord_signature_item") {
+                        if (canLandlordEdit) {
+                            DigitalSignaturePadCard(
+                                roleKey = "landlord",
+                                title = "Landlord / Agent Digital Signature",
+                                subtitle = "Executes both the Move-In Condition Report and Tenancy Lease Agreement before tenant sign-off.",
+                                attestationLabel = "I confirm the room condition report and lease terms are accurate for both the Move-In Inspection Report and Tenancy Lease Agreement.",
+                                draftState = landlordSigDraft,
+                                onDraftChange = { updated ->
+                                    landlordSigDraft = updated
+                                    errorText = null
+                                },
+                                enabled = !isBusy && !isProcessingPhotos
+                            )
+                        } else {
+                            SignedSignaturePreviewCard(
+                                roleTitle = "Landlord / Authorized Agent",
+                                signature = existingLandlordSig,
+                                pendingMessage = "Awaiting landlord / management digital signature.",
+                                testTagPrefix = "landlord_signature"
+                            )
+                        }
+                    }
+
+                    item(key = "tenant_signature_item") {
+                        if (canTenantReview) {
+                            DigitalSignaturePadCard(
+                                roleKey = "tenant",
+                                title = "Tenant Counter-Signature",
+                                subtitle = "Counter-signs and permanently locks both the Move-In Condition Report and Tenancy Lease Agreement.",
+                                attestationLabel = "I acknowledge the unit condition, remarks, and lease terms for both the Move-In Inspection Report and Tenancy Lease Agreement.",
+                                draftState = tenantSigDraft,
+                                onDraftChange = { updated ->
+                                    tenantSigDraft = updated
+                                    errorText = null
+                                },
+                                enabled = !isBusy
+                            )
+                        } else {
+                            SignedSignaturePreviewCard(
+                                roleTitle = "Tenant Counter-Signature",
+                                signature = existingTenantSig,
+                                pendingMessage = "Awaiting tenant counter-signature to lock both reports.",
+                                testTagPrefix = "tenant_signature"
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1078,13 +1295,25 @@ fun MoveInConditionChecklistFullScreen(
             onDismiss = { showConfirmSignOffDialog = false },
             onConfirm = {
                 showConfirmSignOffDialog = false
-                onSubmitTenantReview(
-                    existingChecklist,
-                    true,
-                    tenantRemarksDraft.toMap(),
-                    tenantSummary.trim().takeIf { it.isNotBlank() },
-                    onDismiss
-                )
+                val validatedSig = pendingValidatedTenantSignature
+                    ?: DigitalSignatureCodec.buildDigitalSignature(
+                        draft = tenantSigDraft,
+                        signerUid = resolvedSignerUid,
+                        signerRole = UserRole.TENANT
+                    ).getOrNull()
+                if (validatedSig == null) {
+                    errorText = "Complete your tenant counter-signature before signing off."
+                    scope.launch { listState.animateScrollToItem(0) }
+                } else {
+                    onSubmitTenantReview(
+                        existingChecklist,
+                        true,
+                        tenantRemarksDraft.toMap(),
+                        tenantSummary.trim().takeIf { it.isNotBlank() },
+                        validatedSig,
+                        onDismiss
+                    )
+                }
             }
         )
     }
@@ -1099,50 +1328,78 @@ fun MoveInConditionChecklistFullScreen(
             }
         )
     }
+
+    checklistForPdfViewer?.let { previewChecklist ->
+        MoveInChecklistPdfViewerDialog(
+            checklist = previewChecklist,
+            lease = lease,
+            onDismiss = { checklistForPdfViewer = null }
+        )
+    }
 }
 
-fun exportMoveInConditionChecklistPdf(context: Context, checklist: MoveInConditionChecklist) {
-    val lines = buildList {
-        add("[H]HANDOVER METADATA")
-        add("Property & Unit: ${checklist.propertyName} • Unit ${checklist.unitNumber}")
-        add("Tenant: ${checklist.tenantName}")
-        add("Inspection Date: ${CurrencyUtils.formatDate(checklist.inspectionDateEpochMs)}")
-        add("Status: ${checklist.statusEnum().label}")
-        add("Keys Handed Over: ${checklist.keysHandedOverCount}")
-        add("Water Meter: ${checklist.waterMeterReading ?: "Not Recorded"}")
-        add("Power / KPLC Meter: ${checklist.electricityMeterReading ?: "Not Recorded"}")
-        if (checklist.acknowledgedAtEpochMs != null) {
-            add("Tenant Signed Off On: ${CurrencyUtils.formatDate(checklist.acknowledgedAtEpochMs)}")
+internal fun buildMoveInConditionSignatureBlocks(
+    checklist: MoveInConditionChecklist,
+    lease: Lease? = null
+): List<PdfSignatureBlock> {
+    val landlordSig = checklist.landlordSignature ?: lease?.landlordSignature
+    val tenantSig = checklist.tenantSignature ?: lease?.tenantSignature
+    return listOf(
+        PdfSignatureBlock("LANDLORD / AUTHORIZED AGENT", landlordSig),
+        PdfSignatureBlock("TENANT", tenantSig)
+    )
+}
+
+internal fun buildMoveInConditionChecklistLines(
+    checklist: MoveInConditionChecklist
+): List<String> = buildList {
+    add("[H]HANDOVER METADATA")
+    add("Property & Unit: ${checklist.propertyName} • Unit ${checklist.unitNumber}")
+    add("Tenant: ${checklist.tenantName}")
+    add("Inspection Date: ${CurrencyUtils.formatDate(checklist.inspectionDateEpochMs)}")
+    add("Status: ${checklist.statusEnum().label}")
+    add("Keys Handed Over: ${checklist.keysHandedOverCount}")
+    add("Water Meter: ${checklist.waterMeterReading ?: "Not Recorded"}")
+    add("Power / KPLC Meter: ${checklist.electricityMeterReading ?: "Not Recorded"}")
+    if (checklist.acknowledgedAtEpochMs != null) {
+        add("Tenant Signed Off On: ${CurrencyUtils.formatDate(checklist.acknowledgedAtEpochMs)}")
+    }
+    checklist.rooms.forEach { room ->
+        add("---")
+        add("[H]ROOM: ${room.roomName.uppercase()}")
+        if (room.roomRemarks.isNotBlank()) {
+            add("Room Remarks: ${room.roomRemarks}")
         }
-        checklist.rooms.forEach { room ->
-            add("---")
-            add("[H]ROOM: ${room.roomName.uppercase()}")
-            if (room.roomRemarks.isNotBlank()) {
-                add("Room Remarks: ${room.roomRemarks}")
+        room.items.forEach { item ->
+            val photoTag = if (item.imageRefs.isNotEmpty()) " [${item.imageRefs.size} photo(s)]" else ""
+            add("${item.label}: ${item.statusEnum().label}$photoTag")
+            if (item.landlordRemarks.isNotBlank()) {
+                add("  Management Remark: ${item.landlordRemarks}")
             }
-            room.items.forEach { item ->
-                val photoTag = if (item.imageRefs.isNotEmpty()) " [${item.imageRefs.size} photo(s)]" else ""
-                add("${item.label}: ${item.statusEnum().label}$photoTag")
-                if (item.landlordRemarks.isNotBlank()) {
-                    add("  Management Remark: ${item.landlordRemarks}")
-                }
-                if (item.tenantRemarks.isNotBlank()) {
-                    add("  Tenant Remark: ${item.tenantRemarks}")
-                }
+            if (item.tenantRemarks.isNotBlank()) {
+                add("  Tenant Remark: ${item.tenantRemarks}")
             }
-        }
-        if (!checklist.landlordSummary.isNullOrBlank() || !checklist.tenantSummary.isNullOrBlank()) {
-            add("---")
-            add("[H]OVERALL SUMMARIES")
-            checklist.landlordSummary?.takeIf { it.isNotBlank() }?.let { add("Management: $it") }
-            checklist.tenantSummary?.takeIf { it.isNotBlank() }?.let { add("Tenant: $it") }
         }
     }
+    if (!checklist.landlordSummary.isNullOrBlank() || !checklist.tenantSummary.isNullOrBlank()) {
+        add("---")
+        add("[H]OVERALL SUMMARIES")
+        checklist.landlordSummary?.takeIf { it.isNotBlank() }?.let { add("Management: $it") }
+        checklist.tenantSummary?.takeIf { it.isNotBlank() }?.let { add("Tenant: $it") }
+    }
+}
+
+fun exportMoveInConditionChecklistPdf(
+    context: Context,
+    checklist: MoveInConditionChecklist,
+    lease: Lease? = null
+) {
     ReportExporter.exportPdfDocument(
         context = context,
         fileName = "room_move_in_checklist_${checklist.unitNumber}.pdf",
         title = "RentFlow Room-by-Room Move-In Condition Report",
         subtitle = "${checklist.propertyName} • Unit ${checklist.unitNumber}",
-        lines = lines
+        lines = buildMoveInConditionChecklistLines(checklist),
+        signatureBlocks = buildMoveInConditionSignatureBlocks(checklist, lease)
     )
 }

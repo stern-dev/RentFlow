@@ -7,59 +7,63 @@ import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.unit.dp
+
+val LocalIsDarkTheme = staticCompositionLocalOf { false }
 
 private val RentFlowDarkColorScheme = darkColorScheme(
     primary = DarkPrimary,
     onPrimary = DarkOnPrimary,
     primaryContainer = DarkPrimaryContainer,
     onPrimaryContainer = DarkTextPrimary,
-    secondary = EmeraldLight,
-    onSecondary = OnEmeraldContainer,
-    secondaryContainer = ColorTokens.DarkEmeraldContainer,
-    onSecondaryContainer = EmeraldContainer,
-    tertiary = EmeraldLight,
+    secondary = ChampagneLight,
+    onSecondary = ObsidianPrimary,
+    secondaryContainer = DarkChampagneContainer,
+    onSecondaryContainer = ChampagneContainer,
+    tertiary = ChampagneLight,
+    onTertiary = ObsidianPrimary,
     background = DarkBg,
     onBackground = DarkTextPrimary,
     surface = DarkSurface,
     onSurface = DarkTextPrimary,
     surfaceVariant = DarkSurfaceVariant,
     onSurfaceVariant = DarkTextSecondary,
-    outline = ColorTokens.DarkOutline,
-    error = StatusError,
-    errorContainer = ColorTokens.DarkErrorContainer
+    outline = DarkOutline,
+    outlineVariant = DarkOutline.copy(alpha = 0.65f),
+    error = StatusErrorLight,
+    errorContainer = StatusErrorBgDark,
+    onErrorContainer = StatusErrorBg
 )
 
 private val RentFlowLightColorScheme = lightColorScheme(
-    primary = NavyPrimary,
+    primary = ObsidianPrimary,
     onPrimary = CrispWhite,
-    primaryContainer = NavyContainer,
-    onPrimaryContainer = OnNavyContainer,
-    secondary = EmeraldAccent,
+    primaryContainer = ObsidianContainer,
+    onPrimaryContainer = OnObsidianContainer,
+    secondary = ChampagneAccent,
     onSecondary = CrispWhite,
-    secondaryContainer = EmeraldContainer,
-    onSecondaryContainer = OnEmeraldContainer,
-    tertiary = NavySecondary,
-    background = SoftNeutralBg,
+    secondaryContainer = ChampagneContainer,
+    onSecondaryContainer = OnChampagneContainer,
+    tertiary = ObsidianSecondary,
+    onTertiary = CrispWhite,
+    background = AlabasterBg,
     onBackground = TextPrimaryLight,
     surface = CrispWhite,
     onSurface = TextPrimaryLight,
-    surfaceVariant = SoftSurfaceVariant,
+    surfaceVariant = StoneSurfaceVariant,
     onSurfaceVariant = TextSecondaryLight,
-    outline = SlateBorder,
+    outline = HairlineStoneBorder,
+    outlineVariant = HairlineStoneBorder.copy(alpha = 0.7f),
     error = StatusError,
-    errorContainer = StatusErrorBg
+    errorContainer = StatusErrorBg,
+    onErrorContainer = StatusError
 )
 
-private object ColorTokens {
-    val DarkEmeraldContainer = androidx.compose.ui.graphics.Color(0xFF0F3D39)
-    val DarkOutline = androidx.compose.ui.graphics.Color(0xFF283C5A)
-    val DarkErrorContainer = androidx.compose.ui.graphics.Color(0xFF45161B)
-}
-
 val RentFlowShapes = Shapes(
-    extraSmall = RoundedCornerShape(6.dp),
-    small = RoundedCornerShape(10.dp),
+    extraSmall = RoundedCornerShape(8.dp),
+    small = RoundedCornerShape(12.dp),
     medium = RoundedCornerShape(16.dp),
     large = RoundedCornerShape(20.dp),
     extraLarge = RoundedCornerShape(28.dp)
@@ -71,10 +75,12 @@ fun RentFlowTheme(
     content: @Composable () -> Unit
 ) {
     val colorScheme = if (darkTheme) RentFlowDarkColorScheme else RentFlowLightColorScheme
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = RentFlowTypography,
-        shapes = RentFlowShapes,
-        content = content
-    )
+    CompositionLocalProvider(LocalIsDarkTheme provides darkTheme) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = RentFlowTypography,
+            shapes = RentFlowShapes,
+            content = content
+        )
+    }
 }

@@ -113,11 +113,13 @@ import com.example.domain.model.PaymentVerificationSource
 import com.example.domain.model.RentalUnit
 import com.example.domain.model.SavedPaymentMethod
 import com.example.domain.model.UserProfile
+import com.example.domain.model.UserRole
 import com.example.ui.components.BuildingMapPreviewCard
 import com.example.ui.components.DepositSettlementSummaryCard
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.ErrorBannerCard
 import com.example.ui.components.LoadingStateBox
+import com.example.ui.components.MoveInChecklistPdfViewerDialog
 import com.example.ui.components.MoveInChecklistSummaryCard
 import com.example.ui.components.MoveInConditionChecklistFullScreenDialog
 import com.example.ui.components.MoveInConditionChecklistSummaryCard
@@ -129,16 +131,22 @@ import com.example.ui.components.TenantDepositSettlementReviewDialog
 import com.example.ui.components.TenantMoveInChecklistReviewDialog
 import com.example.ui.components.exportDepositSettlementPdf
 import com.example.ui.components.exportMoveInChecklistPdf
-import com.example.ui.components.exportMoveInConditionChecklistPdf
-import com.example.ui.theme.EmeraldAccent
-import com.example.ui.theme.NavyPrimary
-import com.example.ui.theme.NavySecondary
+import com.example.ui.theme.ChampagneAccent
+import com.example.ui.theme.ChampagneLight
+import com.example.ui.theme.DarkOutline
+import com.example.ui.theme.DarkSurfaceVariant
+import com.example.ui.theme.DarkTextPrimary
+import com.example.ui.theme.DarkTextSecondary
+import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.ObsidianPrimary
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusInfo
 import com.example.ui.theme.StatusInfoBg
 import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.StatusWarningBg
+import com.example.ui.theme.StatusWarningBgDark
+import com.example.ui.theme.StatusWarningLight
 import com.example.ui.theme.TabularMoneyStyle
 import com.example.ui.viewmodel.PaymentMethodViewModel
 import com.example.ui.viewmodel.TenantViewModel
@@ -184,6 +192,7 @@ fun TenantDashboardScreen(
 
     var checklistForReview by remember { mutableStateOf<MoveInChecklist?>(null) }
     var conditionChecklistForReview by remember { mutableStateOf<MoveInConditionChecklist?>(null) }
+    var conditionChecklistForPdfViewer by remember { mutableStateOf<Pair<MoveInConditionChecklist, Lease?>?>(null) }
     var settlementForReview by remember { mutableStateOf<DepositSettlement?>(null) }
 
     LaunchedEffect(
@@ -250,39 +259,49 @@ fun TenantDashboardScreen(
         modifier = Modifier.fillMaxSize()
     ) {
         item {
+            val isDark = LocalIsDarkTheme.current
             val statusTone = when (accountSummary.paymentStatusLabel) {
                 "Settled" -> PillTone.SUCCESS
                 "Overdue" -> PillTone.ERROR
                 "Verification Pending", "Partially Paid" -> PillTone.WARNING
                 else -> PillTone.INFO
             }
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(MaterialTheme.shapes.extraLarge)
-                    .background(Brush.horizontalGradient(listOf(NavyPrimary, NavySecondary)))
-                    .padding(20.dp)
+            Surface(
+                shape = MaterialTheme.shapes.extraLarge,
+                color = if (isDark) DarkSurfaceVariant else ObsidianPrimary,
+                border = if (isDark) BorderStroke(1.dp, DarkOutline) else null,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(20.dp)
+                ) {
                     Row(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column {
-                            Text(
-                                text = "Rent Account",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = Color(0xFFCCFBF1)
-                            )
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.weight(1f)) {
+                            Surface(
+                                color = ChampagneAccent.copy(alpha = 0.22f),
+                                shape = RoundedCornerShape(999.dp)
+                            ) {
+                                Text(
+                                    text = "RENT ACCOUNT",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = ChampagneLight,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                )
+                            }
                             Text(
                                 text = activeLease?.let { "${it.propertyName} • Unit ${it.unitNumber}" }
                                     ?: "No Active Lease Linked",
                                 style = MaterialTheme.typography.titleMedium,
-                                color = Color.White
+                                color = DarkTextPrimary
                             )
                         }
                         if (activeLease != null) {
+                            Spacer(Modifier.width(8.dp))
                             StatusPill(accountSummary.paymentStatusLabel, statusTone)
                         }
                     }
@@ -292,19 +311,19 @@ fun TenantDashboardScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column {
-                            Text("Outstanding Balance", style = MaterialTheme.typography.labelSmall, color = Color(0xFFCBD5E1))
+                            Text("Outstanding Balance", style = MaterialTheme.typography.labelSmall, color = DarkTextSecondary)
                             Text(
                                 text = CurrencyUtils.formatKes(accountSummary.totalOutstandingCents, true),
                                 style = TabularMoneyStyle.copy(fontSize = MaterialTheme.typography.headlineSmall.fontSize),
-                                color = Color.White
+                                color = DarkTextPrimary
                             )
                         }
                         Column(horizontalAlignment = Alignment.End) {
-                            Text("Monthly Rent", style = MaterialTheme.typography.labelSmall, color = Color(0xFFCBD5E1))
+                            Text("Monthly Rent", style = MaterialTheme.typography.labelSmall, color = DarkTextSecondary)
                             Text(
                                 text = CurrencyUtils.formatKes(accountSummary.monthlyRentCents),
                                 style = TabularMoneyStyle.copy(fontSize = MaterialTheme.typography.titleMedium.fontSize),
-                                color = Color(0xFFCCFBF1)
+                                color = ChampagneLight
                             )
                         }
                     }
@@ -316,19 +335,19 @@ fun TenantDashboardScreen(
                         Text(
                             text = "Paid this cycle: ${CurrencyUtils.formatKes(accountSummary.amountPaidThisPeriodCents)}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFFE2E8F0)
+                            color = DarkTextPrimary.copy(alpha = 0.85f)
                         )
                         Text(
                             text = "Credit: ${CurrencyUtils.formatKes(accountSummary.accountCreditCents)}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF5EEAD4)
+                            color = ChampagneLight
                         )
                     }
                     if (activeLease != null) {
                         Text(
                             text = "Next Due Date: ${CurrencyUtils.formatDate(accountSummary.nextDueDateEpochMs)}",
                             style = MaterialTheme.typography.labelSmall,
-                            color = Color(0xFFE2E8F0)
+                            color = DarkTextSecondary
                         )
                     }
                 }
@@ -339,16 +358,20 @@ fun TenantDashboardScreen(
             val topReminder = dueReminders.first()
             val isOverdue = topReminder.urgency == RentReminderUrgency.OVERDUE
             item {
+                val isDark = LocalIsDarkTheme.current
+                val warnBg = if (isDark) StatusWarningBgDark else StatusWarningBg
+                val warnFg = if (isDark) StatusWarningLight else StatusWarning
                 Card(
                     shape = MaterialTheme.shapes.medium,
                     colors = CardDefaults.cardColors(
                         containerColor = if (isOverdue) {
-                            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f)
+                            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
                         } else {
-                            StatusWarningBg
+                            warnBg
                         }
                     ),
-                    border = BorderStroke(1.dp, if (isOverdue) StatusError.copy(alpha = 0.5f) else StatusWarning.copy(alpha = 0.5f)),
+                    border = BorderStroke(1.dp, if (isOverdue) StatusError.copy(alpha = 0.5f) else warnFg.copy(alpha = 0.5f)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("tenant_rent_reminder_banner")
@@ -361,12 +384,12 @@ fun TenantDashboardScreen(
                             Icon(
                                 imageVector = Icons.Filled.NotificationsActive,
                                 contentDescription = null,
-                                tint = if (isOverdue) StatusError else StatusWarning
+                                tint = if (isOverdue) StatusError else warnFg
                             )
                             Text(
                                 text = topReminder.title,
                                 style = MaterialTheme.typography.titleSmall,
-                                color = if (isOverdue) StatusError else StatusWarning,
+                                color = if (isOverdue) StatusError else warnFg,
                                 modifier = Modifier.weight(1f)
                             )
                             StatusPill(
@@ -380,8 +403,10 @@ fun TenantDashboardScreen(
                         )
                         Button(
                             onClick = onNavigatePayRent,
+                            shape = RoundedCornerShape(999.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isOverdue) StatusError else MaterialTheme.colorScheme.secondary
+                                containerColor = if (isOverdue) StatusError else MaterialTheme.colorScheme.secondary,
+                                contentColor = if (isOverdue) Color.White else MaterialTheme.colorScheme.onSecondary
                             ),
                             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
                         ) {
@@ -397,7 +422,11 @@ fun TenantDashboardScreen(
                 Button(
                     onClick = onNavigatePayRent,
                     enabled = activeLease != null,
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                    shape = RoundedCornerShape(999.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary,
+                        contentColor = MaterialTheme.colorScheme.onSecondary
+                    ),
                     modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("tenant_quick_pay_button")
                 ) {
                     Icon(Icons.Filled.Payments, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -407,6 +436,7 @@ fun TenantDashboardScreen(
                 OutlinedButton(
                     onClick = onNavigateMaintenance,
                     enabled = activeLease != null,
+                    shape = RoundedCornerShape(999.dp),
                     modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("tenant_quick_ticket_button")
                 ) {
                     Icon(Icons.Filled.Build, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -435,12 +465,13 @@ fun TenantDashboardScreen(
                 Card(
                     shape = MaterialTheme.shapes.medium,
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Icon(Icons.Filled.Home, contentDescription = null, tint = EmeraldAccent)
+                            Icon(Icons.Filled.Home, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("${lease.propertyName} • Unit ${lease.unitNumber}", style = MaterialTheme.typography.titleMedium)
                                 Text(
@@ -456,29 +487,20 @@ fun TenantDashboardScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        val leaseMutuallySigned = lease.isMutuallySigned() || activeConditionChecklist?.isMutuallySigned() == true
+                        val leaseLandlordSigned = lease.landlordSignature != null || activeConditionChecklist?.landlordSignature != null
+                        if (leaseMutuallySigned) {
+                            StatusPill("Lease & Condition Report Mutually Signed", PillTone.SUCCESS)
+                        } else if (leaseLandlordSigned) {
+                            StatusPill("Awaiting Your Counter-Signature in Move-In Checklist", PillTone.WARNING)
+                        }
                         OutlinedButton(
                             onClick = {
-                                ReportExporter.exportPdfDocument(
+                                ReportExporter.exportSignedLeaseAgreementPdf(
                                     context = context,
-                                    fileName = "tenancy_agreement_${lease.unitNumber}.pdf",
-                                    title = "RentFlow Tenancy Agreement",
-                                    subtitle = "${lease.propertyName} • Unit ${lease.unitNumber}",
-                                    lines = listOf(
-                                        "[H]TENANCY DETAILS",
-                                        "Tenant: ${lease.tenantName} (${lease.tenantPhone})",
-                                        "Property & Unit: ${lease.propertyName} - Unit ${lease.unitNumber}",
-                                        "Lease Term: ${CurrencyUtils.formatDate(lease.startDateEpochMs)} to ${CurrencyUtils.formatDate(lease.endDateEpochMs)}",
-                                        "Status: ${lease.statusEnum().label}",
-                                        "---",
-                                        "[H]FINANCIAL TERMS (KES)",
-                                        "Monthly Rent: ${CurrencyUtils.formatKes(lease.rentCents, true)}",
-                                        "Security Deposit: ${CurrencyUtils.formatKes(lease.depositCents, true)}",
-                                        "Due Day: Day ${lease.dueDayOfMonth} of every month",
-                                        "Account Credit: ${CurrencyUtils.formatKes(lease.creditBalanceCents, true)}",
-                                        "---",
-                                        "[H]TERMS SUMMARY",
-                                        lease.termsSummary.ifBlank { "Standard Kenyan residential tenancy terms apply." }
-                                    )
+                                    lease = lease,
+                                    landlordFallbackSignature = activeConditionChecklist?.landlordSignature,
+                                    tenantFallbackSignature = activeConditionChecklist?.tenantSignature
                                 )
                             },
                             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
@@ -524,7 +546,10 @@ fun TenantDashboardScreen(
                             conditionChecklistForReview = activeConditionChecklist
                         }
                     },
-                    onExportPdf = { cl -> exportMoveInConditionChecklistPdf(context, cl) }
+                    onExportPdf = { cl ->
+                        val linkedLease = tenantLeases.firstOrNull { it.id == cl.leaseId } ?: activeLease
+                        conditionChecklistForPdfViewer = cl to linkedLease
+                    }
                 )
             }
         }
@@ -639,17 +664,29 @@ fun TenantDashboardScreen(
             isTenantView = true,
             canDeleteDraft = false,
             isBusy = busy,
+            currentUserUid = currentUser.userId,
+            currentUserName = currentUser.fullName,
+            currentUserRole = UserRole.TENANT,
             onDismiss = { conditionChecklistForReview = null },
-            onSubmitTenantReview = { targetChecklist, acknowledge, tenantRemarksByItemId, tenantSummary, onSuccess ->
+            onSubmitTenantReview = { targetChecklist, acknowledge, tenantRemarksByItemId, tenantSummary, tenantSignature, onSuccess ->
                 viewModel.submitConditionChecklistReview(
                     checklist = targetChecklist,
                     acknowledge = acknowledge,
                     tenantRemarksByItemId = tenantRemarksByItemId,
                     tenantSummary = tenantSummary,
                     actorName = currentUser.fullName,
+                    tenantSignature = tenantSignature,
                     onSuccess = onSuccess
                 )
             }
+        )
+    }
+
+    conditionChecklistForPdfViewer?.let { (cl, linkedLease) ->
+        MoveInChecklistPdfViewerDialog(
+            checklist = cl,
+            lease = linkedLease,
+            onDismiss = { conditionChecklistForPdfViewer = null }
         )
     }
 
@@ -817,7 +854,11 @@ fun TenantPaymentsScreen(
                                 paymentTargetInvoice = invoices.firstOrNull { it.outstandingCents > 0L }
                                 showPayDialog = true
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                            shape = RoundedCornerShape(999.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.secondary,
+                                contentColor = MaterialTheme.colorScheme.onSecondary
+                            ),
                             modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("submit_rent_payment_button")
                         ) {
                             Icon(Icons.Filled.Payments, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -828,6 +869,7 @@ fun TenantPaymentsScreen(
                             onClick = {
                                 ReportExporter.exportTenantStatementCsv(context, lease, invoices, payments)
                             },
+                            shape = RoundedCornerShape(999.dp),
                             modifier = Modifier.heightIn(min = 48.dp).testTag("tenant_export_csv_button")
                         ) {
                             Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -1790,7 +1832,7 @@ fun TenantMaintenanceScreen(
                 FloatingActionButton(
                     onClick = { showCreateDialog = true },
                     containerColor = MaterialTheme.colorScheme.secondary,
-                    contentColor = Color.White,
+                    contentColor = MaterialTheme.colorScheme.onSecondary,
                     modifier = Modifier.testTag("add_maintenance_fab")
                 ) {
                     Icon(Icons.Filled.Add, contentDescription = "Submit Maintenance Request")

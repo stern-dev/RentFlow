@@ -58,7 +58,7 @@ import com.example.ui.components.PillTone
 import com.example.ui.components.RentFlowKpiCard
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusPill
-import com.example.ui.theme.EmeraldAccent
+import androidx.compose.foundation.shape.RoundedCornerShape
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusInfo
 import com.example.ui.theme.StatusSuccess
@@ -177,7 +177,7 @@ fun LandlordDashboardScreen(
                     value = "${summary.occupiedUnits}/${summary.totalUnits}",
                     subtitle = "${summary.vacantUnits} vacant • ${summary.activeTenants} tenants",
                     icon = Icons.Filled.HomeWork,
-                    accentColor = EmeraldAccent,
+                    accentColor = MaterialTheme.colorScheme.secondary,
                     modifier = Modifier.weight(1f),
                     onClick = onNavigatePortfolio
                 )
@@ -288,7 +288,11 @@ fun LandlordDashboardScreen(
                             }
                         )
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                    shape = RoundedCornerShape(999.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
                     modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("export_pdf_report_button")
                 ) {
                     Icon(Icons.Filled.Description, contentDescription = null)
@@ -299,6 +303,7 @@ fun LandlordDashboardScreen(
                     onClick = {
                         ReportExporter.exportLandlordFinancialCsv(context, summary, invoices, payments, expenses)
                     },
+                    shape = RoundedCornerShape(999.dp),
                     modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("export_csv_report_button")
                 ) {
                     Icon(Icons.Filled.Download, contentDescription = null)
@@ -316,6 +321,7 @@ fun LandlordDashboardScreen(
                     shape = MaterialTheme.shapes.medium,
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     border = BorderStroke(1.dp, StatusWarning.copy(alpha = 0.45f)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -349,6 +355,8 @@ fun LandlordDashboardScreen(
                 Card(
                     shape = MaterialTheme.shapes.medium,
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(

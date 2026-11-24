@@ -55,7 +55,6 @@ import com.example.domain.model.InspectionRoom
 import com.example.domain.model.MoveInConditionChecklist
 import com.example.domain.model.RoomInspectionItem
 import com.example.ui.screens.MaintenancePhotoStrip
-import com.example.ui.theme.EmeraldAccent
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusErrorBg
 import com.example.ui.theme.StatusInfo
@@ -88,8 +87,9 @@ internal fun RoomSectionHeaderCard(
         ),
         border = BorderStroke(
             width = 1.dp,
-            color = if (allChecked) EmeraldAccent.copy(alpha = 0.55f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+            color = if (allChecked) MaterialTheme.colorScheme.secondary.copy(alpha = 0.65f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
         ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = Modifier
             .fillMaxWidth()
             .testTag("room_section_header_${room.roomId}")
@@ -118,7 +118,7 @@ internal fun RoomSectionHeaderCard(
                     Text(
                         text = "$inspectedCount of ${room.items.size} items checked",
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (allChecked) EmeraldAccent else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (allChecked) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 if (canEdit && room.items.size < MoveInConditionChecklist.MAX_ITEMS_PER_ROOM) {
@@ -211,10 +211,11 @@ internal fun RoomInspectionItemCard(
             width = 1.dp,
             color = when {
                 isFlaggedIssue -> StatusWarning.copy(alpha = 0.5f)
-                isInspected -> EmeraldAccent.copy(alpha = 0.55f)
-                else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                isInspected -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.6f)
+                else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
             }
         ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = Modifier
             .fillMaxWidth()
             .testTag("inspection_item_card_${item.itemId}")
@@ -251,7 +252,7 @@ internal fun RoomInspectionItemCard(
                     Text(
                         text = if (isInspected) "Inspected" else "Pending check",
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (isInspected) EmeraldAccent else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (isInspected) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
@@ -560,11 +561,10 @@ internal fun ConfirmSignOffChecklistDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Sign Off Move-In Checklist?") },
+        title = { Text("Sign Off & Lock Reports?") },
         text = {
             Text(
-                "Signing off Unit $unitNumber permanently locks this room-by-room condition baseline and all remarks. " +
-                    "Both landlord and tenant will use this locked report for move-out deposit settlement."
+                "Counter-signing Unit $unitNumber embeds your digital signature into both the Move-In Condition Report and Tenancy Lease Agreement and permanently locks both reports for move-out deposit settlement."
             )
         },
         confirmButton = {
@@ -572,7 +572,7 @@ internal fun ConfirmSignOffChecklistDialog(
                 onClick = onConfirm,
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
                 modifier = Modifier.heightIn(min = 48.dp).testTag("confirm_signoff_checklist_button")
-            ) { Text("Acknowledge & Lock") }
+            ) { Text("Acknowledge, Sign & Lock") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }

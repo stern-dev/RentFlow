@@ -11,9 +11,13 @@ import com.example.data.repository.MoveInChecklistRepository
 import com.example.data.repository.OperationsRepository
 import com.example.data.repository.PropertyRepository
 import com.example.domain.model.ChecklistItem
+import com.example.domain.model.ChecklistOverviewBucket
+import com.example.domain.model.ChecklistOverviewEngine
+import com.example.domain.model.ChecklistOverviewSummary
 import com.example.domain.model.DepositDeductionItem
 import com.example.domain.model.DepositSettlement
 import com.example.domain.model.DepositSettlementStatus
+import com.example.domain.model.DigitalSignature
 import com.example.domain.model.InspectionRoom
 import com.example.domain.model.MoveInChecklist
 import com.example.domain.model.MoveInConditionChecklist
@@ -54,6 +58,12 @@ import kotlinx.coroutines.launch
 
 data class UnitMatrixFilterState(
     val status: UnitStatus? = null,
+    val propertyId: String? = null,
+    val searchQuery: String = ""
+)
+
+data class ChecklistOverviewFilterState(
+    val bucket: ChecklistOverviewBucket? = null,
     val propertyId: String? = null,
     val searchQuery: String = ""
 )
@@ -187,6 +197,49 @@ class LandlordViewModel(
     val depositSettlements: StateFlow<UiState<List<DepositSettlement>>> = (handoverRepo?.observeSettlementsForLandlord(currentUserId) ?: flowOf(emptyList()))
         .asUiState("LandlordVM", "Failed to load deposit settlements")
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
+
+    private val _checklistOverviewFilter = MutableStateFlow(ChecklistOverviewFilterState())
+    val checklistOverviewFilter: StateFlow<ChecklistOverviewFilterState> = _checklistOverviewFilter.asStateFlow()
+
+    val checklistOverviewState: StateFlow<UiState<ChecklistOverviewSummary>> = combine(
+        leases,
+        conditionChecklists
+    ) { leasesUi, checklistsUi ->
+        when {
+            leasesUi is UiState.Loading || checklistsUi is UiState.Loading -> UiState.Loading
+            leasesUi is UiState.Error -> UiState.Error(leasesUi.message)
+            checklistsUi is UiState.Error -> UiState.Error(checklistsUi.message)
+            leasesUi is UiState.Success && checklistsUi is UiState.Success -> {
+                UiState.Success(
+                    ChecklistOverviewEngine.buildSummary(
+                        leases = leasesUi.data,
+                        checklists = checklistsUi.data
+                    )
+                )
+            }
+            else -> UiState.Loading
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
+
+    fun setChecklistBucketFilter(bucket: ChecklistOverviewBucket?) {
+        _checklistOverviewFilter.update { current ->
+            current.copy(bucket = if (current.bucket == bucket) null else bucket)
+        }
+    }
+
+    fun setChecklistPropertyFilter(propertyId: String?) {
+        _checklistOverviewFilter.update { current ->
+            current.copy(propertyId = if (current.propertyId == propertyId) null else propertyId)
+        }
+    }
+
+    fun setChecklistSearchQuery(query: String) {
+        _checklistOverviewFilter.update { it.copy(searchQuery = query) }
+    }
+
+    fun clearChecklistFilters() {
+        _checklistOverviewFilter.value = ChecklistOverviewFilterState()
+    }
 
     val portfolioSummary: StateFlow<PortfolioSummary> = combine(
         listOf(properties, units, leases, invoices, payments, expenses, maintenanceRequests)
@@ -624,6 +677,7 @@ class LandlordViewModel(
         keysHandedOverCount: Long,
         rooms: List<InspectionRoom>,
         landlordSummary: String?,
+        landlordSignature: DigitalSignature? = null,
         submitForTenantSignOff: Boolean,
         actorName: String,
         onSuccess: () -> Unit
@@ -643,6 +697,7 @@ class LandlordViewModel(
                 keysHandedOverCount = keysHandedOverCount,
                 rooms = rooms,
                 landlordSummary = landlordSummary,
+                landlordSignature = landlordSignature,
                 submitForTenantSignOff = submitForTenantSignOff,
                 actorName = actorName
             )

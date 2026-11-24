@@ -68,12 +68,14 @@ import com.example.domain.model.MoveInChecklist
 import com.example.domain.model.MoveInChecklistStatus
 import com.example.ui.media.MaintenancePhotoProcessor
 import com.example.ui.screens.MaintenancePhotoStrip
-import com.example.ui.theme.EmeraldAccent
+import com.example.ui.theme.LocalIsDarkTheme
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusErrorBg
 import com.example.ui.theme.StatusInfo
 import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.StatusWarningBg
+import com.example.ui.theme.StatusWarningBgDark
+import com.example.ui.theme.StatusWarningLight
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -97,19 +99,23 @@ fun MoveInChecklistSummaryCard(
     val needsUrgentAction = (isTenantView && status == MoveInChecklistStatus.PENDING_TENANT_REVIEW) ||
         (!isTenantView && status == MoveInChecklistStatus.DISPUTED)
 
+    val isDark = LocalIsDarkTheme.current
+    val warnBg = if (isDark) StatusWarningBgDark else StatusWarningBg
+    val warnFg = if (isDark) StatusWarningLight else StatusWarning
     Card(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
             containerColor = if (needsUrgentAction) {
-                StatusWarningBg.copy(alpha = 0.55f)
+                warnBg.copy(alpha = 0.75f)
             } else {
                 MaterialTheme.colorScheme.surface
             }
         ),
         border = BorderStroke(
             width = 1.dp,
-            color = if (needsUrgentAction) StatusWarning.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+            color = if (needsUrgentAction) warnFg.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
         ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = modifier
             .fillMaxWidth()
             .testTag(if (isTenantView) "tenant_move_in_checklist_card" else "landlord_move_in_checklist_card")
@@ -123,7 +129,7 @@ fun MoveInChecklistSummaryCard(
                 Icon(
                     imageVector = Icons.Filled.Checklist,
                     contentDescription = "Move-in condition checklist",
-                    tint = if (needsUrgentAction) StatusWarning else EmeraldAccent
+                    tint = if (needsUrgentAction) warnFg else MaterialTheme.colorScheme.secondary
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Move-In Condition Checklist", style = MaterialTheme.typography.titleSmall)

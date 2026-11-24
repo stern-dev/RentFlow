@@ -448,6 +448,21 @@ service cloud.firestore {
              isValidTimestamp(d.updatedAt);
     }
 
+    function isValidDigitalSignature(sig) {
+      return sig is map &&
+             sig.size() == 7 &&
+             sig.signerUid is string && sig.signerUid.size() > 0 && sig.signerUid.size() <= 128 &&
+             sig.signerName is string && sig.signerName.size() > 0 && sig.signerName.size() <= 100 &&
+             sig.signerRole in ['LANDLORD', 'PROPERTY_MANAGER', 'TENANT', 'ADMIN'] &&
+             sig.signedAtEpochMs is int && sig.signedAtEpochMs > 0 &&
+             sig.signatureImageRef is string &&
+             sig.signatureImageRef.size() >= 30 &&
+             sig.signatureImageRef.size() <= 70000 &&
+             sig.signatureImageRef.matches('^data:image/(png|jpeg);base64,.+$') &&
+             sig.coversInspectionReport is bool &&
+             sig.coversLeaseReport is bool;
+    }
+
     function isValidLease(data) {
       let d = data;
       return isBoundedString(d.orgId, 1, 128) &&
@@ -471,6 +486,9 @@ service cloud.firestore {
              d.creditBalanceCents is int && d.creditBalanceCents >= 0 && d.creditBalanceCents <= 1000000000 &&
              isBoundedString(d.termsSummary, 0, 1500) &&
              isOptionalString(d, 'terminationNotice', 800) &&
+             (!('landlordSignature' in d) || isValidDigitalSignature(d.landlordSignature)) &&
+             (!('tenantSignature' in d) || isValidDigitalSignature(d.tenantSignature)) &&
+             isOptionalString(d, 'signedChecklistId', 128) &&
              isValidTimestamp(d.createdAt) &&
              isValidTimestamp(d.updatedAt);
     }
@@ -718,6 +736,8 @@ service cloud.firestore {
              (!('tenantSummary' in d) || (d.tenantSummary is string && d.tenantSummary.size() <= 800)) &&
              (!('acknowledgedAtEpochMs' in d) || (d.acknowledgedAtEpochMs is int && d.acknowledgedAtEpochMs >= 0)) &&
              (!('acknowledgedByUid' in d) || (d.acknowledgedByUid is string && d.acknowledgedByUid.size() <= 128)) &&
+             (!('landlordSignature' in d) || isValidDigitalSignature(d.landlordSignature)) &&
+             (!('tenantSignature' in d) || isValidDigitalSignature(d.tenantSignature)) &&
              d.updatedAt is timestamp && d.updatedAt <= request.time;
     }
 
@@ -867,7 +887,9 @@ service cloud.firestore {
              d.status in ['DRAFT', 'PENDING_TENANT_REVIEW'] &&
              !('acknowledgedAtEpochMs' in d) &&
              !('acknowledgedByUid' in d) &&
-             d.keys().hasOnly(['leaseId', 'orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'status', 'inspectionDateEpochMs', 'waterMeterReading', 'electricityMeterReading', 'keysHandedOverCount', 'rooms', 'landlordSummary', 'tenantSummary', 'acknowledgedAtEpochMs', 'acknowledgedByUid', 'createdByUid', 'createdAt', 'updatedAt']) &&
+             !('tenantSignature' in d) &&
+             (!('landlordSignature' in d) || (d.landlordSignature.signerUid == uid && d.landlordSignature.signerRole in ['LANDLORD', 'PROPERTY_MANAGER', 'ADMIN'] && d.landlordSignature.coversInspectionReport == true)) &&
+             d.keys().hasOnly(['leaseId', 'orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'status', 'inspectionDateEpochMs', 'waterMeterReading', 'electricityMeterReading', 'keysHandedOverCount', 'rooms', 'landlordSummary', 'tenantSummary', 'acknowledgedAtEpochMs', 'acknowledgedByUid', 'landlordSignature', 'tenantSignature', 'createdByUid', 'createdAt', 'updatedAt']) &&
              l != null &&
              l.orgId == d.orgId &&
              l.propertyId == d.propertyId &&
@@ -885,13 +907,11 @@ service cloud.firestore {
              );
     }
 
-    function canUpdateMoveInConditionChecklist(checklistId) {
+    function canAdminUpdateConditionChecklist(checklistId) {
       let d = request.resource.data;
       let e = resource.data;
-      let uid = request.auth.uid;
-      let u = loadActiveUser();
-      let changed = d.diff(e).affectedKeys();
-      return isValidId(checklistId) &&
+      return isAdmin() &&
+             isValidId(checklistId) &&
              isValidMoveInConditionChecklistUpdate(d) &&
              d.leaseId == e.leaseId &&
              d.orgId == e.orgId &&
@@ -900,41 +920,79 @@ service cloud.firestore {
              d.ownerUid == e.ownerUid &&
              d.tenantUid == e.tenantUid &&
              d.createdByUid == e.createdByUid &&
-             d.createdAt == e.createdAt &&
+             d.createdAt == e.createdAt;
+    }
+
+    function canLandlordUpdateConditionChecklist(checklistId) {
+      let d = request.resource.data;
+      let e = resource.data;
+      let uid = request.auth.uid;
+      let changed = d.diff(e).affectedKeys();
+      let u = loadActiveUser();
+      let o = loadOrg(e.orgId);
+      return isVerifiedEmail() &&
+             isValidId(checklistId) &&
+             uid in e.authorizedUids &&
+             e.status in ['DRAFT', 'PENDING_TENANT_REVIEW', 'DISPUTED'] &&
+             !('tenantSignature' in e) &&
+             d.status in ['DRAFT', 'PENDING_TENANT_REVIEW'] &&
+             !('acknowledgedAtEpochMs' in d) &&
+             !('acknowledgedByUid' in d) &&
+             !('tenantSignature' in d) &&
+             changed.hasOnly(['inspectionDateEpochMs', 'waterMeterReading', 'electricityMeterReading', 'keysHandedOverCount', 'rooms', 'landlordSummary', 'landlordSignature', 'status', 'updatedAt']) &&
+             d.inspectionDateEpochMs is int && d.inspectionDateEpochMs > 0 &&
+             (!('waterMeterReading' in d) || (d.waterMeterReading is string && d.waterMeterReading.size() <= 40)) &&
+             (!('electricityMeterReading' in d) || (d.electricityMeterReading is string && d.electricityMeterReading.size() <= 40)) &&
+             d.keysHandedOverCount is int && d.keysHandedOverCount >= 0 && d.keysHandedOverCount <= 50 &&
+             d.rooms is list && d.rooms.size() >= 1 && d.rooms.size() <= 15 &&
+             d.rooms[0] is map && d.rooms[0].items is list && d.rooms[0].items.size() >= 1 &&
+             (!('landlordSummary' in d) || (d.landlordSummary is string && d.landlordSummary.size() <= 800)) &&
+             (!changed.hasAny(['landlordSignature']) || ('landlordSignature' in d && isValidDigitalSignature(d.landlordSignature) && d.landlordSignature.signerUid == uid && d.landlordSignature.signerRole in ['LANDLORD', 'PROPERTY_MANAGER', 'ADMIN'] && d.landlordSignature.coversInspectionReport == true)) &&
+             d.updatedAt is timestamp && d.updatedAt <= request.time &&
+             isActiveUserDoc(u) &&
+             u.roles.hasAny(['LANDLORD', 'PROPERTY_MANAGER']) &&
+             o != null &&
+             o.suspended == false &&
+             (o.ownerUid == uid || uid in o.memberUids);
+    }
+
+    function canTenantUpdateConditionChecklist(checklistId) {
+      let d = request.resource.data;
+      let e = resource.data;
+      let uid = request.auth.uid;
+      let changed = d.diff(e).affectedKeys();
+      let u = loadActiveUser();
+      return isVerifiedEmail() &&
+             isValidId(checklistId) &&
+             e.tenantUid == uid &&
+             e.status == 'PENDING_TENANT_REVIEW' &&
+             !('tenantSignature' in e) &&
+             d.status in ['ACKNOWLEDGED', 'DISPUTED'] &&
+             d.rooms is list && d.rooms.size() == e.rooms.size() &&
+             (!('tenantSummary' in d) || (d.tenantSummary is string && d.tenantSummary.size() <= 800)) &&
+             d.updatedAt is timestamp && d.updatedAt <= request.time &&
+             changed.hasOnly(['status', 'rooms', 'tenantSummary', 'acknowledgedAtEpochMs', 'acknowledgedByUid', 'tenantSignature', 'updatedAt']) &&
              (
-               isAdmin() ||
                (
-                 e.status != 'ACKNOWLEDGED' &&
-                 isVerifiedEmail() &&
-                 isActiveUserDoc(u) &&
-                 (
-                   (
-                     u.roles.hasAny(['LANDLORD', 'PROPERTY_MANAGER']) &&
-                     uid in e.authorizedUids &&
-                     isActiveOrgMember(e.orgId) &&
-                     e.status in ['DRAFT', 'PENDING_TENANT_REVIEW', 'DISPUTED'] &&
-                     d.status in ['DRAFT', 'PENDING_TENANT_REVIEW'] &&
-                     d.managerUids == e.managerUids &&
-                     d.authorizedUids == e.authorizedUids &&
-                     !('acknowledgedAtEpochMs' in d) &&
-                     !('acknowledgedByUid' in d) &&
-                     changed.hasOnly(['inspectionDateEpochMs', 'waterMeterReading', 'electricityMeterReading', 'keysHandedOverCount', 'rooms', 'landlordSummary', 'status', 'updatedAt'])
-                   ) ||
-                   (
-                     'TENANT' in u.roles &&
-                     e.tenantUid == uid &&
-                     e.status == 'PENDING_TENANT_REVIEW' &&
-                     d.status in ['ACKNOWLEDGED', 'DISPUTED'] &&
-                     d.rooms.size() == e.rooms.size() &&
-                     changed.hasOnly(['status', 'rooms', 'tenantSummary', 'acknowledgedAtEpochMs', 'acknowledgedByUid', 'updatedAt']) &&
-                     (
-                       (d.status == 'ACKNOWLEDGED' && d.acknowledgedByUid == uid && d.acknowledgedAtEpochMs is int && d.acknowledgedAtEpochMs > 0) ||
-                       (d.status == 'DISPUTED' && 'tenantSummary' in d && d.tenantSummary is string && d.tenantSummary.size() >= 3 && d.tenantSummary.size() <= 800 && !('acknowledgedAtEpochMs' in d) && !('acknowledgedByUid' in d))
-                     )
-                   )
-                 )
+                 d.status == 'ACKNOWLEDGED' &&
+                 d.acknowledgedByUid == uid &&
+                 d.acknowledgedAtEpochMs is int &&
+                 d.acknowledgedAtEpochMs > 0 &&
+                 (!('tenantSignature' in d) || (isValidDigitalSignature(d.tenantSignature) && d.tenantSignature.signerUid == uid && d.tenantSignature.signerRole == 'TENANT' && d.tenantSignature.coversInspectionReport == true && d.tenantSignature.coversLeaseReport == true))
+               ) ||
+               (
+                 d.status == 'DISPUTED' &&
+                 'tenantSummary' in d &&
+                 d.tenantSummary is string &&
+                 d.tenantSummary.size() >= 3 &&
+                 d.tenantSummary.size() <= 800 &&
+                 !('acknowledgedAtEpochMs' in d) &&
+                 !('acknowledgedByUid' in d) &&
+                 !('tenantSignature' in d)
                )
-             );
+             ) &&
+             isActiveUserDoc(u) &&
+             'TENANT' in u.roles;
     }
 
     function canCreateDepositSettlement(settlementId) {
@@ -1158,46 +1216,105 @@ service cloud.firestore {
              );
     }
 
-    function canUpdateLease(leaseId) {
+    function isChecklistMutuallyAcked(checklistId, leaseId, uid) {
+      let after = getAfter(/databases/$(database)/documents/move_in_condition_checklists/$(checklistId)).data;
+      return after.leaseId == leaseId &&
+             after.tenantUid == uid &&
+             after.status == 'ACKNOWLEDGED';
+    }
+
+    function isValidMutableLeaseFields(d) {
+      return isStringList(d.managerUids, 0, 15) &&
+             isStringList(d.authorizedUids, 1, 20) &&
+             d.ownerUid in d.authorizedUids &&
+             d.rentCents is int && d.rentCents > 0 && d.rentCents <= 1000000000 &&
+             d.depositCents is int && d.depositCents >= 0 && d.depositCents <= 1000000000 &&
+             d.startDateEpochMs is int && d.startDateEpochMs > 0 &&
+             d.endDateEpochMs is int && d.endDateEpochMs >= d.startDateEpochMs &&
+             d.dueDayOfMonth is int && d.dueDayOfMonth >= 1 && d.dueDayOfMonth <= 28 &&
+             d.status in ['ACTIVE', 'EXPIRED', 'TERMINATED', 'RENEWED'] &&
+             d.creditBalanceCents is int && d.creditBalanceCents >= 0 && d.creditBalanceCents <= 1000000000 &&
+             isBoundedString(d.termsSummary, 0, 1500) &&
+             isOptionalString(d, 'terminationNotice', 800) &&
+             isOptionalString(d, 'signedChecklistId', 128) &&
+             isValidTimestamp(d.updatedAt);
+    }
+
+    function canAdminUpdateLease(leaseId) {
+      let d = request.resource.data;
+      let e = resource.data;
+      return isAdmin() &&
+             isValidId(leaseId) &&
+             isValidLease(d) &&
+             d.orgId == e.orgId &&
+             d.propertyId == e.propertyId &&
+             d.unitId == e.unitId &&
+             d.ownerUid == e.ownerUid &&
+             d.tenantUid == e.tenantUid &&
+             d.createdAt == e.createdAt;
+    }
+
+    function canLandlordOrManagerUpdateLease(leaseId) {
+      let d = request.resource.data;
+      let e = resource.data;
+      let uid = request.auth.uid;
+      let changed = d.diff(e).affectedKeys();
+      let u = loadActiveUser();
+      let o = loadOrg(e.orgId);
+      let sigOk = !changed.hasAny(['landlordSignature']) ||
+        (!('tenantSignature' in e) && 'landlordSignature' in d && isValidDigitalSignature(d.landlordSignature) && d.landlordSignature.signerUid == uid && d.landlordSignature.signerRole in ['LANDLORD', 'PROPERTY_MANAGER', 'ADMIN'] && d.landlordSignature.coversLeaseReport == true);
+      let notMutatedAfterSign = !('tenantSignature' in e) ||
+        (!changed.hasAny(['termsSummary', 'landlordSignature', 'tenantSignature', 'signedChecklistId']));
+      return isVerifiedEmail() &&
+             isValidId(leaseId) &&
+             uid in e.authorizedUids &&
+             sigOk &&
+             notMutatedAfterSign &&
+             isValidMutableLeaseFields(d) &&
+             isActiveUserDoc(u) &&
+             o != null &&
+             o.suspended == false &&
+             (
+               (
+                 'LANDLORD' in u.roles &&
+                 e.ownerUid == uid &&
+                 o.ownerUid == uid &&
+                 changed.hasOnly(['rentCents', 'depositCents', 'startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'terminationNotice', 'managerUids', 'authorizedUids', 'landlordSignature', 'signedChecklistId', 'updatedAt'])
+               ) ||
+               (
+                 u.roles.hasAny(['LANDLORD', 'PROPERTY_MANAGER']) &&
+                 (o.ownerUid == uid || uid in o.memberUids) &&
+                 d.status in ['ACTIVE', 'EXPIRED', 'RENEWED'] &&
+                 changed.hasOnly(['startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'landlordSignature', 'signedChecklistId', 'updatedAt'])
+               )
+             );
+    }
+
+    function canTenantCounterSignLease(leaseId) {
       let d = request.resource.data;
       let e = resource.data;
       let uid = request.auth.uid;
       let u = loadActiveUser();
       let o = loadOrg(e.orgId);
-      let baseImmutable = d.orgId == e.orgId && d.propertyId == e.propertyId && d.unitId == e.unitId && d.ownerUid == e.ownerUid && d.tenantUid == e.tenantUid && d.createdAt == e.createdAt;
-      let changed = d.diff(e).affectedKeys();
-      return isSignedIn() &&
+      return isVerifiedEmail() &&
              isValidId(leaseId) &&
-             isValidLease(d) &&
-             baseImmutable &&
-             (
-               isAdmin() ||
-               (
-                 isVerifiedEmail() &&
-                 isActiveUserDoc(u) &&
-                 o != null &&
-                 o.suspended == false &&
-                 (
-                   (
-                     'LANDLORD' in u.roles &&
-                     e.ownerUid == uid &&
-                     o.ownerUid == uid &&
-                     changed.hasOnly(['rentCents', 'depositCents', 'startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'terminationNotice', 'managerUids', 'authorizedUids', 'updatedAt'])
-                   ) ||
-                   (
-                     u.roles.hasAny(['LANDLORD', 'PROPERTY_MANAGER']) &&
-                     uid in e.authorizedUids &&
-                     (o.ownerUid == uid || uid in o.memberUids) &&
-                     d.rentCents == e.rentCents &&
-                     d.depositCents == e.depositCents &&
-                     d.managerUids == e.managerUids &&
-                     d.authorizedUids == e.authorizedUids &&
-                     d.status in ['ACTIVE', 'EXPIRED', 'RENEWED'] &&
-                     changed.hasOnly(['startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'updatedAt'])
-                   )
-                 )
-               )
-             );
+             e.tenantUid == uid &&
+             !('tenantSignature' in e) &&
+             'tenantSignature' in d &&
+             'signedChecklistId' in d &&
+             isValidId(d.signedChecklistId) &&
+             d.diff(e).affectedKeys().hasOnly(['tenantSignature', 'signedChecklistId', 'updatedAt']) &&
+             isValidTimestamp(d.updatedAt) &&
+             isValidDigitalSignature(d.tenantSignature) &&
+             d.tenantSignature.signerUid == uid &&
+             d.tenantSignature.signerRole == 'TENANT' &&
+             d.tenantSignature.coversInspectionReport == true &&
+             d.tenantSignature.coversLeaseReport == true &&
+             isActiveUserDoc(u) &&
+             'TENANT' in u.roles &&
+             o != null &&
+             o.suspended == false &&
+             isChecklistMutuallyAcked(d.signedChecklistId, leaseId, uid);
     }
 
     function canUpdateInvoice(invoiceId) {
@@ -1768,15 +1885,19 @@ service cloud.firestore {
       );
       allow create: if isValidId(leaseId) &&
                        isValidLease(request.resource.data) &&
+                       !('tenantSignature' in request.resource.data) &&
+                       (!('landlordSignature' in request.resource.data) || isAdmin() || (request.resource.data.landlordSignature.signerUid == request.auth.uid && request.resource.data.landlordSignature.signerRole in ['LANDLORD', 'PROPERTY_MANAGER', 'ADMIN'] && request.resource.data.landlordSignature.coversLeaseReport == true)) &&
                        request.resource.data.keys().hasAll(['orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'tenantPhone', 'rentCents', 'depositCents', 'startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'createdAt', 'updatedAt']) &&
-                       request.resource.data.keys().hasOnly(['orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'tenantPhone', 'rentCents', 'depositCents', 'startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'terminationNotice', 'createdAt', 'updatedAt']) &&
+                       request.resource.data.keys().hasOnly(['orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'tenantPhone', 'rentCents', 'depositCents', 'startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'terminationNotice', 'landlordSignature', 'tenantSignature', 'signedChecklistId', 'createdAt', 'updatedAt']) &&
                        (isAdmin() || (hasAnyVerifiedRole(['LANDLORD', 'PROPERTY_MANAGER']) && request.auth.uid in request.resource.data.authorizedUids && isActiveOrgMember(request.resource.data.orgId))) &&
                        exists(/databases/$(database)/documents/units/$(request.resource.data.unitId)) &&
                        get(/databases/$(database)/documents/units/$(request.resource.data.unitId)).data.orgId == request.resource.data.orgId &&
                        get(/databases/$(database)/documents/units/$(request.resource.data.unitId)).data.propertyId == request.resource.data.propertyId &&
                        get(/databases/$(database)/documents/units/$(request.resource.data.unitId)).data.ownerUid == request.resource.data.ownerUid &&
                        request.auth.uid in get(/databases/$(database)/documents/units/$(request.resource.data.unitId)).data.authorizedUids;
-      allow update: if canUpdateLease(leaseId);
+      allow update: if isSignedIn() && canAdminUpdateLease(leaseId);
+      allow update: if isSignedIn() && canLandlordOrManagerUpdateLease(leaseId);
+      allow update: if isSignedIn() && canTenantCounterSignLease(leaseId);
       allow delete: if isAdmin() && isValidId(leaseId);
     }
 
@@ -1807,7 +1928,9 @@ service cloud.firestore {
         isAdmin()
       );
       allow create: if isSignedIn() && canCreateMoveInConditionChecklist(checklistId);
-      allow update: if isSignedIn() && canUpdateMoveInConditionChecklist(checklistId);
+      allow update: if isSignedIn() && canAdminUpdateConditionChecklist(checklistId);
+      allow update: if isSignedIn() && canLandlordUpdateConditionChecklist(checklistId);
+      allow update: if isSignedIn() && canTenantUpdateConditionChecklist(checklistId);
       allow delete: if isSignedIn() && isValidId(checklistId) && (
         isAdmin() ||
         (hasVerifiedRole('LANDLORD') && resource.data.ownerUid == request.auth.uid && resource.data.status == 'DRAFT' && isActiveOrgOwner(resource.data.orgId))

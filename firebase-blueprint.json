@@ -193,6 +193,9 @@
         "creditBalanceCents": { "type": "integer" },
         "termsSummary": { "type": "string" },
         "terminationNotice": { "type": "string" },
+        "landlordSignature": { "type": "object" },
+        "tenantSignature": { "type": "object" },
+        "signedChecklistId": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -568,6 +571,8 @@
         "tenantSummary": { "type": "string" },
         "acknowledgedAtEpochMs": { "type": "integer" },
         "acknowledgedByUid": { "type": "string" },
+        "landlordSignature": { "type": "object" },
+        "tenantSignature": { "type": "object" },
         "createdByUid": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }

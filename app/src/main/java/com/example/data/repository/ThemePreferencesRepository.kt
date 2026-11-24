@@ -20,7 +20,7 @@ class ThemePreferencesRepository(private val context: Context) {
 
     val themeMode: Flow<ThemeMode> = context.rentFlowDataStore.data.map { prefs ->
         val raw = prefs[themeKey]
-        ThemeMode.entries.firstOrNull { it.name == raw } ?: ThemeMode.SYSTEM
+        ThemeMode.entries.firstOrNull { it.name == raw } ?: ThemeMode.LIGHT
     }
 
     suspend fun setThemeMode(mode: ThemeMode) {
