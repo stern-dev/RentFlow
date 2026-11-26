@@ -1,17 +1,21 @@
 package com.example.data.ai
 
+import android.graphics.Bitmap
 import android.util.Log
 import com.example.domain.finance.CurrencyUtils
 import com.example.domain.finance.PortfolioSummary
+import com.example.domain.model.DocumentType
 import com.example.domain.model.Invoice
 import com.example.domain.model.MaintenanceCategory
 import com.example.domain.model.MaintenancePriority
 import com.example.domain.model.Property
 import com.example.domain.model.RentalUnit
 import com.example.domain.model.UnitStatus
+import com.example.ui.media.DocumentScanProcessor
 import com.google.firebase.Firebase
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.Schema
+import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -19,6 +23,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
+import kotlin.math.roundToLong
 
 private const val TAG = "AiAssistantRepo"
 private const val AI_TIMEOUT_MS = 60_000L
@@ -37,6 +42,22 @@ data class MaintenanceTriageSuggestion(
     val tenantReplyDraft: String,
     val technicianActionNote: String
 )
+
+data class DocumentOcrExtraction(
+    val title: String,
+    val documentType: DocumentType,
+    val referenceCode: String?,
+    val amountCents: Long?,
+    val documentDate: String?,
+    val summary: String
+)
+
+sealed interface ScanOcrUiState {
+    data object Idle : ScanOcrUiState
+    data object Loading : ScanOcrUiState
+    data class Success(val extraction: DocumentOcrExtraction) : ScanOcrUiState
+    data class Error(val message: String) : ScanOcrUiState
+}
 
 class AiAssistantRepository {
 
@@ -71,6 +92,46 @@ class AiAssistantRepository {
             generationConfig = generationConfig {
                 responseMimeType = "application/json"
                 responseSchema = triageSchema
+            }
+        )
+    }
+
+    private val documentOcrSchema by lazy {
+        Schema.obj(
+            properties = mapOf(
+                "title" to Schema.string(
+                    description = "Short human-readable document title (e.g., Signed Lease Agreement - Unit B2 or M-Pesa Payment Receipt)"
+                ),
+                "documentType" to Schema.enumeration(
+                    values = DocumentType.entries.map { it.name },
+                    description = "Best matching category for this document"
+                ),
+                "referenceCode" to Schema.string(
+                    description = "Receipt number, M-Pesa transaction code, invoice ID, or national ID number if visible",
+                    nullable = true
+                ),
+                "amountKes" to Schema.double(
+                    description = "Total Kenyan Shilling (KES) amount shown on the receipt or lease rent, if clearly visible",
+                    nullable = true
+                ),
+                "documentDate" to Schema.string(
+                    description = "Visible document date formatted cleanly (e.g. 2026-11-25 or Nov 25, 2026)",
+                    nullable = true
+                ),
+                "summary" to Schema.string(
+                    description = "1-2 concise sentences summarizing key parties, terms, or line items visible on the document"
+                )
+            ),
+            optionalProperties = listOf("referenceCode", "amountKes", "documentDate")
+        )
+    }
+
+    private val documentOcrModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = "gemini-3.8-flash",
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = documentOcrSchema
             }
         )
     }
@@ -171,6 +232,53 @@ class AiAssistantRepository {
         }
     }
 
+    suspend fun extractDocumentFields(
+        bitmap: Bitmap,
+        hintType: DocumentType? = null
+    ): Result<DocumentOcrExtraction> {
+        val scaledBitmap = DocumentScanProcessor.scaleForAiOcr(bitmap, maxDimPx = 1280)
+        val hintText = hintType?.let { "Expected document category hint: ${it.label} (${it.name})." } ?: ""
+        val prompt = """
+            You are a Kenyan property & rental finance document reader for RentFlow.
+            Analyze this scanned document image (lease agreement, M-Pesa/bank payment receipt, hardware/utility expense voucher, or tenant ID).
+            $hintText
+            Extract:
+            - title: concise descriptive title
+            - documentType: one of ${DocumentType.entries.joinToString(", ") { it.name }}
+            - referenceCode: exact M-Pesa transaction code, receipt number, invoice ID, or ID number if visible (null if none)
+            - amountKes: numeric Kenyan Shilling amount if clearly shown (null if none)
+            - documentDate: visible date string (null if none)
+            - summary: 1-2 short sentences of key details (parties, unit, or line items).
+            Never fabricate numbers or codes not visible in the image.
+        """.trimIndent()
+
+        return try {
+            val response = withTimeout(AI_TIMEOUT_MS) {
+                documentOcrModel.generateContent(
+                    content {
+                        image(scaledBitmap)
+                        text(prompt)
+                    }
+                )
+            }
+            val jsonText = response.text
+                ?: return Result.failure(IllegalStateException("AI returned an empty document extraction response."))
+            Result.success(parseDocumentOcrJson(jsonText, hintType))
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "Document OCR timed out", e)
+            Result.failure(IllegalStateException("Document extraction timed out after 60 seconds. Please try again.", e))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Document OCR failed", e)
+            Result.failure(IllegalStateException(e.localizedMessage ?: "Smart extraction failed.", e))
+        } finally {
+            if (scaledBitmap !== bitmap) {
+                scaledBitmap.recycle()
+            }
+        }
+    }
+
     private fun streamTextPrompt(
         prompt: String,
         timeoutMessage: String,
@@ -246,6 +354,41 @@ class AiAssistantRepository {
                 suggestedCategory = category,
                 tenantReplyDraft = reply,
                 technicianActionNote = techNote
+            )
+        }
+
+        internal fun parseDocumentOcrJson(
+            jsonString: String,
+            fallbackType: DocumentType? = null
+        ): DocumentOcrExtraction {
+            val json = JSONObject(jsonString)
+            val typeName = json.optString("documentType", fallbackType?.name ?: DocumentType.OTHER.name)
+            val resolvedType = DocumentType.entries.firstOrNull { it.name.equals(typeName, ignoreCase = true) }
+                ?: fallbackType
+                ?: DocumentType.OTHER
+            val title = json.optString("title", "").trim()
+                .ifBlank { resolvedType.label }
+                .take(140)
+            val refCode = if (json.isNull("referenceCode")) null else {
+                json.optString("referenceCode", "").trim().uppercase().take(60).takeIf { it.isNotBlank() && !it.equals("null", true) }
+            }
+            val amountKes = if (json.isNull("amountKes")) null else {
+                val raw = json.optDouble("amountKes", Double.NaN)
+                if (raw.isFinite() && raw > 0.0 && raw <= 10_000_000.0) {
+                    (raw * 100.0).roundToLong().takeIf { it > 0L }
+                } else null
+            }
+            val dateText = if (json.isNull("documentDate")) null else {
+                json.optString("documentDate", "").trim().take(40).takeIf { it.isNotBlank() && !it.equals("null", true) }
+            }
+            val summary = json.optString("summary", "").trim().take(500)
+            return DocumentOcrExtraction(
+                title = title,
+                documentType = resolvedType,
+                referenceCode = refCode,
+                amountCents = amountKes,
+                documentDate = dateText,
+                summary = summary
             )
         }
     }

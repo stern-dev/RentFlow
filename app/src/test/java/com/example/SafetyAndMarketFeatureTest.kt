@@ -392,7 +392,7 @@ class SafetyAndMarketFeatureTest {
                     defaultPhone = "+254712345678",
                     isBusy = false,
                     onDismiss = {},
-                    onSubmit = { _, _, _, _, _, _, _, _ -> }
+                    onSubmit = { _, _, _, _, _, _, _, _, _ -> }
                 )
             }
         }

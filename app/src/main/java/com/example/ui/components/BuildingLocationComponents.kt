@@ -86,12 +86,14 @@ import com.example.domain.location.BuildingLocationResolver
 import com.example.domain.location.BuildingPinGroup
 import com.example.domain.location.ResolvedBuildingLocation
 import com.example.domain.model.RentalUnit
-import com.example.ui.theme.ChampagneAccent
-import com.example.ui.theme.ChampagneContainer
-import com.example.ui.theme.ChampagneLight
+import com.example.ui.theme.BrushedSilver
+import com.example.ui.theme.CobaltContainer
+import com.example.ui.theme.CobaltLight
 import com.example.ui.theme.DarkTextPrimary
-import com.example.ui.theme.ObsidianPrimary
-import com.example.ui.theme.ObsidianSecondary
+import com.example.ui.theme.MidnightInk
+import com.example.ui.theme.MidnightSlate
+import com.example.ui.theme.MutedCobalt
+import com.example.ui.theme.PaperWhite
 import com.example.ui.theme.StatusInfo
 import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.TabularMoneyStyle
@@ -334,14 +336,14 @@ private fun StyledKenyaMapFallbackSurface(
             .background(
                 Brush.linearGradient(
                     listOf(
-                        ObsidianPrimary.copy(alpha = 0.94f),
-                        ObsidianSecondary.copy(alpha = 0.92f)
+                        MidnightInk.copy(alpha = 0.96f),
+                        MidnightSlate.copy(alpha = 0.94f)
                     )
                 )
             )
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val gridColor = ChampagneLight.copy(alpha = 0.14f)
+            val gridColor = BrushedSilver.copy(alpha = 0.14f)
             val stepX = size.width / 8f
             val stepY = size.height / 5f
             for (i in 1..7) {
@@ -362,12 +364,12 @@ private fun StyledKenyaMapFallbackSurface(
             }
             val center = Offset(size.width / 2f, size.height / 2f)
             drawCircle(
-                color = (if (isExactPin) ChampagneAccent else StatusWarning).copy(alpha = 0.22f),
+                color = (if (isExactPin) CobaltLight else StatusWarning).copy(alpha = 0.24f),
                 radius = 34.dp.toPx(),
                 center = center
             )
             drawCircle(
-                color = (if (isExactPin) ChampagneAccent else StatusWarning).copy(alpha = 0.45f),
+                color = (if (isExactPin) CobaltLight else StatusWarning).copy(alpha = 0.45f),
                 radius = 16.dp.toPx(),
                 center = center
             )
@@ -385,12 +387,12 @@ private fun StyledKenyaMapFallbackSurface(
                 modifier = Modifier
                     .size(40.dp)
                     .clip(CircleShape)
-                    .background(if (isExactPin) ChampagneAccent else StatusWarning)
+                    .background(if (isExactPin) MutedCobalt else StatusWarning)
             ) {
                 Icon(
                     imageVector = Icons.Filled.LocationOn,
                     contentDescription = "Map Pin",
-                    tint = ObsidianPrimary,
+                    tint = PaperWhite,
                     modifier = Modifier.size(24.dp)
                 )
             }
@@ -405,7 +407,7 @@ private fun StyledKenyaMapFallbackSurface(
             Text(
                 text = BuildingLocationResolver.formatCoordinates(latitude, longitude),
                 style = MaterialTheme.typography.labelSmall,
-                color = ChampagneContainer
+                color = CobaltContainer
             )
         }
     }
@@ -555,8 +557,8 @@ fun DiscoveryMapView(
             Card(
                 shape = MaterialTheme.shapes.large,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
-                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp)

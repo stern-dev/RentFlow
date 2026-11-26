@@ -12,6 +12,12 @@ const {
   buildChecklistTransitionDispatch,
   buildSettlementTransitionDispatch,
 } = require("./handoverHelpers");
+const {
+  formatKesWhole: formatKesAutomation,
+  evaluateLeaseRenewalCandidate,
+  evaluateOverdueLateFeeCandidate,
+  buildLeaseRenewalDispatch,
+} = require("./automationHelpers");
 
 initializeApp();
 
@@ -625,3 +631,258 @@ exports.onDepositSettlementWritten = onDocumentWritten(
     );
   }
 );
+
+/**
+ * Dispatches idempotent FCM push notifications when a lease renewal offer is
+ * sent, auto-renewed, or accepted/declined by the tenant.
+ */
+exports.onLeaseUpdated = onDocumentWritten(
+  {
+    document: "leases/{leaseId}",
+    database: DATABASE_ID,
+  },
+  async (event) => {
+    const before = event.data?.before?.data() || null;
+    const after = event.data?.after?.data() || null;
+    if (!after) return;
+
+    const leaseId = event.params.leaseId;
+    const plan = buildLeaseRenewalDispatch(leaseId, before, after);
+    if (!plan) return;
+
+    const db = getFirestore(DATABASE_ID);
+    const claimed = await claimServerEventIdempotency(db, plan.eventKey, {
+      entityType: "Lease",
+      entityId: leaseId,
+      eventType: plan.eventType,
+      status: plan.status,
+    });
+    if (!claimed) return;
+
+    const tokenEntries = await fetchActiveTokensForUsers(db, plan.recipients, "notifyRentDue");
+    await dispatchPush(db, tokenEntries, RENT_CHANNEL_ID, {
+      title: plan.title,
+      body: plan.body,
+      data: {
+        eventType: plan.eventType,
+        targetRoute: plan.targetRoute,
+        targetTab: String(plan.targetTab || ""),
+        leaseId: plan.leaseId,
+        unitId: plan.unitId,
+        status: plan.status,
+        recipientRole: plan.recipientRole,
+        title: plan.title,
+        body: plan.body,
+      },
+    });
+  }
+);
+
+/**
+ * Runs daily at 09:05 Africa/Nairobi to process configured lease auto-renewals /
+ * renewal offer dispatches and assess one-time percentage late fees on overdue
+ * invoices past their grace period.
+ */
+exports.scheduledLeaseAndLateFeeAutomation = onSchedule(
+  {
+    schedule: "every day 09:05",
+    timeZone: "Africa/Nairobi",
+  },
+  async () => {
+    const db = getFirestore(DATABASE_ID);
+    const nowMs = Date.now();
+
+    const activeLeasesSnap = await db
+      .collection("leases")
+      .where("status", "==", "ACTIVE")
+      .get();
+
+    const leasesById = new Map();
+    let autoRenewedCount = 0;
+    let offersSentCount = 0;
+
+    for (const leaseDoc of activeLeasesSnap.docs) {
+      const lease = leaseDoc.data() || {};
+      leasesById.set(leaseDoc.id, lease);
+
+      const candidate = evaluateLeaseRenewalCandidate(lease, nowMs);
+      if (!candidate) continue;
+
+      const updated = await db.runTransaction(async (tx) => {
+        const fresh = await tx.get(leaseDoc.ref);
+        if (!fresh.exists) return false;
+        const d = fresh.data() || {};
+        if (d.status !== "ACTIVE") return false;
+        if (d.lastRenewalProcessedForEndMs === d.endDateEpochMs) return false;
+        if (d.renewalOfferStatus === "PENDING" || d.renewalOfferStatus === "DECLINED") return false;
+
+        const baseUpdates = {
+          lastRenewalProcessedForEndMs: d.endDateEpochMs,
+          updatedAt: FieldValue.serverTimestamp(),
+        };
+        if (candidate.actionType === "AUTO_RENEW") {
+          tx.update(leaseDoc.ref, {
+            ...baseUpdates,
+            endDateEpochMs: candidate.projectedEndDateEpochMs,
+            rentCents: candidate.projectedRentCents,
+            renewalOfferStatus: "AUTO_RENEWED",
+          });
+        } else {
+          tx.update(leaseDoc.ref, {
+            ...baseUpdates,
+            renewalOfferStatus: "PENDING",
+            offeredRentCents: candidate.projectedRentCents,
+            offeredEndDateEpochMs: candidate.projectedEndDateEpochMs,
+            renewalOfferedAtEpochMs: nowMs,
+          });
+        }
+        return true;
+      });
+
+      if (!updated) continue;
+
+      const unitLabel = `${lease.propertyName || "Property"} • Unit ${lease.unitNumber || "-"}`;
+      const endLabel = formatNairobiShortDate(candidate.projectedEndDateEpochMs);
+      const rentLabel = formatKesAutomation(candidate.projectedRentCents);
+      const isAuto = candidate.actionType === "AUTO_RENEW";
+      if (isAuto) autoRenewedCount += 1;
+      else offersSentCount += 1;
+
+      if (lease.tenantUid) {
+        await db.collection("notifications").add({
+          recipientUid: lease.tenantUid,
+          senderUid: lease.ownerUid || "system_lease_automation",
+          orgId: lease.orgId || "system_automation",
+          type: "LEASE",
+          title: isAuto ? "Lease Auto-Renewed" : "Lease Renewal Offer Available",
+          body: isAuto
+            ? `${unitLabel} renewed automatically through ${endLabel} at ${rentLabel}/mo.`.slice(0, 500)
+            : `Review your renewal offer for ${unitLabel}: ${rentLabel}/mo until ${endLabel}.`.slice(0, 500),
+          relatedEntityId: leaseDoc.id,
+          read: false,
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+
+      await db.collection("audit_logs").add({
+        orgId: String(lease.orgId || ""),
+        actorUid: "system_lease_automation",
+        actorName: "Automated Scheduler",
+        action: isAuto ? "AUTO_RENEW_LEASE" : "SEND_RENEWAL_OFFER",
+        entityType: "Lease",
+        entityId: leaseDoc.id,
+        details: `${isAuto ? "Auto-renewed" : "Dispatched renewal offer for"} ${unitLabel} (${rentLabel}/mo until ${endLabel})`.slice(0, 500),
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    }
+
+    const openInvoicesSnap = await db
+      .collection("invoices")
+      .where("status", "in", ["UNPAID", "PARTIALLY_PAID", "OVERDUE"])
+      .get();
+
+    let lateFeesAssessed = 0;
+
+    for (const invDoc of openInvoicesSnap.docs) {
+      const inv = invDoc.data() || {};
+      if (!inv.leaseId) continue;
+
+      let lease = leasesById.get(inv.leaseId);
+      if (!lease) {
+        const fetched = await db.collection("leases").doc(inv.leaseId).get();
+        if (fetched.exists) {
+          lease = fetched.data() || {};
+          leasesById.set(inv.leaseId, lease);
+        }
+      }
+      if (!lease) continue;
+
+      const feeCandidate = evaluateOverdueLateFeeCandidate(inv, lease, nowMs);
+      if (!feeCandidate) continue;
+
+      const assessed = await db.runTransaction(async (tx) => {
+        const fresh = await tx.get(invDoc.ref);
+        if (!fresh.exists) return null;
+        const d = fresh.data() || {};
+        if (d.status === "PAID" || d.status === "CANCELLED") return null;
+        if (d.lateFeeAppliedAtEpochMs || d.lateFeeWaived === true || Number(d.lateFeeCents || 0) > 0) {
+          return null;
+        }
+        const recomputed = evaluateOverdueLateFeeCandidate(d, lease, nowMs);
+        if (!recomputed) return null;
+
+        tx.update(invDoc.ref, {
+          lateFeeCents: recomputed.lateFeeCents,
+          lateFeeRatePercent: recomputed.lateFeeRatePercent,
+          lateFeeAppliedAtEpochMs: nowMs,
+          gracePeriodEndsEpochMs: recomputed.gracePeriodEndsEpochMs,
+          totalDueCents: recomputed.newTotalDueCents,
+          outstandingCents: recomputed.newOutstandingCents,
+          status: "OVERDUE",
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        return recomputed;
+      });
+
+      if (!assessed) continue;
+      lateFeesAssessed += 1;
+
+      const feeLabel = formatKesAutomation(assessed.lateFeeCents);
+      const title = `Late Fee Assessed (${inv.invoiceNumber || invDoc.id})`.slice(0, 140);
+      const body = `A ${assessed.lateFeeRatePercent}% late fee (${feeLabel}) was added to ${inv.invoiceNumber || "your invoice"} after the grace period.`.slice(0, 500);
+
+      if (inv.tenantUid) {
+        await db.collection("notifications").add({
+          recipientUid: inv.tenantUid,
+          senderUid: inv.ownerUid || "system_late_fee_automation",
+          orgId: inv.orgId || "system_automation",
+          type: "INVOICE",
+          title,
+          body,
+          relatedEntityId: invDoc.id,
+          read: false,
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+
+        const tokenEntries = await fetchActiveTokensForUsers(db, [inv.tenantUid], "notifyRentDue");
+        if (tokenEntries.length > 0) {
+          await dispatchPush(db, tokenEntries, RENT_CHANNEL_ID, {
+            title,
+            body,
+            data: {
+              eventType: "LATE_FEE_ASSESSED",
+              targetRoute: "tenant_pay",
+              targetTab: "0",
+              invoiceId: invDoc.id,
+              unitId: String(inv.unitId || ""),
+              status: "OVERDUE",
+              recipientRole: "TENANT",
+              title,
+              body,
+            },
+          });
+        }
+      }
+
+      await db.collection("audit_logs").add({
+        orgId: String(inv.orgId || ""),
+        actorUid: "system_late_fee_automation",
+        actorName: "Automated Scheduler",
+        action: "ASSESS_LATE_FEES",
+        entityType: "Invoice",
+        entityId: invDoc.id,
+        details: `Assessed ${feeLabel} (${assessed.lateFeeRatePercent}%) late fee on ${inv.invoiceNumber || invDoc.id}`.slice(0, 500),
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    }
+
+    logger.info("Scheduled lease renewal & late fee automation completed.", {
+      autoRenewedCount,
+      offersSentCount,
+      lateFeesAssessed,
+    });
+  }
+);
+

@@ -1,10 +1,13 @@
 package com.example.ui.viewmodel
 
+import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.ai.AiAssistantRepository
 import com.example.data.ai.AiTaskState
 import com.example.data.ai.MaintenanceTriageSuggestion
+import com.example.data.ai.ScanOcrUiState
+import com.example.data.repository.DocumentScannerRepository
 import com.example.data.repository.FinanceRepository
 import com.example.data.repository.HandoverRepository
 import com.example.data.repository.MoveInChecklistRepository
@@ -18,15 +21,22 @@ import com.example.domain.model.DepositDeductionItem
 import com.example.domain.model.DepositSettlement
 import com.example.domain.model.DepositSettlementStatus
 import com.example.domain.model.DigitalSignature
+import com.example.domain.model.DocumentType
 import com.example.domain.model.InspectionRoom
 import com.example.domain.model.MoveInChecklist
 import com.example.domain.model.MoveInConditionChecklist
 import com.example.domain.model.RefundMethod
+import com.example.domain.model.ScanFilterMode
+import com.example.domain.model.ScannedDocument
+import com.example.domain.model.UserRole
+import com.example.domain.finance.CurrencyUtils
 import com.example.domain.finance.FinancialEngine
+import com.example.domain.finance.LeaseAutomationEngine
 import com.example.domain.finance.MonthlyCashFlowPoint
 import com.example.domain.finance.PortfolioSummary
 import com.example.domain.model.Announcement
 import com.example.domain.model.ApplicationStatus
+import com.example.domain.model.EscalationType
 import com.example.domain.model.Expense
 import com.example.domain.model.ExpenseCategory
 import com.example.domain.model.Invoice
@@ -38,6 +48,7 @@ import com.example.domain.model.PaymentChannelType
 import com.example.domain.model.PaymentMethod
 import com.example.domain.model.Property
 import com.example.domain.model.PropertyCategory
+import com.example.domain.model.RenewalMode
 import com.example.domain.model.RentalApplication
 import com.example.domain.model.RentalUnit
 import com.example.domain.model.UnitStatus
@@ -82,7 +93,8 @@ class LandlordViewModel(
     private val currentUserId: String,
     private val aiRepo: AiAssistantRepository = AiAssistantRepository(),
     private val handoverRepo: HandoverRepository? = null,
-    private val conditionChecklistRepo: MoveInChecklistRepository? = null
+    private val conditionChecklistRepo: MoveInChecklistRepository? = null,
+    private val documentRepo: DocumentScannerRepository? = null
 ) : ViewModel() {
 
     private val _activeOrgId = MutableStateFlow<String?>(null)
@@ -196,6 +208,18 @@ class LandlordViewModel(
 
     val depositSettlements: StateFlow<UiState<List<DepositSettlement>>> = (handoverRepo?.observeSettlementsForLandlord(currentUserId) ?: flowOf(emptyList()))
         .asUiState("LandlordVM", "Failed to load deposit settlements")
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val scannedDocuments: StateFlow<UiState<List<ScannedDocument>>> = _activeOrgId
+        .flatMapLatest { orgId ->
+            if (orgId.isNullOrBlank() || documentRepo == null) {
+                flowOf(emptyList())
+            } else {
+                documentRepo.observeDocumentsForOrganization(orgId, currentUserId)
+            }
+        }
+        .asUiState("LandlordVM", "Failed to load scanned documents")
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
     private val _checklistOverviewFilter = MutableStateFlow(ChecklistOverviewFilterState())
@@ -575,13 +599,40 @@ class LandlordViewModel(
         dueDayOfMonth: Long,
         termsSummary: String,
         actorName: String,
+        renewalMode: RenewalMode = RenewalMode.OFFER,
+        renewalLeadDays: Long = 30L,
+        renewalDurationMonths: Long = 12L,
+        escalationType: EscalationType = EscalationType.NONE,
+        escalationPercent: Double = 0.0,
+        escalationFixedCents: Long = 0L,
+        gracePeriodDays: Long = 5L,
+        lateFeePercent: Double = 5.0,
+        lateFeeEnabled: Boolean = true,
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
             _busy.value = true
             val res = propertyRepo.createLease(
-                unit, tenantUid, tenantName, tenantPhone, rentCents, depositCents,
-                startDateEpochMs, endDateEpochMs, dueDayOfMonth, termsSummary, actorName
+                unit = unit,
+                tenantUid = tenantUid,
+                tenantName = tenantName,
+                tenantPhone = tenantPhone,
+                rentCents = rentCents,
+                depositCents = depositCents,
+                startDateEpochMs = startDateEpochMs,
+                endDateEpochMs = endDateEpochMs,
+                dueDayOfMonth = dueDayOfMonth,
+                termsSummary = termsSummary,
+                actorName = actorName,
+                renewalMode = renewalMode,
+                renewalLeadDays = renewalLeadDays,
+                renewalDurationMonths = renewalDurationMonths,
+                escalationType = escalationType,
+                escalationPercent = escalationPercent,
+                escalationFixedCents = escalationFixedCents,
+                gracePeriodDays = gracePeriodDays,
+                lateFeePercent = lateFeePercent,
+                lateFeeEnabled = lateFeeEnabled
             )
             _busy.value = false
             res.fold(
@@ -602,6 +653,82 @@ class LandlordViewModel(
             _feedback.value = res.fold(
                 onSuccess = { "Lease renewed" },
                 onFailure = { it.localizedMessage ?: "Renewal failed" }
+            )
+        }
+    }
+
+    fun updateLeaseAutomationPolicy(
+        lease: Lease,
+        renewalMode: RenewalMode,
+        renewalLeadDays: Long,
+        renewalDurationMonths: Long,
+        escalationType: EscalationType,
+        escalationPercent: Double,
+        escalationFixedCents: Long,
+        gracePeriodDays: Long,
+        lateFeePercent: Double,
+        lateFeeEnabled: Boolean,
+        actorName: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _busy.value = true
+            val res = propertyRepo.updateLeaseAutomationPolicy(
+                lease = lease,
+                renewalMode = renewalMode,
+                renewalLeadDays = renewalLeadDays,
+                renewalDurationMonths = renewalDurationMonths,
+                escalationType = escalationType,
+                escalationPercent = escalationPercent,
+                escalationFixedCents = escalationFixedCents,
+                gracePeriodDays = gracePeriodDays,
+                lateFeePercent = lateFeePercent,
+                lateFeeEnabled = lateFeeEnabled,
+                actorName = actorName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = "Automation policy saved for Unit ${lease.unitNumber}"
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to update automation policy"
+                }
+            )
+        }
+    }
+
+    fun runLeaseRenewalSweep(
+        actorName: String,
+        onComplete: (PropertyRepository.LeaseRenewalSweepSummary) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val leaseList = (leases.value as? UiState.Success)?.data ?: emptyList()
+            _busy.value = true
+            val res = propertyRepo.runLeaseRenewalSweep(leaseList, actorName)
+            _busy.value = false
+            res.fold(
+                onSuccess = { summary ->
+                    _feedback.value = when {
+                        summary.totalProcessedCount == 0 && summary.skippedOwnerOnlyCount > 0 ->
+                            "Skipped ${summary.skippedOwnerOnlyCount} lease(s) with rent increases (requires Owner)"
+                        summary.totalProcessedCount == 0 ->
+                            "No leases are due for renewal or offer dispatch right now"
+                        else -> {
+                            val parts = buildList {
+                                if (summary.autoRenewedCount > 0) add("${summary.autoRenewedCount} auto-renewed")
+                                if (summary.offersSentCount > 0) add("${summary.offersSentCount} offer(s) sent")
+                                if (summary.skippedOwnerOnlyCount > 0) add("${summary.skippedOwnerOnlyCount} owner-only skipped")
+                            }
+                            "Renewal sweep complete: ${parts.joinToString(", ")}"
+                        }
+                    }
+                    onComplete(summary)
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Renewal sweep failed"
+                }
             )
         }
     }
@@ -848,6 +975,62 @@ class LandlordViewModel(
         }
     }
 
+    fun runLateFeeAssessmentSweep(
+        actorName: String,
+        onComplete: (FinanceRepository.LateFeeSweepSummary) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val invList = (invoices.value as? UiState.Success)?.data ?: emptyList()
+            val leaseList = (leases.value as? UiState.Success)?.data ?: emptyList()
+            _busy.value = true
+            val res = financeRepo.runLateFeeAssessmentSweep(
+                invoices = invList,
+                leases = leaseList,
+                actorName = actorName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = { summary ->
+                    _feedback.value = if (summary.assessedCount == 0) {
+                        "No overdue invoices past grace period require late fees right now"
+                    } else {
+                        "Assessed late fees on ${summary.assessedCount} invoice(s) totaling ${CurrencyUtils.formatKes(summary.totalFeeCents, true)}"
+                    }
+                    onComplete(summary)
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Late fee assessment failed"
+                }
+            )
+        }
+    }
+
+    fun waiveInvoiceLateFee(
+        invoice: Invoice,
+        reason: String,
+        actorName: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _busy.value = true
+            val res = financeRepo.waiveInvoiceLateFee(
+                invoice = invoice,
+                reason = reason,
+                actorName = actorName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = "Late fee waived on ${invoice.invoiceNumber}"
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to waive late fee"
+                }
+            )
+        }
+    }
+
     fun recordLandlordPayment(
         lease: Lease,
         referenceCode: String,
@@ -858,6 +1041,7 @@ class LandlordViewModel(
         paymentMethodId: String? = null,
         paymentChannelType: PaymentChannelType? = null,
         paymentShortcode: String? = null,
+        onPaymentCreated: (String) -> Unit = {},
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
@@ -905,6 +1089,7 @@ class LandlordViewModel(
                 verRes.fold(
                     onSuccess = { receipt ->
                         _feedback.value = "Payment recorded & verified ($receipt)"
+                        onPaymentCreated(payId)
                         onSuccess()
                     },
                     onFailure = { _feedback.value = it.localizedMessage ?: "Recorded, pending verification" }
@@ -912,8 +1097,9 @@ class LandlordViewModel(
             } else {
                 _busy.value = false
                 subRes.fold(
-                    onSuccess = {
+                    onSuccess = { payId ->
                         _feedback.value = "Payment recorded"
+                        onPaymentCreated(payId)
                         onSuccess()
                     },
                     onFailure = { _feedback.value = it.localizedMessage ?: "Failed to record payment" }
@@ -984,6 +1170,7 @@ class LandlordViewModel(
         amountCents: Long,
         documentRef: String?,
         actorName: String,
+        onExpenseCreated: (String) -> Unit = {},
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
@@ -993,8 +1180,9 @@ class LandlordViewModel(
             )
             _busy.value = false
             res.fold(
-                onSuccess = {
+                onSuccess = { expenseId ->
                     _feedback.value = "Expense logged"
+                    onExpenseCreated(expenseId)
                     onSuccess()
                 },
                 onFailure = { _feedback.value = it.localizedMessage ?: "Failed to record expense" }
@@ -1194,5 +1382,128 @@ class LandlordViewModel(
     fun clearAiTriage() {
         triageJob?.cancel()
         _aiTriageState.value = AiTriageUiState.Idle
+    }
+
+    // --- Integrated Document Scanner & OCR ---
+
+    private val _scanOcrState = MutableStateFlow<ScanOcrUiState>(ScanOcrUiState.Idle)
+    val scanOcrState: StateFlow<ScanOcrUiState> = _scanOcrState.asStateFlow()
+    private var ocrJob: Job? = null
+
+    fun extractDocumentWithAi(bitmap: Bitmap, hintType: DocumentType? = null) {
+        ocrJob?.cancel()
+        ocrJob = viewModelScope.launch {
+            _scanOcrState.value = ScanOcrUiState.Loading
+            val res = aiRepo.extractDocumentFields(bitmap, hintType)
+            _scanOcrState.value = res.fold(
+                onSuccess = { ScanOcrUiState.Success(it) },
+                onFailure = { ScanOcrUiState.Error(it.localizedMessage ?: "Smart extraction failed.") }
+            )
+        }
+    }
+
+    fun clearDocumentOcr() {
+        ocrJob?.cancel()
+        _scanOcrState.value = ScanOcrUiState.Idle
+    }
+
+    fun uploadScannedDocument(
+        unit: RentalUnit,
+        lease: Lease? = null,
+        documentType: DocumentType,
+        title: String,
+        notes: String?,
+        filterMode: ScanFilterMode,
+        pageImageRefs: List<String>,
+        extractedReference: String? = null,
+        extractedAmountCents: Long? = null,
+        extractedDateText: String? = null,
+        extractedSummary: String? = null,
+        aiExtracted: Boolean = false,
+        tenantVisible: Boolean = true,
+        paymentId: String? = null,
+        expenseId: String? = null,
+        uploaderName: String,
+        uploaderRole: UserRole,
+        onSuccess: (String) -> Unit = {}
+    ) {
+        val repo = documentRepo ?: run {
+            _feedback.value = "Document scanner repository unavailable"
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            val res = repo.uploadScannedDocument(
+                unit = unit,
+                lease = lease,
+                documentType = documentType,
+                title = title,
+                notes = notes,
+                filterMode = filterMode,
+                pageImageRefs = pageImageRefs,
+                extractedReference = extractedReference,
+                extractedAmountCents = extractedAmountCents,
+                extractedDateText = extractedDateText,
+                extractedSummary = extractedSummary,
+                aiExtracted = aiExtracted,
+                tenantVisible = tenantVisible,
+                paymentId = paymentId,
+                expenseId = expenseId,
+                uploaderName = uploaderName,
+                uploaderRole = uploaderRole
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = { docId ->
+                    _feedback.value = "Document uploaded to unit vault"
+                    onSuccess(docId)
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to upload scanned document"
+                }
+            )
+        }
+    }
+
+    fun updateScannedDocumentMetadata(
+        document: ScannedDocument,
+        title: String,
+        notes: String?,
+        tenantVisible: Boolean,
+        onSuccess: () -> Unit = {}
+    ) {
+        val repo = documentRepo ?: return
+        viewModelScope.launch {
+            _busy.value = true
+            val res = repo.updateDocumentMetadata(document, title, notes, tenantVisible)
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = "Document details updated"
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to update document"
+                }
+            )
+        }
+    }
+
+    fun deleteScannedDocument(documentId: String, onSuccess: () -> Unit = {}) {
+        val repo = documentRepo ?: return
+        viewModelScope.launch {
+            _busy.value = true
+            val res = repo.deleteDocument(documentId)
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = "Scanned document removed"
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to delete document"
+                }
+            )
+        }
     }
 }

@@ -3399,3 +3399,650 @@ test("Dual-party digital signatures: atomic checklist + lease sign-off, spoofing
     })
   );
 });
+
+test("Scanned documents vault: landlord/manager CRUD, tenant receipt upload, visibility gating, and cross-user isolation", async () => {
+  const now = pastDate(10000);
+  const sampleJpegDataUri =
+    "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=";
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Wanjiku Kamau", email: "owner@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: MANAGER_UID, fullName: "Grace Wambui", email: "manager@example.com", roles: ["PROPERTY_MANAGER"], now });
+    await seedUser(db, { uid: TENANT_UID, fullName: "Brian Ochieng", email: "tenant@example.com", roles: ["TENANT"], now });
+    await seedUser(db, { uid: OTHER_TENANT_UID, fullName: "Other Tenant", email: "other@example.com", roles: ["TENANT"], now });
+
+    await db.collection("organizations").doc("org_scan").set({
+      name: "Kilimani Estates",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID, MANAGER_UID],
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await db.collection("properties").doc("prop_scan").set({
+      orgId: "org_scan",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      name: "Argwings Court",
+      category: "APARTMENTS",
+      city: "Nairobi",
+      neighborhood: "Kilimani",
+      addressLine: "Argwings Kodhek Rd",
+      description: "Apartments",
+      imageRefs: [],
+      archived: false,
+      hasPublishedUnits: true,
+      totalUnitsCount: 1,
+      occupiedUnitsCount: 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await db.collection("units").doc("unit_scan").set({
+      propertyId: "prop_scan",
+      propertyName: "Argwings Court",
+      propertyCity: "Nairobi",
+      propertyCategory: "APARTMENTS",
+      orgId: "org_scan",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      unitNumber: "A-01",
+      unitType: "TWO_BEDROOM",
+      rentCents: 4500000,
+      depositCents: 4500000,
+      status: "OCCUPIED",
+      amenities: ["Parking"],
+      description: "2BR unit",
+      imageRefs: [],
+      published: false,
+      currentTenantUid: TENANT_UID,
+      currentLeaseId: "lease_scan",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await db.collection("leases").doc("lease_scan").set({
+      orgId: "org_scan",
+      propertyId: "prop_scan",
+      propertyName: "Argwings Court",
+      unitId: "unit_scan",
+      unitNumber: "A-01",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      tenantPhone: "+254712345678",
+      rentCents: 4500000,
+      depositCents: 4500000,
+      startDateEpochMs: Date.now() - 86400000,
+      endDateEpochMs: Date.now() + 86400000 * 365,
+      dueDayOfMonth: 5,
+      status: "ACTIVE",
+      creditBalanceCents: 0,
+      termsSummary: "12-month standard tenancy agreement.",
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+  const landlordDb = authedDb(LANDLORD_UID, "owner@example.com");
+  const managerDb = authedDb(MANAGER_UID, "manager@example.com");
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com");
+  const otherTenantDb = authedDb(OTHER_TENANT_UID, "other@example.com");
+
+  // 1. Landlord uploads a tenant-visible LEASE_AGREEMENT
+  await assertSucceeds(
+    landlordDb.collection("scanned_documents").doc("doc_lease_1").set({
+      orgId: "org_scan",
+      propertyId: "prop_scan",
+      propertyName: "Argwings Court",
+      unitId: "unit_scan",
+      unitNumber: "A-01",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      leaseId: "lease_scan",
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      documentType: "LEASE_AGREEMENT",
+      title: "Signed 2026 Lease Agreement",
+      notes: "Scanned at handover",
+      filterMode: "CRISP_DOCUMENT",
+      pageImageRefs: [sampleJpegDataUri, sampleJpegDataUri],
+      extractedReference: "LSE-2026-A01",
+      extractedAmountCents: 4500000,
+      extractedDateText: "2026-11-01",
+      extractedSummary: "12-month lease for Unit A-01",
+      aiExtracted: true,
+      tenantVisible: true,
+      uploadedByUid: LANDLORD_UID,
+      uploadedByName: "Wanjiku Kamau",
+      uploadedByRole: "LANDLORD",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // 2. Manager uploads an internal EXPENSE_RECEIPT (tenantVisible: false)
+  await assertSucceeds(
+    managerDb.collection("scanned_documents").doc("doc_expense_1").set({
+      orgId: "org_scan",
+      propertyId: "prop_scan",
+      propertyName: "Argwings Court",
+      unitId: "unit_scan",
+      unitNumber: "A-01",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      leaseId: "lease_scan",
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      expenseId: "exp_1",
+      documentType: "EXPENSE_RECEIPT",
+      title: "Plumbing Repair Invoice",
+      filterMode: "BLACK_AND_WHITE",
+      pageImageRefs: [sampleJpegDataUri],
+      extractedReference: "INV-9981",
+      extractedAmountCents: 350000,
+      aiExtracted: true,
+      tenantVisible: false,
+      uploadedByUid: MANAGER_UID,
+      uploadedByName: "Grace Wambui",
+      uploadedByRole: "PROPERTY_MANAGER",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // 3. Reject non-JPEG pageImageRefs or oversized/empty pages
+  await assertFails(
+    landlordDb.collection("scanned_documents").doc("doc_bad_img").set({
+      orgId: "org_scan",
+      propertyId: "prop_scan",
+      propertyName: "Argwings Court",
+      unitId: "unit_scan",
+      unitNumber: "A-01",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      documentType: "OTHER",
+      title: "Bad Image Format",
+      filterMode: "ORIGINAL",
+      pageImageRefs: ["https://evil.example/leak.png"],
+      aiExtracted: false,
+      tenantVisible: false,
+      uploadedByUid: LANDLORD_UID,
+      uploadedByName: "Wanjiku Kamau",
+      uploadedByRole: "LANDLORD",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // 4. Tenant can upload PAYMENT_RECEIPT tied to their lease, but CANNOT upload LEASE_AGREEMENT or hide tenantVisible
+  await assertSucceeds(
+    tenantDb.collection("scanned_documents").doc("doc_tenant_rcp").set({
+      orgId: "org_scan",
+      propertyId: "prop_scan",
+      propertyName: "Argwings Court",
+      unitId: "unit_scan",
+      unitNumber: "A-01",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      leaseId: "lease_scan",
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      paymentId: "pay_scan_1",
+      documentType: "PAYMENT_RECEIPT",
+      title: "November Rent Bank Slip",
+      filterMode: "CRISP_DOCUMENT",
+      pageImageRefs: [sampleJpegDataUri],
+      extractedReference: "UBK8812XYZ",
+      extractedAmountCents: 4500000,
+      aiExtracted: true,
+      tenantVisible: true,
+      uploadedByUid: TENANT_UID,
+      uploadedByName: "Brian Ochieng",
+      uploadedByRole: "TENANT",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  await assertFails(
+    tenantDb.collection("scanned_documents").doc("doc_tenant_forged_lease").set({
+      orgId: "org_scan",
+      propertyId: "prop_scan",
+      propertyName: "Argwings Court",
+      unitId: "unit_scan",
+      unitNumber: "A-01",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      leaseId: "lease_scan",
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      documentType: "LEASE_AGREEMENT",
+      title: "Self-forged lease",
+      filterMode: "ORIGINAL",
+      pageImageRefs: [sampleJpegDataUri],
+      aiExtracted: false,
+      tenantVisible: true,
+      uploadedByUid: TENANT_UID,
+      uploadedByName: "Brian Ochieng",
+      uploadedByRole: "TENANT",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // 5. Organization query & Tenant dual-filter query alignment
+  const orgDocs = await assertSucceeds(
+    landlordDb.collection("scanned_documents")
+      .where("orgId", "==", "org_scan")
+      .where("authorizedUids", "array-contains", LANDLORD_UID)
+      .get()
+  );
+  if (orgDocs.size !== 3) {
+    throw new Error(`Expected 3 scanned docs for org_scan, got ${orgDocs.size}`);
+  }
+
+  const tenantDocs = await assertSucceeds(
+    tenantDb.collection("scanned_documents")
+      .where("tenantUid", "==", TENANT_UID)
+      .where("tenantVisible", "==", true)
+      .get()
+  );
+  if (tenantDocs.size !== 2) {
+    throw new Error(`Expected 2 visible docs for tenant, got ${tenantDocs.size}`);
+  }
+
+  // Tenant CANNOT read hidden EXPENSE_RECEIPT or list without tenantVisible == true
+  await assertFails(tenantDb.collection("scanned_documents").doc("doc_expense_1").get());
+  await assertFails(tenantDb.collection("scanned_documents").where("tenantUid", "==", TENANT_UID).get());
+
+  // Unrelated user & unauthenticated user are blocked completely
+  await assertFails(unauthDb.collection("scanned_documents").doc("doc_lease_1").get());
+  await assertFails(otherTenantDb.collection("scanned_documents").doc("doc_lease_1").get());
+  await assertFails(
+    otherTenantDb.collection("scanned_documents")
+      .where("tenantUid", "==", TENANT_UID)
+      .where("tenantVisible", "==", true)
+      .get()
+  );
+
+  // 6. Metadata updates: landlord/manager can update title/notes/tenantVisible; immutable fields & tenant updates fail
+  await assertSucceeds(
+    landlordDb.collection("scanned_documents").doc("doc_lease_1").update({
+      title: "Signed 2026 Lease Agreement (Verified)",
+      tenantVisible: true,
+      updatedAt: pastDate(500),
+    })
+  );
+  await assertFails(
+    landlordDb.collection("scanned_documents").doc("doc_lease_1").update({
+      pageImageRefs: [sampleJpegDataUri],
+      updatedAt: pastDate(400),
+    })
+  );
+  await assertFails(
+    tenantDb.collection("scanned_documents").doc("doc_tenant_rcp").update({
+      title: "Tenant edit attempt",
+      updatedAt: pastDate(400),
+    })
+  );
+
+  // 7. Delete rules: tenant can delete own receipt, cannot delete landlord's lease; landlord/owner can delete org docs
+  await assertFails(tenantDb.collection("scanned_documents").doc("doc_lease_1").delete());
+  await assertSucceeds(tenantDb.collection("scanned_documents").doc("doc_tenant_rcp").delete());
+  await assertSucceeds(landlordDb.collection("scanned_documents").doc("doc_expense_1").delete());
+  await assertSucceeds(landlordDb.collection("scanned_documents").doc("doc_lease_1").delete());
+});
+
+test("Automated lease renewals and late fees: RBAC, tenant renewal offer response, and owner-only fee waiver", async () => {
+  const now = pastDate(5000);
+  const startMs = Date.now() - 335 * 86400000;
+  const endMs = Date.now() + 20 * 86400000;
+  const extendedEndMs = Date.now() + 385 * 86400000;
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, {
+      uid: LANDLORD_UID,
+      fullName: "Wanjiku Kamau",
+      email: "landlord@example.com",
+      roles: ["LANDLORD"],
+      now,
+    });
+    await seedUser(db, {
+      uid: MANAGER_UID,
+      fullName: "Grace Wambui",
+      email: "manager@example.com",
+      roles: ["PROPERTY_MANAGER"],
+      now,
+    });
+    await seedUser(db, {
+      uid: TENANT_UID,
+      fullName: "Brian Ochieng",
+      email: "tenant@example.com",
+      roles: ["TENANT"],
+      now,
+    });
+    await seedUser(db, {
+      uid: OTHER_TENANT_UID,
+      fullName: "Other Tenant",
+      email: "other@example.com",
+      roles: ["TENANT"],
+      now,
+    });
+    await db.collection("organizations").doc("org_auto").set({
+      name: "Nairobi Prime Holdings",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID, MANAGER_UID],
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("properties").doc("prop_auto").set({
+      orgId: "org_auto",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      name: "Riverside Lofts",
+      category: "APARTMENTS",
+      city: "Nairobi",
+      neighborhood: "Westlands",
+      addressLine: "Riverside Dr",
+      description: "Modern suites",
+      imageRefs: [],
+      archived: false,
+      hasPublishedUnits: false,
+      totalUnitsCount: 1,
+      occupiedUnitsCount: 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("units").doc("unit_auto").set({
+      propertyId: "prop_auto",
+      propertyName: "Riverside Lofts",
+      propertyCity: "Nairobi",
+      propertyCategory: "APARTMENTS",
+      orgId: "org_auto",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      unitNumber: "R-102",
+      unitType: "TWO_BEDROOM",
+      rentCents: 5000000,
+      depositCents: 5000000,
+      status: "OCCUPIED",
+      amenities: ["Parking"],
+      description: "2BR unit",
+      imageRefs: [],
+      published: false,
+      currentTenantUid: TENANT_UID,
+      currentLeaseId: "lease_auto_1",
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  const landlordDb = authedDb(LANDLORD_UID, "landlord@example.com");
+  const managerDb = authedDb(MANAGER_UID, "manager@example.com");
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com");
+  const otherTenantDb = authedDb(OTHER_TENANT_UID, "other@example.com");
+
+  // 1. Landlord creates lease with automation policy fields
+  await assertSucceeds(
+    landlordDb.collection("leases").doc("lease_auto_1").set({
+      orgId: "org_auto",
+      propertyId: "prop_auto",
+      propertyName: "Riverside Lofts",
+      unitId: "unit_auto",
+      unitNumber: "R-102",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      tenantPhone: "+254712345678",
+      rentCents: 5000000,
+      depositCents: 5000000,
+      startDateEpochMs: startMs,
+      endDateEpochMs: endMs,
+      dueDayOfMonth: 5,
+      status: "ACTIVE",
+      creditBalanceCents: 0,
+      termsSummary: "Standard 12-month agreement",
+      renewalMode: "OFFER",
+      renewalLeadDays: 30,
+      renewalDurationMonths: 12,
+      escalationType: "PERCENT",
+      escalationPercent: 5.0,
+      escalationFixedCents: 0,
+      gracePeriodDays: 5,
+      lateFeePercent: 5.0,
+      lateFeeEnabled: true,
+      renewalOfferStatus: "NONE",
+      lastRenewalProcessedForEndMs: 0,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Reject out-of-range automation fields (lateFeePercent > 50)
+  await assertFails(
+    landlordDb.collection("leases").doc("lease_auto_1").update({
+      lateFeePercent: 75.0,
+      updatedAt: pastDate(2000),
+    })
+  );
+
+  // 2. Owner can update pricing/escalation/late-fee fields; Manager CANNOT
+  await assertSucceeds(
+    landlordDb.collection("leases").doc("lease_auto_1").update({
+      escalationPercent: 6.0,
+      gracePeriodDays: 7,
+      lateFeePercent: 4.5,
+      updatedAt: pastDate(1900),
+    })
+  );
+  await assertFails(
+    managerDb.collection("leases").doc("lease_auto_1").update({
+      escalationPercent: 10.0,
+      updatedAt: pastDate(1800),
+    })
+  );
+  await assertFails(
+    managerDb.collection("leases").doc("lease_auto_1").update({
+      rentCents: 5500000,
+      updatedAt: pastDate(1800),
+    })
+  );
+  await assertFails(
+    managerDb.collection("leases").doc("lease_auto_1").update({
+      lateFeePercent: 2.0,
+      updatedAt: pastDate(1800),
+    })
+  );
+
+  // 3. Manager CAN update renewalMode / renewalLeadDays / renewalDurationMonths and dispatch a PENDING offer
+  await assertSucceeds(
+    managerDb.collection("leases").doc("lease_auto_1").update({
+      renewalMode: "OFFER",
+      renewalLeadDays: 45,
+      renewalDurationMonths: 12,
+      renewalOfferStatus: "PENDING",
+      offeredRentCents: 5300000,
+      offeredEndDateEpochMs: extendedEndMs,
+      renewalOfferedAtEpochMs: Date.now() - 10000,
+      lastRenewalProcessedForEndMs: endMs,
+      updatedAt: pastDate(1700),
+    })
+  );
+
+  // 4. Tenant CANNOT accept with tampered rent or endDate, or impersonation by another tenant
+  await assertFails(
+    otherTenantDb.collection("leases").doc("lease_auto_1").update({
+      renewalOfferStatus: "ACCEPTED",
+      renewalRespondedAtEpochMs: Date.now() - 5000,
+      rentCents: 5300000,
+      endDateEpochMs: extendedEndMs,
+      updatedAt: pastDate(1600),
+    })
+  );
+  await assertFails(
+    tenantDb.collection("leases").doc("lease_auto_1").update({
+      renewalOfferStatus: "ACCEPTED",
+      renewalRespondedAtEpochMs: Date.now() - 5000,
+      rentCents: 1000000,
+      endDateEpochMs: extendedEndMs,
+      updatedAt: pastDate(1600),
+    })
+  );
+  await assertFails(
+    tenantDb.collection("leases").doc("lease_auto_1").update({
+      renewalOfferStatus: "ACCEPTED",
+      renewalRespondedAtEpochMs: Date.now() - 5000,
+      rentCents: 5300000,
+      endDateEpochMs: extendedEndMs + 99999999,
+      updatedAt: pastDate(1600),
+    })
+  );
+
+  // Tenant CAN accept PENDING offer with exact offeredRentCents and offeredEndDateEpochMs
+  await assertSucceeds(
+    tenantDb.collection("leases").doc("lease_auto_1").update({
+      renewalOfferStatus: "ACCEPTED",
+      renewalRespondedAtEpochMs: Date.now() - 5000,
+      renewalResponseNote: "Happy to renew for another 12 months.",
+      rentCents: 5300000,
+      endDateEpochMs: extendedEndMs,
+      status: "ACTIVE",
+      updatedAt: pastDate(1500),
+    })
+  );
+
+  // Once ACCEPTED, tenant CANNOT re-accept or decline
+  await assertFails(
+    tenantDb.collection("leases").doc("lease_auto_1").update({
+      renewalOfferStatus: "DECLINED",
+      renewalRespondedAtEpochMs: Date.now() - 4000,
+      updatedAt: pastDate(1400),
+    })
+  );
+
+  // Re-dispatch a PENDING offer so tenant decline flow is also verified
+  await assertSucceeds(
+    landlordDb.collection("leases").doc("lease_auto_1").update({
+      renewalOfferStatus: "PENDING",
+      offeredRentCents: 5500000,
+      offeredEndDateEpochMs: extendedEndMs + 365 * 86400000,
+      renewalOfferedAtEpochMs: Date.now() - 3000,
+      updatedAt: pastDate(1300),
+    })
+  );
+  await assertSucceeds(
+    tenantDb.collection("leases").doc("lease_auto_1").update({
+      renewalOfferStatus: "DECLINED",
+      renewalRespondedAtEpochMs: Date.now() - 2000,
+      renewalResponseNote: "Rent increase is too steep.",
+      updatedAt: pastDate(1200),
+    })
+  );
+
+  // 5. Invoices: create with gracePeriodEndsEpochMs, manager CAN assess late fee, ONLY owner can waive late fee
+  const dueMs = Date.now() - 10 * 86400000;
+  const graceEndsMs = dueMs + 5 * 86400000;
+  await assertSucceeds(
+    landlordDb.collection("invoices").doc("inv_auto_1").set({
+      invoiceNumber: "INV-202611-R102",
+      leaseId: "lease_auto_1",
+      orgId: "org_auto",
+      propertyId: "prop_auto",
+      propertyName: "Riverside Lofts",
+      unitId: "unit_auto",
+      unitNumber: "R-102",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      billingPeriod: "2026-11",
+      rentCents: 5000000,
+      extraChargesCents: 0,
+      previousBalanceCents: 0,
+      totalDueCents: 5000000,
+      paidCents: 0,
+      outstandingCents: 5000000,
+      dueDateEpochMs: dueMs,
+      gracePeriodEndsEpochMs: graceEndsMs,
+      status: "UNPAID",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Manager assesses 4.5% late fee (225,000 cents)
+  await assertSucceeds(
+    managerDb.collection("invoices").doc("inv_auto_1").update({
+      lateFeeCents: 225000,
+      lateFeeRatePercent: 4.5,
+      lateFeeAppliedAtEpochMs: Date.now() - 1000,
+      gracePeriodEndsEpochMs: graceEndsMs,
+      totalDueCents: 5225000,
+      outstandingCents: 5225000,
+      status: "OVERDUE",
+      updatedAt: pastDate(900),
+    })
+  );
+
+  // Manager CANNOT waive a late fee (owner-only)
+  await assertFails(
+    managerDb.collection("invoices").doc("inv_auto_1").update({
+      lateFeeWaived: true,
+      lateFeeWaivedReason: "Goodwill gesture",
+      lateFeeWaivedAtEpochMs: Date.now() - 500,
+      totalDueCents: 5000000,
+      outstandingCents: 5000000,
+      updatedAt: pastDate(800),
+    })
+  );
+
+  // Tenant CANNOT waive their own late fee
+  await assertFails(
+    tenantDb.collection("invoices").doc("inv_auto_1").update({
+      lateFeeWaived: true,
+      lateFeeWaivedReason: "Self waive",
+      lateFeeWaivedAtEpochMs: Date.now() - 500,
+      updatedAt: pastDate(800),
+    })
+  );
+
+  // Owner CAN waive late fee and recalculate totals
+  await assertSucceeds(
+    landlordDb.collection("invoices").doc("inv_auto_1").update({
+      lateFeeWaived: true,
+      lateFeeWaivedReason: "Approved extension due to bank delay",
+      lateFeeWaivedAtEpochMs: Date.now() - 400,
+      totalDueCents: 5000000,
+      outstandingCents: 5000000,
+      updatedAt: pastDate(700),
+    })
+  );
+});
+
+

@@ -71,14 +71,17 @@ import com.example.domain.model.ChecklistOverviewSummary
 import com.example.domain.model.ChecklistWorkflowStage
 import com.example.domain.model.Lease
 import com.example.domain.model.MoveInConditionChecklist
-import com.example.ui.theme.ChampagneAccent
-import com.example.ui.theme.ChampagneLight
+import com.example.ui.theme.BrushedSilver
+import com.example.ui.theme.CobaltLight
 import com.example.ui.theme.DarkOutline
+import com.example.ui.theme.DarkPrimaryContainer
 import com.example.ui.theme.DarkSurfaceVariant
 import com.example.ui.theme.DarkTextPrimary
 import com.example.ui.theme.DarkTextSecondary
 import com.example.ui.theme.LocalIsDarkTheme
-import com.example.ui.theme.ObsidianPrimary
+import com.example.ui.theme.MidnightInk
+import com.example.ui.theme.MidnightSlate
+import com.example.ui.theme.MutedCobalt
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusErrorBg
 import com.example.ui.theme.StatusErrorBgDark
@@ -236,15 +239,22 @@ fun ChecklistOverviewTab(
 @Composable
 private fun ChecklistPortfolioHealthCard(summary: ChecklistOverviewSummary) {
     val isDark = LocalIsDarkTheme.current
+    val gradientColors = if (isDark) {
+        listOf(DarkSurfaceVariant, DarkPrimaryContainer)
+    } else {
+        listOf(MidnightInk, MidnightSlate)
+    }
     Card(
         shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(
-            containerColor = if (isDark) DarkSurfaceVariant else ObsidianPrimary
-        ),
-        border = if (isDark) BorderStroke(1.dp, DarkOutline) else null,
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+        border = BorderStroke(1.dp, if (isDark) DarkOutline else BrushedSilver.copy(alpha = 0.24f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         modifier = Modifier
             .fillMaxWidth()
+            .background(
+                brush = Brush.linearGradient(gradientColors),
+                shape = MaterialTheme.shapes.large
+            )
             .testTag("checklist_overview_health_card")
     ) {
         Column(
@@ -270,14 +280,15 @@ private fun ChecklistPortfolioHealthCard(summary: ChecklistOverviewSummary) {
                     )
                 }
                 Surface(
-                    color = ChampagneAccent.copy(alpha = 0.22f),
+                    color = MutedCobalt.copy(alpha = 0.34f),
+                    border = BorderStroke(1.dp, BrushedSilver.copy(alpha = 0.32f)),
                     shape = RoundedCornerShape(999.dp)
                 ) {
                     Text(
                         text = "${summary.completionRatePercent}% Done",
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
-                        color = ChampagneLight,
+                        color = BrushedSilver,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                     )
                 }
@@ -289,7 +300,7 @@ private fun ChecklistPortfolioHealthCard(summary: ChecklistOverviewSummary) {
                         (summary.completedCount.toFloat() / summary.totalCount.toFloat()).coerceIn(0f, 1f)
                     } else 0f
                 },
-                color = ChampagneLight,
+                color = CobaltLight,
                 trackColor = DarkTextPrimary.copy(alpha = 0.18f),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -387,9 +398,9 @@ private fun ChecklistKpiTile(
         ),
         border = BorderStroke(
             width = if (selected) 2.dp else 1.dp,
-            color = if (selected) accentColor else MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
+            color = if (selected) accentColor else MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = modifier
             .heightIn(min = 88.dp)
             .clip(MaterialTheme.shapes.medium)
@@ -535,7 +546,7 @@ private fun ChecklistOverviewItemCard(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, borderColor),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = Modifier
             .fillMaxWidth()
             .testTag("checklist_overview_card_${item.lease.id}")

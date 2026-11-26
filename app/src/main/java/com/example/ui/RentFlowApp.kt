@@ -87,6 +87,7 @@ import androidx.compose.material3.Surface
 import com.example.data.notifications.FcmTokenRepository
 import com.example.data.notifications.NotificationHelper
 import com.example.data.notifications.PushDeepLink
+import com.example.data.repository.DocumentScannerRepository
 import com.example.data.repository.FinanceRepository
 import com.example.data.repository.HandoverRepository
 import com.example.data.repository.MoveInChecklistRepository
@@ -309,6 +310,7 @@ private fun AuthenticatedRentFlowShell(
     val paymentMethodRepo = remember(context) { PaymentMethodRepository(context) }
     val mpesaReceiptRepo = remember(context) { MpesaReceiptRepository(context) }
     val mpesaPrefsRepo = remember(context) { MpesaCapturePreferencesRepository(context) }
+    val documentRepo = remember(context) { DocumentScannerRepository(context) }
 
     val authViewModel: AuthViewModel = viewModel(
         key = "auth_$uid",
@@ -379,6 +381,7 @@ private fun AuthenticatedRentFlowShell(
                         paymentMethodRepo = paymentMethodRepo,
                         mpesaReceiptRepo = mpesaReceiptRepo,
                         mpesaPrefsRepo = mpesaPrefsRepo,
+                        documentRepo = documentRepo,
                         currentTheme = currentTheme,
                         onThemeChange = onThemeChange,
                         pendingPushDeepLink = pendingPushDeepLink,
@@ -421,6 +424,7 @@ private fun RoleRoutedWorkspace(
     paymentMethodRepo: PaymentMethodRepository,
     mpesaReceiptRepo: MpesaReceiptRepository,
     mpesaPrefsRepo: MpesaCapturePreferencesRepository,
+    documentRepo: DocumentScannerRepository,
     currentTheme: ThemeMode,
     onThemeChange: (ThemeMode) -> Unit,
     pendingPushDeepLink: PushDeepLink?,
@@ -451,7 +455,8 @@ private fun RoleRoutedWorkspace(
                     opsRepo,
                     uid,
                     handoverRepo = handoverRepo,
-                    conditionChecklistRepo = conditionChecklistRepo
+                    conditionChecklistRepo = conditionChecklistRepo,
+                    documentRepo = documentRepo
                 ) as T
         }
     )
@@ -480,7 +485,8 @@ private fun RoleRoutedWorkspace(
                     opsRepo,
                     uid,
                     handoverRepo = handoverRepo,
-                    conditionChecklistRepo = conditionChecklistRepo
+                    conditionChecklistRepo = conditionChecklistRepo,
+                    documentRepo = documentRepo
                 ) as T
         }
     )
@@ -1070,16 +1076,16 @@ private fun RoleRoutedWorkspace(
                             }
                         }
                     )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.55f))
                 }
             },
             bottomBar = {
                 if (!useRail && !showNotificationsOverlay && !showPaymentMethodsOverlay && !showMpesaReconcileOverlay) {
                     Column {
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.55f))
                         NavigationBar(
                             containerColor = MaterialTheme.colorScheme.surface,
-                            tonalElevation = 0.dp
+                            tonalElevation = 2.dp
                         ) {
                             navItems.forEach { item ->
                                 NavigationBarItem(
@@ -1089,7 +1095,7 @@ private fun RoleRoutedWorkspace(
                                     label = { Text(item.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                     colors = NavigationBarItemDefaults.colors(
                                         selectedIconColor = MaterialTheme.colorScheme.secondary,
-                                        selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                                        selectedTextColor = MaterialTheme.colorScheme.primary,
                                         indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
                                         unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                         unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1113,7 +1119,7 @@ private fun RoleRoutedWorkspace(
                                 label = { Text(item.label, maxLines = 1) },
                                 colors = NavigationRailItemDefaults.colors(
                                     selectedIconColor = MaterialTheme.colorScheme.secondary,
-                                    selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                                    selectedTextColor = MaterialTheme.colorScheme.primary,
                                     indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
                                     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant

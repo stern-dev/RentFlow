@@ -80,9 +80,10 @@ import com.example.domain.model.Lease
 import com.example.domain.model.MoveInConditionChecklist
 import com.example.domain.model.UserRole
 import com.example.ui.media.MaintenancePhotoProcessor
-import com.example.ui.theme.CrispWhite
-import com.example.ui.theme.HairlineStoneBorder
-import com.example.ui.theme.ObsidianPrimary
+import com.example.ui.theme.BrushedSilver
+import com.example.ui.theme.CoolSlateBorder
+import com.example.ui.theme.MidnightInk
+import com.example.ui.theme.PaperWhite
 import com.example.ui.theme.StatusInfo
 import com.example.ui.theme.StatusWarning
 import java.io.ByteArrayOutputStream
@@ -169,7 +170,7 @@ object DigitalSignatureCodec {
         val scaleX = targetWidth.toFloat() / sourceWidth
         val scaleY = targetHeight.toFloat() / sourceHeight
         val paint = Paint().apply {
-            color = AndroidColor.rgb(11, 31, 58)
+            color = AndroidColor.rgb(15, 30, 54)
             style = Paint.Style.STROKE
             strokeWidth = 5f
             strokeCap = Paint.Cap.ROUND
@@ -177,7 +178,7 @@ object DigitalSignatureCodec {
             isAntiAlias = true
         }
         val dotPaint = Paint().apply {
-            color = AndroidColor.rgb(11, 31, 58)
+            color = AndroidColor.rgb(15, 30, 54)
             style = Paint.Style.FILL
             isAntiAlias = true
         }
@@ -533,7 +534,7 @@ fun DigitalSignaturePadCard(
                         .fillMaxWidth()
                         .height(140.dp)
                         .clip(MaterialTheme.shapes.medium)
-                        .background(CrispWhite)
+                        .background(PaperWhite)
                         .border(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.65f), MaterialTheme.shapes.medium)
                         .padding(12.dp)
                 ) {
@@ -548,7 +549,7 @@ fun DigitalSignaturePadCard(
                         Text(
                             text = "Prior signature attached",
                             style = MaterialTheme.typography.bodySmall,
-                            color = ObsidianPrimary
+                            color = MidnightInk
                         )
                     }
                 }
@@ -558,8 +559,8 @@ fun DigitalSignaturePadCard(
                         .fillMaxWidth()
                         .height(180.dp)
                         .clip(MaterialTheme.shapes.medium)
-                        .background(CrispWhite)
-                        .border(1.dp, HairlineStoneBorder, MaterialTheme.shapes.medium)
+                        .background(PaperWhite)
+                        .border(1.dp, CoolSlateBorder, MaterialTheme.shapes.medium)
                         .semantics { contentDescription = "Draw signature pad for $title" }
                         .testTag("signature_canvas_$roleKey")
                 ) {
@@ -604,7 +605,7 @@ fun DigitalSignaturePadCard(
                         // Subtle signature baseline
                         val baselineY = size.height * 0.76f
                         drawLine(
-                            color = Color(0xFFCBD5E1),
+                            color = BrushedSilver,
                             start = Offset(24f, baselineY),
                             end = Offset(size.width - 24f, baselineY),
                             strokeWidth = 2f
@@ -620,7 +621,7 @@ fun DigitalSignaturePadCard(
                             if (stroke.size == 1) {
                                 val p = stroke.first()
                                 drawCircle(
-                                    color = ObsidianPrimary,
+                                    color = MidnightInk,
                                     radius = 4f,
                                     center = Offset(p.x, p.y)
                                 )
@@ -641,7 +642,7 @@ fun DigitalSignaturePadCard(
                                 }
                                 drawPath(
                                     path = path,
-                                    color = ObsidianPrimary,
+                                    color = MidnightInk,
                                     style = Stroke(
                                         width = 5f,
                                         cap = StrokeCap.Round,
@@ -761,8 +762,8 @@ fun SignedSignaturePreviewCard(
                         .fillMaxWidth()
                         .height(110.dp)
                         .clip(MaterialTheme.shapes.small)
-                        .background(CrispWhite)
-                        .border(1.dp, HairlineStoneBorder, MaterialTheme.shapes.small)
+                        .background(PaperWhite)
+                        .border(1.dp, CoolSlateBorder, MaterialTheme.shapes.small)
                         .padding(8.dp)
                 ) {
                     if (bmp != null) {
@@ -776,7 +777,7 @@ fun SignedSignaturePreviewCard(
                         Text(
                             text = "Digitally Executed",
                             style = MaterialTheme.typography.bodySmall,
-                            color = ObsidianPrimary
+                            color = MidnightInk
                         )
                     }
                 }

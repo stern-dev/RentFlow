@@ -1,7 +1,11 @@
 package com.example.ui.viewmodel
 
+import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.ai.AiAssistantRepository
+import com.example.data.ai.ScanOcrUiState
+import com.example.data.repository.DocumentScannerRepository
 import com.example.data.repository.FinanceRepository
 import com.example.data.repository.HandoverRepository
 import com.example.data.repository.MoveInChecklistRepository
@@ -15,6 +19,7 @@ import com.example.domain.location.ResolvedBuildingLocation
 import com.example.domain.model.Announcement
 import com.example.domain.model.DepositSettlement
 import com.example.domain.model.DigitalSignature
+import com.example.domain.model.DocumentType
 import com.example.domain.model.Invoice
 import com.example.domain.model.Lease
 import com.example.domain.model.LeaseStatus
@@ -28,7 +33,11 @@ import com.example.domain.model.PaymentChannelType
 import com.example.domain.model.PaymentMethod
 import com.example.domain.model.PaymentVerificationSource
 import com.example.domain.model.RentalUnit
+import com.example.domain.model.ScanFilterMode
+import com.example.domain.model.ScannedDocument
+import com.example.domain.model.UserRole
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -46,7 +55,9 @@ class TenantViewModel(
     private val opsRepo: OperationsRepository,
     private val currentUserId: String,
     private val handoverRepo: HandoverRepository? = null,
-    private val conditionChecklistRepo: MoveInChecklistRepository? = null
+    private val conditionChecklistRepo: MoveInChecklistRepository? = null,
+    private val documentRepo: DocumentScannerRepository? = null,
+    private val aiRepo: AiAssistantRepository = AiAssistantRepository()
 ) : ViewModel() {
 
     val leases: StateFlow<UiState<List<Lease>>> = propertyRepo.observeMyLeases(currentUserId)
@@ -79,6 +90,10 @@ class TenantViewModel(
 
     val depositSettlements: StateFlow<UiState<List<DepositSettlement>>> = (handoverRepo?.observeSettlementsForTenant(currentUserId) ?: flowOf(emptyList()))
         .asUiState("TenantVM", "Failed to load deposit settlements")
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
+
+    val scannedDocuments: StateFlow<UiState<List<ScannedDocument>>> = (documentRepo?.observeDocumentsForTenant(currentUserId) ?: flowOf(emptyList()))
+        .asUiState("TenantVM", "Failed to load unit documents")
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
     val linkedLeases: StateFlow<List<Lease>> = leases
@@ -388,6 +403,132 @@ class TenantViewModel(
                 },
                 onFailure = {
                     _feedback.value = it.localizedMessage ?: "Failed to submit deposit response"
+                }
+            )
+        }
+    }
+
+    fun respondToRenewalOffer(
+        lease: Lease,
+        accept: Boolean,
+        responseNote: String?,
+        actorName: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _busy.value = true
+            val res = propertyRepo.respondToRenewalOffer(
+                lease = lease,
+                accept = accept,
+                responseNote = responseNote,
+                actorName = actorName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = if (accept) {
+                        "Lease renewal offer accepted — updated rent and term are now active"
+                    } else {
+                        "Renewal offer declined — your landlord has been notified"
+                    }
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to submit renewal response"
+                }
+            )
+        }
+    }
+
+    private val _scanOcrState = MutableStateFlow<ScanOcrUiState>(ScanOcrUiState.Idle)
+    val scanOcrState: StateFlow<ScanOcrUiState> = _scanOcrState.asStateFlow()
+    private var ocrJob: Job? = null
+
+    fun extractDocumentWithAi(bitmap: Bitmap, hintType: DocumentType? = DocumentType.PAYMENT_RECEIPT) {
+        ocrJob?.cancel()
+        ocrJob = viewModelScope.launch {
+            _scanOcrState.value = ScanOcrUiState.Loading
+            val res = aiRepo.extractDocumentFields(bitmap, hintType)
+            _scanOcrState.value = res.fold(
+                onSuccess = { ScanOcrUiState.Success(it) },
+                onFailure = { ScanOcrUiState.Error(it.localizedMessage ?: "Smart extraction failed.") }
+            )
+        }
+    }
+
+    fun clearDocumentOcr() {
+        ocrJob?.cancel()
+        _scanOcrState.value = ScanOcrUiState.Idle
+    }
+
+    fun uploadScannedDocument(
+        unit: RentalUnit,
+        lease: Lease,
+        documentType: DocumentType,
+        title: String,
+        notes: String?,
+        filterMode: ScanFilterMode,
+        pageImageRefs: List<String>,
+        extractedReference: String? = null,
+        extractedAmountCents: Long? = null,
+        extractedDateText: String? = null,
+        extractedSummary: String? = null,
+        aiExtracted: Boolean = false,
+        paymentId: String? = null,
+        uploaderName: String,
+        onSuccess: (String) -> Unit = {}
+    ) {
+        val repo = documentRepo ?: run {
+            _feedback.value = "Document scanner repository unavailable"
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            val res = repo.uploadScannedDocument(
+                unit = unit,
+                lease = lease,
+                documentType = documentType,
+                title = title,
+                notes = notes,
+                filterMode = filterMode,
+                pageImageRefs = pageImageRefs,
+                extractedReference = extractedReference,
+                extractedAmountCents = extractedAmountCents,
+                extractedDateText = extractedDateText,
+                extractedSummary = extractedSummary,
+                aiExtracted = aiExtracted,
+                tenantVisible = true,
+                paymentId = paymentId,
+                expenseId = null,
+                uploaderName = uploaderName,
+                uploaderRole = UserRole.TENANT
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = { docId ->
+                    _feedback.value = "Receipt / document uploaded to unit vault"
+                    onSuccess(docId)
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to upload scanned document"
+                }
+            )
+        }
+    }
+
+    fun deleteScannedDocument(documentId: String, onSuccess: () -> Unit = {}) {
+        val repo = documentRepo ?: return
+        viewModelScope.launch {
+            _busy.value = true
+            val res = repo.deleteDocument(documentId)
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = "Scanned document removed"
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to delete document"
                 }
             )
         }

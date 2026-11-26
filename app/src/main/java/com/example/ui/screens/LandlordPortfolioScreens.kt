@@ -35,9 +35,11 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EditLocationAlt
 import androidx.compose.material.icons.filled.ElectricBolt
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MeetingRoom
 import androidx.compose.material.icons.filled.PersonAdd
@@ -109,24 +111,37 @@ import com.example.domain.security.PermissionPolicy
 import com.example.domain.validation.PropertyUnitSchemas
 import com.example.domain.validation.ValidationResult
 import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.Checklist
+import androidx.compose.material.icons.filled.Tune
 import com.example.data.notifications.NotificationHelper
 import com.example.data.notifications.PushDeepLink
+import com.example.domain.finance.LeaseAutomationEngine
 import com.example.domain.model.DepositSettlement
 import com.example.domain.model.DepositSettlementStatus
+import com.example.domain.model.DocumentType
+import com.example.domain.model.EscalationType
 import com.example.domain.model.MoveInChecklist
 import com.example.domain.model.MoveInChecklistStatus
 import com.example.domain.model.MoveInConditionChecklist
+import com.example.domain.model.RenewalMode
+import com.example.domain.model.ScannedDocument
 import com.example.ui.components.BuildingLocationPickerDialog
 import com.example.ui.components.ChecklistOverviewTab
 import com.example.ui.components.CriticalActionConfirmationDialog
+import com.example.ui.components.DocumentScannerModal
+import com.example.ui.components.DocumentVaultDialog
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.ErrorBannerCard
 import com.example.ui.components.LandlordDepositSettlementDialog
 import com.example.ui.components.LandlordMoveInChecklistDialog
+import com.example.ui.components.LeaseAutomationBadges
+import com.example.ui.components.LeaseAutomationPolicyDialog
+import com.example.ui.components.LeaseRenewalSweepDialog
 import com.example.ui.components.LoadingStateBox
 import com.example.ui.components.MoveInChecklistPdfViewerDialog
 import com.example.ui.components.MoveInConditionChecklistFullScreenDialog
+import com.example.ui.components.PendingScanPayload
 import com.example.ui.components.PillTone
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusPill
@@ -172,6 +187,8 @@ fun LandlordPortfolioScreen(
     val checklistOverviewState by viewModel.checklistOverviewState.collectAsStateWithLifecycle()
     val checklistOverviewFilter by viewModel.checklistOverviewFilter.collectAsStateWithLifecycle()
     val settlementsState by viewModel.depositSettlements.collectAsStateWithLifecycle()
+    val scannedDocsState by viewModel.scannedDocuments.collectAsStateWithLifecycle()
+    val scanOcrState by viewModel.scanOcrState.collectAsStateWithLifecycle()
     val activeOrgId by viewModel.activeOrgId.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
 
@@ -183,6 +200,7 @@ fun LandlordPortfolioScreen(
     val checklists = (checklistsState as? UiState.Success)?.data ?: emptyList()
     val conditionChecklists = (conditionChecklistsState as? UiState.Success)?.data ?: emptyList()
     val settlements = (settlementsState as? UiState.Success)?.data ?: emptyList()
+    val scannedDocuments = (scannedDocsState as? UiState.Success)?.data ?: emptyList()
 
     val uid = currentUser.userId
     val activeRole = currentUser.activeRoleEnum()
@@ -208,6 +226,10 @@ fun LandlordPortfolioScreen(
     var leaseForConditionChecklistScreen by remember { mutableStateOf<Lease?>(null) }
     var conditionChecklistForPdfViewer by remember { mutableStateOf<Pair<MoveInConditionChecklist, Lease?>?>(null) }
     var leaseForSettlementDialog by remember { mutableStateOf<Lease?>(null) }
+    var leaseForAutomationPolicy by remember { mutableStateOf<Lease?>(null) }
+    var showRenewalSweepDialog by remember { mutableStateOf(false) }
+    var vaultTarget by remember { mutableStateOf<Pair<String?, String>?>(null) }
+    var scannerTarget by remember { mutableStateOf<Triple<RentalUnit, Lease?, DocumentType>?>(null) }
 
     LaunchedEffect(
         deepLinkTarget,
@@ -346,6 +368,7 @@ fun LandlordPortfolioScreen(
                     filteredUnitsState = filteredUnitsState,
                     filterState = unitFilterState,
                     properties = properties,
+                    scannedDocuments = scannedDocuments,
                     isBusy = busy,
                     aiDraftState = aiUnitDraftState,
                     canCreateUnit = { prop -> PermissionPolicy.canCreateUnit(uid, activeRole, prop) },
@@ -386,7 +409,15 @@ fun LandlordPortfolioScreen(
                     },
                     onClearAiDraft = { viewModel.clearUnitDraft() },
                     onDeleteUnit = { unit -> viewModel.deleteUnit(unit) },
-                    onAssignTenant = { unit -> unitForLeaseDialog = unit to null }
+                    onAssignTenant = { unit -> unitForLeaseDialog = unit to null },
+                    onOpenVault = { unit ->
+                        vaultTarget = unit?.id to (unit?.let { "${it.propertyName} • Unit ${it.unitNumber}" } ?: "Portfolio Units")
+                    },
+                    onScanForUnit = { unit ->
+                        val matchedLease = leases.firstOrNull { it.unitId == unit.id && it.statusEnum() == LeaseStatus.ACTIVE }
+                            ?: leases.firstOrNull { it.unitId == unit.id }
+                        scannerTarget = Triple(unit, matchedLease, DocumentType.LEASE_AGREEMENT)
+                    }
                 )
                 2 -> ApplicationsTab(
                     appsState = appsState,
@@ -404,9 +435,13 @@ fun LandlordPortfolioScreen(
                     checklists = checklists,
                     conditionChecklists = conditionChecklists,
                     settlements = settlements,
+                    scannedDocuments = scannedDocuments,
                     canTerminateLease = { lease -> PermissionPolicy.canTerminateLease(uid, activeRole, lease) },
                     canManageChecklist = { lease -> PermissionPolicy.canManageLeaseChecklist(uid, activeRole, lease) },
                     canManageSettlement = { lease -> PermissionPolicy.canManageDepositSettlement(uid, activeRole, lease) },
+                    canRunRenewalSweep = { lease -> PermissionPolicy.canRunLeaseRenewalSweep(uid, activeRole, lease) },
+                    onOpenRenewalSweep = { showRenewalSweepDialog = true },
+                    onEditAutomationPolicy = { lease -> leaseForAutomationPolicy = lease },
                     onExportPdf = { lease ->
                         val linkedChecklist = conditionChecklists.firstOrNull { it.leaseId == lease.id }
                         ReportExporter.exportSignedLeaseAgreementPdf(
@@ -422,6 +457,14 @@ fun LandlordPortfolioScreen(
                         conditionChecklistForPdfViewer = mcc to lease
                     },
                     onOpenSettlement = { lease -> leaseForSettlementDialog = lease },
+                    onScanLeaseDoc = { lease ->
+                        units.firstOrNull { it.id == lease.unitId }?.let { unit ->
+                            scannerTarget = Triple(unit, lease, DocumentType.LEASE_AGREEMENT)
+                        }
+                    },
+                    onOpenUnitVault = { lease ->
+                        vaultTarget = lease.unitId to "${lease.propertyName} • Unit ${lease.unitNumber}"
+                    },
                     onRenew = { lease -> leaseToRenew = lease },
                     onTerminate = { lease -> leaseToTerminate = lease }
                 )
@@ -602,10 +645,26 @@ fun LandlordPortfolioScreen(
             preselectedApp = app,
             isBusy = busy,
             onDismiss = { unitForLeaseDialog = null },
-            onCreate = { tenantUid, tenantName, tenantPhone, rentCents, depCents, startMs, endMs, dueDay, terms ->
+            onCreate = { tenantUid, tenantName, tenantPhone, rentCents, depCents, startMs, endMs, dueDay, terms, renewalMode, escalationType, escalationPercent, escalationFixedCents, graceDays, lateFeePct, lateFeeEnabled ->
                 viewModel.createLease(
-                    unit, tenantUid, tenantName, tenantPhone, rentCents, depCents,
-                    startMs, endMs, dueDay, terms, currentUser.fullName
+                    unit = unit,
+                    tenantUid = tenantUid,
+                    tenantName = tenantName,
+                    tenantPhone = tenantPhone,
+                    rentCents = rentCents,
+                    depositCents = depCents,
+                    startDateEpochMs = startMs,
+                    endDateEpochMs = endMs,
+                    dueDayOfMonth = dueDay,
+                    termsSummary = terms,
+                    actorName = currentUser.fullName,
+                    renewalMode = renewalMode,
+                    escalationType = escalationType,
+                    escalationPercent = escalationPercent,
+                    escalationFixedCents = escalationFixedCents,
+                    gracePeriodDays = graceDays,
+                    lateFeePercent = lateFeePct,
+                    lateFeeEnabled = lateFeeEnabled
                 ) {
                     unitForLeaseDialog = null
                 }
@@ -621,6 +680,48 @@ fun LandlordPortfolioScreen(
             onConfirm = { newEndMs, newRentCents ->
                 viewModel.renewLease(lease, newEndMs, newRentCents, currentUser.fullName)
                 leaseToRenew = null
+            }
+        )
+    }
+
+    leaseForAutomationPolicy?.let { lease ->
+        LeaseAutomationPolicyDialog(
+            lease = lease,
+            canEditPricing = PermissionPolicy.canEditLeaseAutomationPricing(uid, activeRole, lease),
+            isBusy = busy,
+            onDismiss = { leaseForAutomationPolicy = null },
+            onSave = { mode, leadDays, durMos, escType, escPct, escFixed, graceDays, latePct, lateEnabled ->
+                viewModel.updateLeaseAutomationPolicy(
+                    lease = lease,
+                    renewalMode = mode,
+                    renewalLeadDays = leadDays,
+                    renewalDurationMonths = durMos,
+                    escalationType = escType,
+                    escalationPercent = escPct,
+                    escalationFixedCents = escFixed,
+                    gracePeriodDays = graceDays,
+                    lateFeePercent = latePct,
+                    lateFeeEnabled = lateEnabled,
+                    actorName = currentUser.fullName,
+                    onSuccess = { leaseForAutomationPolicy = null }
+                )
+            }
+        )
+    }
+
+    if (showRenewalSweepDialog) {
+        val candidates = remember(leases) {
+            LeaseAutomationEngine.evaluateLeaseRenewals(leases)
+        }
+        LeaseRenewalSweepDialog(
+            candidates = candidates,
+            isOwnerUid = { l -> l.ownerUid == uid },
+            isBusy = busy,
+            onDismiss = { showRenewalSweepDialog = false },
+            onConfirmSweep = {
+                viewModel.runLeaseRenewalSweep(currentUser.fullName) {
+                    showRenewalSweepDialog = false
+                }
             }
         )
     }
@@ -751,6 +852,77 @@ fun LandlordPortfolioScreen(
                     actorName = currentUser.fullName,
                     onSuccess = { leaseForSettlementDialog = null }
                 )
+            }
+        )
+    }
+
+    vaultTarget?.let { (filterUnitId, subtitle) ->
+        val filteredDocs = remember(scannedDocuments, filterUnitId) {
+            if (filterUnitId.isNullOrBlank()) scannedDocuments
+            else scannedDocuments.filter { it.unitId == filterUnitId }
+        }
+        val targetUnit = remember(units, filterUnitId) {
+            filterUnitId?.let { id -> units.firstOrNull { it.id == id } } ?: units.firstOrNull()
+        }
+        DocumentVaultDialog(
+            title = "Unit Document Vault",
+            subtitle = subtitle,
+            documents = filteredDocs,
+            canUpload = targetUnit != null,
+            canDeleteDoc = { doc ->
+                doc.ownerUid == uid || doc.uploadedByUid == uid || activeRole == UserRole.ADMIN
+            },
+            canToggleTenantVisibility = true,
+            isBusy = busy,
+            onScanNewDocument = {
+                targetUnit?.let { u ->
+                    val matchedLease = leases.firstOrNull { it.unitId == u.id && it.statusEnum() == LeaseStatus.ACTIVE }
+                        ?: leases.firstOrNull { it.unitId == u.id }
+                    scannerTarget = Triple(u, matchedLease, DocumentType.LEASE_AGREEMENT)
+                }
+            },
+            onToggleTenantVisibility = { doc, visible ->
+                viewModel.updateScannedDocumentMetadata(doc, doc.title, doc.notes, visible)
+            },
+            onDeleteDocument = { doc ->
+                viewModel.deleteScannedDocument(doc.id)
+            },
+            onDismiss = { vaultTarget = null }
+        )
+    }
+
+    scannerTarget?.let { (targetUnit, targetLease, initialDocType) ->
+        DocumentScannerModal(
+            unitLabel = "${targetUnit.propertyName} • Unit ${targetUnit.unitNumber}",
+            tenantLabel = targetLease?.tenantName,
+            allowedDocumentTypes = DocumentType.entries,
+            initialDocumentType = initialDocType,
+            allowTenantVisibilityToggle = true,
+            initialTenantVisible = initialDocType in listOf(DocumentType.LEASE_AGREEMENT, DocumentType.PAYMENT_RECEIPT),
+            scanOcrState = scanOcrState,
+            onExtractWithAi = { bmp, hint -> viewModel.extractDocumentWithAi(bmp, hint) },
+            onClearOcr = { viewModel.clearDocumentOcr() },
+            onDismiss = { scannerTarget = null },
+            onConfirmScan = { payload: PendingScanPayload ->
+                viewModel.uploadScannedDocument(
+                    unit = targetUnit,
+                    lease = targetLease,
+                    documentType = payload.documentType,
+                    title = payload.title,
+                    notes = payload.notes,
+                    filterMode = payload.filterMode,
+                    pageImageRefs = payload.pageImageRefs,
+                    extractedReference = payload.extractedReference,
+                    extractedAmountCents = payload.extractedAmountCents,
+                    extractedDateText = payload.extractedDateText,
+                    extractedSummary = payload.extractedSummary,
+                    aiExtracted = payload.aiExtracted,
+                    tenantVisible = payload.tenantVisible,
+                    uploaderName = currentUser.fullName,
+                    uploaderRole = activeRole
+                ) {
+                    scannerTarget = null
+                }
             }
         )
     }
@@ -1152,6 +1324,7 @@ private fun UnitsMatrixTab(
     filteredUnitsState: UiState<List<RentalUnit>>,
     filterState: UnitMatrixFilterState,
     properties: List<Property>,
+    scannedDocuments: List<ScannedDocument>,
     isBusy: Boolean,
     aiDraftState: AiTaskState,
     canCreateUnit: (Property) -> Boolean,
@@ -1188,7 +1361,9 @@ private fun UnitsMatrixTab(
     ) -> Unit,
     onClearAiDraft: () -> Unit,
     onDeleteUnit: (RentalUnit) -> Unit,
-    onAssignTenant: (RentalUnit) -> Unit
+    onAssignTenant: (RentalUnit) -> Unit,
+    onOpenVault: (RentalUnit?) -> Unit,
+    onScanForUnit: (RentalUnit) -> Unit
 ) {
     var selectedUnit by remember { mutableStateOf<RentalUnit?>(null) }
     var unitToDelete by remember { mutableStateOf<RentalUnit?>(null) }
@@ -1218,8 +1393,8 @@ private fun UnitsMatrixTab(
                     item {
                         SectionHeader(
                             title = if (hasActiveFilters) "Unit Matrix (${units.size} of ${allUnits.size})" else "Visual Unit Matrix (${allUnits.size})",
-                            actionLabel = if (hasActiveFilters) "Clear Filters" else null,
-                            onActionClick = if (hasActiveFilters) onClearFilters else null
+                            actionLabel = if (hasActiveFilters) "Clear Filters" else "Vault (${scannedDocuments.size})",
+                            onActionClick = { if (hasActiveFilters) onClearFilters() else onOpenVault(null) }
                         )
                     }
                     item {
@@ -1335,6 +1510,14 @@ private fun UnitsMatrixTab(
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = fg
                                             )
+                                            val unitDocs = scannedDocuments.count { it.unitId == unit.id }
+                                            if (unitDocs > 0) {
+                                                Text(
+                                                    "$unitDocs scanned doc(s)",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.secondary
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -1348,15 +1531,27 @@ private fun UnitsMatrixTab(
 
     selectedUnit?.let { unit ->
         val parentProp = properties.firstOrNull { it.id == unit.propertyId }
+        val unitDocCount = scannedDocuments.count { it.unitId == unit.id }
         UnitEditorDialog(
             unit = unit,
             parentProperty = parentProp,
+            unitDocCount = unitDocCount,
             canEditPricingOrDelete = canEditPricingOrDelete(unit),
             isBusy = isBusy,
             aiDraftState = aiDraftState,
             onDismiss = {
                 onClearAiDraft()
                 selectedUnit = null
+            },
+            onOpenVault = {
+                onClearAiDraft()
+                selectedUnit = null
+                onOpenVault(unit)
+            },
+            onScanDocument = {
+                onClearAiDraft()
+                selectedUnit = null
+                onScanForUnit(unit)
             },
             onDraftWithAi = { unitNum, unitTypeLabel, rentCents, depCents, amenities ->
                 onDraftDescriptionWithAi(
@@ -1411,10 +1606,13 @@ private fun UnitsMatrixTab(
 private fun UnitEditorDialog(
     unit: RentalUnit,
     parentProperty: Property?,
+    unitDocCount: Int,
     canEditPricingOrDelete: Boolean,
     isBusy: Boolean,
     aiDraftState: AiTaskState,
     onDismiss: () -> Unit,
+    onOpenVault: () -> Unit,
+    onScanDocument: () -> Unit,
     onDraftWithAi: (String, String, Long, Long, List<String>) -> Unit,
     onSave: (String, UnitType, Long, Long, UnitStatus, List<String>, String, List<String>, Boolean) -> Unit,
     onAssignTenant: () -> Unit,
@@ -1582,6 +1780,24 @@ private fun UnitEditorDialog(
                         onCheckedChange = { published = it },
                         enabled = status == UnitStatus.AVAILABLE
                     )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = onOpenVault,
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("unit_editor_vault_button")
+                    ) {
+                        Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Vault ($unitDocCount)", maxLines = 1)
+                    }
+                    OutlinedButton(
+                        onClick = onScanDocument,
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("unit_editor_scan_button")
+                    ) {
+                        Icon(Icons.Filled.DocumentScanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Scan Doc", maxLines = 1)
+                    }
                 }
                 if (unit.statusEnum() in listOf(UnitStatus.AVAILABLE, UnitStatus.RESERVED)) {
                     OutlinedButton(
@@ -1759,14 +1975,20 @@ private fun LeasesTab(
     checklists: List<MoveInChecklist>,
     conditionChecklists: List<MoveInConditionChecklist>,
     settlements: List<DepositSettlement>,
+    scannedDocuments: List<ScannedDocument>,
     canTerminateLease: (Lease) -> Boolean,
     canManageChecklist: (Lease) -> Boolean,
     canManageSettlement: (Lease) -> Boolean,
+    canRunRenewalSweep: (Lease) -> Boolean,
+    onOpenRenewalSweep: () -> Unit,
+    onEditAutomationPolicy: (Lease) -> Unit,
     onExportPdf: (Lease) -> Unit,
     onOpenChecklist: (Lease) -> Unit,
     onOpenConditionChecklist: (Lease) -> Unit,
     onOpenConditionChecklistPdf: (MoveInConditionChecklist, Lease) -> Unit,
     onOpenSettlement: (Lease) -> Unit,
+    onScanLeaseDoc: (Lease) -> Unit,
+    onOpenUnitVault: (Lease) -> Unit,
     onRenew: (Lease) -> Unit,
     onTerminate: (Lease) -> Unit
 ) {
@@ -1783,11 +2005,56 @@ private fun LeasesTab(
                     )
                 }
             } else {
+                val renewalCandidates = remember(leases) {
+                    LeaseAutomationEngine.evaluateLeaseRenewals(leases)
+                }
+                val automatedLeaseCount = remember(leases) {
+                    leases.count { it.statusEnum() == LeaseStatus.ACTIVE && it.renewalModeEnum() != RenewalMode.MANUAL }
+                }
+                val sweepEnabled = remember(leases) {
+                    leases.any { canRunRenewalSweep(it) }
+                }
                 LazyColumn(
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
+                    item(key = "lease_automation_summary_card") {
+                        Card(
+                            shape = MaterialTheme.shapes.medium,
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f)),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f)),
+                            modifier = Modifier.fillMaxWidth().testTag("lease_automation_summary_card")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.padding(14.dp).fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text("Lease Renewal Automation", style = MaterialTheme.typography.titleSmall)
+                                    Text(
+                                        text = if (renewalCandidates.isEmpty()) {
+                                            "$automatedLeaseCount automated lease(s) • None within lead window"
+                                        } else {
+                                            "${renewalCandidates.size} lease(s) ready for auto-renew or offer dispatch"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                OutlinedButton(
+                                    onClick = onOpenRenewalSweep,
+                                    enabled = sweepEnabled,
+                                    modifier = Modifier.heightIn(min = 48.dp).testTag("run_renewal_sweep_button")
+                                ) {
+                                    Icon(Icons.Filled.Autorenew, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Sweep (${renewalCandidates.size})")
+                                }
+                            }
+                        }
+                    }
                     items(leases, key = { it.id }) { lease ->
                         val checklist = checklists.firstOrNull { it.leaseId == lease.id }
                         val conditionChecklist = conditionChecklists.firstOrNull { it.leaseId == lease.id }
@@ -1866,6 +2133,7 @@ private fun LeasesTab(
                                         }
                                     }
                                 }
+                                LeaseAutomationBadges(lease = lease)
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     OutlinedButton(
                                         onClick = { onExportPdf(lease) },
@@ -1876,6 +2144,14 @@ private fun LeasesTab(
                                         Text("PDF")
                                     }
                                     if (lease.statusEnum() == LeaseStatus.ACTIVE) {
+                                        OutlinedButton(
+                                            onClick = { onEditAutomationPolicy(lease) },
+                                            modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("lease_policy_button_${lease.id}")
+                                        ) {
+                                            Icon(Icons.Filled.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("Policy", maxLines = 1)
+                                        }
                                         OutlinedButton(
                                             onClick = { onRenew(lease) },
                                             modifier = Modifier.weight(1f).heightIn(min = 48.dp)
@@ -1957,6 +2233,25 @@ private fun LeasesTab(
                                         ) {
                                             Text("View Legacy Handover Summary (${checklist.statusEnum().label})")
                                         }
+                                    }
+                                }
+                                val leaseUnitDocs = scannedDocuments.count { it.unitId == lease.unitId }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                    OutlinedButton(
+                                        onClick = { onScanLeaseDoc(lease) },
+                                        modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("lease_scan_doc_button_${lease.id}")
+                                    ) {
+                                        Icon(Icons.Filled.DocumentScanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("Scan Doc", maxLines = 1)
+                                    }
+                                    OutlinedButton(
+                                        onClick = { onOpenUnitVault(lease) },
+                                        modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("lease_vault_button_${lease.id}")
+                                    ) {
+                                        Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("Unit Docs ($leaseUnitDocs)", maxLines = 1)
                                     }
                                 }
                             }
@@ -2704,13 +2999,31 @@ private fun AssignManagerDialog(
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CreateLeaseDialog(
     unit: RentalUnit,
     preselectedApp: RentalApplication?,
     isBusy: Boolean,
     onDismiss: () -> Unit,
-    onCreate: (String, String, String, Long, Long, Long, Long, Long, String) -> Unit
+    onCreate: (
+        tenantUid: String,
+        tenantName: String,
+        tenantPhone: String,
+        rentCents: Long,
+        depositCents: Long,
+        startDateEpochMs: Long,
+        endDateEpochMs: Long,
+        dueDayOfMonth: Long,
+        termsSummary: String,
+        renewalMode: RenewalMode,
+        escalationType: EscalationType,
+        escalationPercent: Double,
+        escalationFixedCents: Long,
+        gracePeriodDays: Long,
+        lateFeePercent: Double,
+        lateFeeEnabled: Boolean
+    ) -> Unit
 ) {
     var tenantUid by remember { mutableStateOf(preselectedApp?.applicantUid ?: "") }
     var tenantName by remember { mutableStateOf(preselectedApp?.applicantName ?: "") }
@@ -2720,6 +3033,12 @@ private fun CreateLeaseDialog(
     var durationMonths by remember { mutableStateOf("12") }
     var dueDay by remember { mutableStateOf("5") }
     var terms by remember { mutableStateOf("Rent payable by the 5th of each month via M-Pesa or bank transfer. 1 month notice required before vacation.") }
+    var renewalMode by remember { mutableStateOf(RenewalMode.OFFER) }
+    var escalationType by remember { mutableStateOf(EscalationType.NONE) }
+    var escValueText by remember { mutableStateOf("0") }
+    var graceDaysText by remember { mutableStateOf("5") }
+    var lateFeePctText by remember { mutableStateOf("5") }
+    var lateFeeEnabled by remember { mutableStateOf(true) }
     var err by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
@@ -2739,6 +3058,60 @@ private fun CreateLeaseDialog(
                 OutlinedTextField(value = durationMonths, onValueChange = { durationMonths = it }, label = { Text("Lease Duration (Months)") }, singleLine = true)
                 OutlinedTextField(value = dueDay, onValueChange = { dueDay = it }, label = { Text("Rent Due Day (1-28)") }, singleLine = true)
                 OutlinedTextField(value = terms, onValueChange = { terms = it }, label = { Text("Tenancy Terms") }, maxLines = 3)
+
+                Text("Renewal & Late Fee Defaults", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    RenewalMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = renewalMode == mode,
+                            onClick = { renewalMode = mode },
+                            label = { Text(mode.label, maxLines = 1) }
+                        )
+                    }
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    EscalationType.entries.forEach { esc ->
+                        FilterChip(
+                            selected = escalationType == esc,
+                            onClick = { escalationType = esc },
+                            label = { Text(esc.label, maxLines = 1) }
+                        )
+                    }
+                }
+                if (escalationType != EscalationType.NONE) {
+                    OutlinedTextField(
+                        value = escValueText,
+                        onValueChange = { escValueText = it.take(8) },
+                        label = { Text(if (escalationType == EscalationType.PERCENT) "Escalation (%)" else "Escalation (+KES)") },
+                        singleLine = true
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Assess Late Fees Automatically", style = MaterialTheme.typography.bodySmall)
+                    Switch(checked = lateFeeEnabled, onCheckedChange = { lateFeeEnabled = it })
+                }
+                if (lateFeeEnabled) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            value = graceDaysText,
+                            onValueChange = { graceDaysText = it.filter { c -> c.isDigit() }.take(2) },
+                            label = { Text("Grace (Days)") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = lateFeePctText,
+                            onValueChange = { lateFeePctText = it.take(5) },
+                            label = { Text("Late Fee (%)") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
@@ -2748,6 +3121,14 @@ private fun CreateLeaseDialog(
                     val depCents = CurrencyUtils.parseKesToCents(depositText) ?: 0L
                     val months = durationMonths.toIntOrNull()?.coerceIn(1, 120) ?: 12
                     val day = dueDay.toLongOrNull()?.coerceIn(1L, 28L) ?: 5L
+                    val escPct = if (escalationType == EscalationType.PERCENT) {
+                        (escValueText.toDoubleOrNull() ?: 0.0).coerceIn(0.0, 100.0)
+                    } else 0.0
+                    val escFixedCents = if (escalationType == EscalationType.FIXED_KES) {
+                        (CurrencyUtils.parseKesToCents(escValueText) ?: 0L).coerceAtLeast(0L)
+                    } else 0L
+                    val graceDays = graceDaysText.toLongOrNull()?.coerceIn(0L, 30L) ?: 5L
+                    val latePct = lateFeePctText.toDoubleOrNull()?.coerceIn(0.0, 50.0) ?: 5.0
                     val startMs = System.currentTimeMillis()
                     val endMs = startMs + months * 30L * 86_400_000L
                     when {
@@ -2764,7 +3145,14 @@ private fun CreateLeaseDialog(
                             startMs,
                             endMs,
                             day,
-                            terms
+                            terms,
+                            renewalMode,
+                            escalationType,
+                            escPct,
+                            escFixedCents,
+                            graceDays,
+                            latePct,
+                            lateFeeEnabled
                         )
                     }
                 },

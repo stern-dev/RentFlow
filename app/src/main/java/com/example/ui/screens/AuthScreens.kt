@@ -97,14 +97,16 @@ import com.example.domain.model.InviteStatus
 import com.example.domain.model.RoleInvite
 import com.example.domain.model.UserRole
 import com.example.ui.components.ErrorBannerCard
-import com.example.ui.theme.ChampagneAccent
-import com.example.ui.theme.ChampagneLight
+import com.example.ui.theme.BrushedSilver
 import com.example.ui.theme.DarkOutline
+import com.example.ui.theme.DarkPrimaryContainer
 import com.example.ui.theme.DarkSurfaceVariant
 import com.example.ui.theme.DarkTextPrimary
 import com.example.ui.theme.DarkTextSecondary
 import com.example.ui.theme.LocalIsDarkTheme
-import com.example.ui.theme.ObsidianPrimary
+import com.example.ui.theme.MidnightInk
+import com.example.ui.theme.MidnightSlate
+import com.example.ui.theme.MutedCobalt
 import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.StatusSuccessBg
 import com.example.ui.theme.StatusSuccessBgDark
@@ -251,7 +253,7 @@ fun AuthScreen(
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
-                                listOf(ObsidianPrimary.copy(alpha = 0.22f), ObsidianPrimary.copy(alpha = 0.92f))
+                                listOf(MidnightInk.copy(alpha = 0.24f), MidnightInk.copy(alpha = 0.93f))
                             )
                         )
                         .padding(20.dp),
@@ -259,7 +261,8 @@ fun AuthScreen(
                 ) {
                     Column {
                         Surface(
-                            color = ChampagneAccent.copy(alpha = 0.24f),
+                            color = MutedCobalt.copy(alpha = 0.34f),
+                            border = BorderStroke(1.dp, BrushedSilver.copy(alpha = 0.35f)),
                             shape = RoundedCornerShape(999.dp)
                         ) {
                             Row(
@@ -270,13 +273,13 @@ fun AuthScreen(
                                 Icon(
                                     imageVector = Icons.Filled.Apartment,
                                     contentDescription = "RentFlow Logo",
-                                    tint = ChampagneLight,
+                                    tint = BrushedSilver,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Text(
                                     text = "RENTFLOW",
                                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                    color = ChampagneLight
+                                    color = BrushedSilver
                                 )
                             }
                         }
@@ -300,8 +303,8 @@ fun AuthScreen(
             Card(
                 shape = MaterialTheme.shapes.large,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
-                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
@@ -762,8 +765,8 @@ fun EmailVerificationScreen(
         Card(
             shape = MaterialTheme.shapes.large,
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
-            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
             modifier = Modifier.widthIn(max = 520.dp).fillMaxWidth()
         ) {
             Column(
@@ -862,8 +865,8 @@ private fun FeatureBadgeCard(icon: ImageVector, title: String, subtitle: String,
     Card(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = modifier
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -947,22 +950,32 @@ fun RoleOnboardingScreen(
         val isDark = LocalIsDarkTheme.current
         Surface(
             shape = MaterialTheme.shapes.large,
-            color = if (isDark) DarkSurfaceVariant else ObsidianPrimary,
-            border = if (isDark) BorderStroke(1.dp, DarkOutline) else null,
-            modifier = Modifier.fillMaxWidth()
+            color = Color.Transparent,
+            border = BorderStroke(1.dp, if (isDark) DarkOutline else BrushedSilver.copy(alpha = 0.24f)),
+            shadowElevation = 2.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    brush = Brush.linearGradient(
+                        if (isDark) listOf(DarkSurfaceVariant, DarkPrimaryContainer)
+                        else listOf(MidnightInk, MidnightSlate)
+                    ),
+                    shape = MaterialTheme.shapes.large
+                )
         ) {
             Column(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.padding(20.dp)
             ) {
                 Surface(
-                    color = ChampagneAccent.copy(alpha = 0.22f),
+                    color = MutedCobalt.copy(alpha = 0.34f),
+                    border = BorderStroke(1.dp, BrushedSilver.copy(alpha = 0.32f)),
                     shape = RoundedCornerShape(999.dp)
                 ) {
                     Text(
                         text = "ONBOARDING",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                        color = ChampagneLight,
+                        color = BrushedSilver,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                     )
                 }
@@ -983,7 +996,7 @@ fun RoleOnboardingScreen(
                 shape = MaterialTheme.shapes.medium,
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f)),
-                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
                 modifier = Modifier.fillMaxWidth().testTag("onboarding_pending_invites_card")
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -113,9 +113,9 @@ fun MoveInChecklistSummaryCard(
         ),
         border = BorderStroke(
             width = 1.dp,
-            color = if (needsUrgentAction) warnFg.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
+            color = if (needsUrgentAction) warnFg.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = modifier
             .fillMaxWidth()
             .testTag(if (isTenantView) "tenant_move_in_checklist_card" else "landlord_move_in_checklist_card")

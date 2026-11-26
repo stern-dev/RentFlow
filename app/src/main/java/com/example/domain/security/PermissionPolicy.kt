@@ -82,4 +82,18 @@ object PermissionPolicy {
     fun canFinalizeDepositSettlement(uid: String, activeRole: UserRole, lease: Lease): Boolean =
         activeRole == UserRole.ADMIN ||
             (activeRole in listOf(UserRole.LANDLORD, UserRole.PROPERTY_MANAGER) && uid in lease.authorizedUids)
+
+    fun canEditLeaseAutomationPricing(uid: String, activeRole: UserRole, lease: Lease): Boolean =
+        activeRole == UserRole.ADMIN || (activeRole == UserRole.LANDLORD && lease.ownerUid == uid)
+
+    fun canRunLeaseRenewalSweep(uid: String, activeRole: UserRole, lease: Lease): Boolean =
+        activeRole == UserRole.ADMIN ||
+            (activeRole in listOf(UserRole.LANDLORD, UserRole.PROPERTY_MANAGER) && uid in lease.authorizedUids)
+
+    fun canRunLateFeeSweep(uid: String, activeRole: UserRole, lease: Lease): Boolean =
+        activeRole == UserRole.ADMIN ||
+            (activeRole in listOf(UserRole.LANDLORD, UserRole.PROPERTY_MANAGER) && uid in lease.authorizedUids)
+
+    fun canWaiveLateFee(uid: String, activeRole: UserRole, ownerUid: String): Boolean =
+        activeRole == UserRole.ADMIN || (activeRole == UserRole.LANDLORD && ownerUid == uid)
 }

@@ -20,12 +20,16 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import android.graphics.Bitmap
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Sms
@@ -63,6 +67,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.domain.finance.CurrencyUtils
+import com.example.domain.finance.LeaseAutomationEngine
 import com.example.domain.finance.MpesaReceiptMatchEvaluation
 import com.example.domain.finance.MpesaSmsParser
 import com.example.domain.finance.ReceiptMatchOutcome
@@ -75,6 +80,8 @@ import com.example.domain.model.Lease
 import com.example.domain.model.LeaseStatus
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import com.example.data.ai.ScanOcrUiState
+import com.example.domain.model.DocumentType
 import com.example.domain.model.MpesaReceiptStatus
 import com.example.domain.model.Payment
 import com.example.domain.model.PaymentChannelType
@@ -82,15 +89,23 @@ import com.example.domain.model.PaymentMethod
 import com.example.domain.model.PaymentStatus
 import com.example.domain.model.PaymentVerificationSource
 import com.example.domain.model.Property
+import com.example.domain.model.RentalUnit
 import com.example.domain.model.SavedPaymentMethod
+import com.example.domain.model.ScannedDocument
 import com.example.domain.model.UserProfile
+import com.example.domain.model.UserRole
 import com.example.domain.security.PermissionPolicy
 import com.example.ui.components.CriticalActionConfirmationDialog
+import com.example.ui.components.DocumentScannerModal
+import com.example.ui.components.DocumentVaultDialog
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.ErrorBannerCard
+import com.example.ui.components.LateFeeSweepDialog
 import com.example.ui.components.LoadingStateBox
+import com.example.ui.components.PendingScanPayload
 import com.example.ui.components.PillTone
 import com.example.ui.components.StatusPill
+import com.example.ui.components.WaiveLateFeeDialog
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.StatusWarning
@@ -134,6 +149,9 @@ fun LandlordFinanceScreen(
     val expensesState by viewModel.expenses.collectAsStateWithLifecycle()
     val leasesState by viewModel.leases.collectAsStateWithLifecycle()
     val propertiesState by viewModel.properties.collectAsStateWithLifecycle()
+    val unitsState by viewModel.units.collectAsStateWithLifecycle()
+    val scannedDocsState by viewModel.scannedDocuments.collectAsStateWithLifecycle()
+    val scanOcrState by viewModel.scanOcrState.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
 
     val savedMethodsState = paymentMethodViewModel?.methods?.collectAsStateWithLifecycle()
@@ -143,12 +161,18 @@ fun LandlordFinanceScreen(
 
     val leases = (leasesState as? UiState.Success)?.data ?: emptyList()
     val properties = (propertiesState as? UiState.Success)?.data ?: emptyList()
+    val units = (unitsState as? UiState.Success)?.data ?: emptyList()
+    val scannedDocuments = (scannedDocsState as? UiState.Success)?.data ?: emptyList()
 
     var selectedTab by remember { mutableIntStateOf(0) }
     var showGenerateInvoiceDialog by remember { mutableStateOf(false) }
     var showRecordPaymentDialog by remember { mutableStateOf(false) }
     var showRecordExpenseDialog by remember { mutableStateOf(false) }
+    var showFinanceVault by remember { mutableStateOf(false) }
+    var unitForVaultScan by remember { mutableStateOf<RentalUnit?>(null) }
     var showQuickPasteMpesaDialog by remember { mutableStateOf(false) }
+    var showLateFeeSweepDialog by remember { mutableStateOf(false) }
+    var invoiceForLateFeeWaiver by remember { mutableStateOf<Invoice?>(null) }
     var paymentToVerify by remember { mutableStateOf<Payment?>(null) }
     var paymentToReject by remember { mutableStateOf<Payment?>(null) }
     var paymentToReverse by remember { mutableStateOf<Payment?>(null) }
@@ -165,10 +189,16 @@ fun LandlordFinanceScreen(
         when (selectedTab) {
             0 -> InvoicesTab(
                 invoicesState = invoicesState,
+                leases = leases,
                 hasActiveLeases = leases.any { it.statusEnum() == LeaseStatus.ACTIVE },
                 isBusy = busy,
+                canWaiveLateFee = { inv ->
+                    PermissionPolicy.canWaiveLateFee(currentUser.userId, currentUser.activeRoleEnum(), inv.ownerUid)
+                },
                 onGenerateInvoices = { showGenerateInvoiceDialog = true },
-                onSendReminders = { viewModel.sendBatchRentReminders(currentUser.fullName) }
+                onSendReminders = { viewModel.sendBatchRentReminders(currentUser.fullName) },
+                onOpenLateFeeSweep = { showLateFeeSweepDialog = true },
+                onWaiveLateFee = { inv -> invoiceForLateFeeWaiver = inv }
             )
             1 -> PaymentsTab(
                 paymentsState = paymentsState,
@@ -191,6 +221,10 @@ fun LandlordFinanceScreen(
             2 -> ExpensesTab(
                 expensesState = expensesState,
                 hasProperties = properties.isNotEmpty(),
+                scannedReceiptsCount = scannedDocuments.count {
+                    it.typeEnum() == DocumentType.EXPENSE_RECEIPT || it.typeEnum() == DocumentType.PAYMENT_RECEIPT
+                },
+                onOpenReceiptVault = { showFinanceVault = true },
                 onAddExpense = { showRecordExpenseDialog = true }
             )
         }
@@ -268,16 +302,20 @@ fun LandlordFinanceScreen(
     if (showRecordPaymentDialog) {
         RecordLandlordPaymentDialog(
             leases = leases.filter { it.statusEnum() == LeaseStatus.ACTIVE },
+            units = units,
             isBusy = busy,
             savedMethods = savedMethods,
             selectedSavedMethod = selectedSavedMethod,
+            scanOcrState = scanOcrState,
+            onExtractWithAi = { bmp, hint -> viewModel.extractDocumentWithAi(bmp, hint) },
+            onClearOcr = { viewModel.clearDocumentOcr() },
             onSelectSavedMethod = { methodId -> paymentMethodViewModel?.selectMethod(methodId) },
             onOpenPaymentMethods = {
                 showRecordPaymentDialog = false
                 onOpenPaymentMethods()
             },
             onDismiss = { showRecordPaymentDialog = false },
-            onSubmit = { lease, ref, amountCents, method, verifyNow, paymentMethodId, channelType, shortcode ->
+            onSubmit = { lease, ref, amountCents, method, verifyNow, paymentMethodId, channelType, shortcode, pendingScan ->
                 viewModel.recordLandlordPayment(
                     lease = lease,
                     referenceCode = ref,
@@ -287,7 +325,30 @@ fun LandlordFinanceScreen(
                     actorName = currentUser.fullName,
                     paymentMethodId = paymentMethodId,
                     paymentChannelType = channelType,
-                    paymentShortcode = shortcode
+                    paymentShortcode = shortcode,
+                    onPaymentCreated = { payId ->
+                        val unit = units.firstOrNull { it.id == lease.unitId }
+                        if (pendingScan != null && unit != null) {
+                            viewModel.uploadScannedDocument(
+                                unit = unit,
+                                lease = lease,
+                                documentType = pendingScan.documentType,
+                                title = pendingScan.title,
+                                notes = pendingScan.notes,
+                                filterMode = pendingScan.filterMode,
+                                pageImageRefs = pendingScan.pageImageRefs,
+                                extractedReference = pendingScan.extractedReference ?: ref,
+                                extractedAmountCents = pendingScan.extractedAmountCents ?: amountCents,
+                                extractedDateText = pendingScan.extractedDateText,
+                                extractedSummary = pendingScan.extractedSummary,
+                                aiExtracted = pendingScan.aiExtracted,
+                                tenantVisible = pendingScan.tenantVisible,
+                                paymentId = payId,
+                                uploaderName = currentUser.fullName,
+                                uploaderRole = currentUser.activeRoleEnum()
+                            )
+                        }
+                    }
                 ) {
                     showRecordPaymentDialog = false
                 }
@@ -298,11 +359,103 @@ fun LandlordFinanceScreen(
     if (showRecordExpenseDialog) {
         RecordExpenseDialog(
             properties = properties.filter { !it.archived },
+            units = units,
             isBusy = busy,
+            scanOcrState = scanOcrState,
+            onExtractWithAi = { bmp, hint -> viewModel.extractDocumentWithAi(bmp, hint) },
+            onClearOcr = { viewModel.clearDocumentOcr() },
             onDismiss = { showRecordExpenseDialog = false },
-            onSubmit = { prop, cat, title, desc, amountCents, docRef ->
-                viewModel.recordExpense(prop, cat, title, desc, amountCents, docRef, currentUser.fullName) {
+            onSubmit = { prop, cat, title, desc, amountCents, docRef, selectedUnit, pendingScan ->
+                viewModel.recordExpense(
+                    property = prop,
+                    category = cat,
+                    title = title,
+                    description = desc,
+                    amountCents = amountCents,
+                    documentRef = docRef,
+                    actorName = currentUser.fullName,
+                    onExpenseCreated = { expenseId ->
+                        if (pendingScan != null && selectedUnit != null) {
+                            viewModel.uploadScannedDocument(
+                                unit = selectedUnit,
+                                lease = null,
+                                documentType = pendingScan.documentType,
+                                title = pendingScan.title,
+                                notes = pendingScan.notes,
+                                filterMode = pendingScan.filterMode,
+                                pageImageRefs = pendingScan.pageImageRefs,
+                                extractedReference = pendingScan.extractedReference ?: docRef,
+                                extractedAmountCents = pendingScan.extractedAmountCents ?: amountCents,
+                                extractedDateText = pendingScan.extractedDateText,
+                                extractedSummary = pendingScan.extractedSummary,
+                                aiExtracted = pendingScan.aiExtracted,
+                                tenantVisible = pendingScan.tenantVisible,
+                                expenseId = expenseId,
+                                uploaderName = currentUser.fullName,
+                                uploaderRole = currentUser.activeRoleEnum()
+                            )
+                        }
+                    }
+                ) {
                     showRecordExpenseDialog = false
+                }
+            }
+        )
+    }
+
+    if (showFinanceVault) {
+        val defaultUnit = units.firstOrNull()
+        DocumentVaultDialog(
+            title = "Financial Receipts & Scans",
+            subtitle = "Payment Slips & Expense Vouchers",
+            documents = scannedDocuments,
+            canUpload = defaultUnit != null,
+            canDeleteDoc = { doc ->
+                doc.ownerUid == currentUser.userId || doc.uploadedByUid == currentUser.userId || currentUser.activeRoleEnum() == UserRole.ADMIN
+            },
+            canToggleTenantVisibility = true,
+            isBusy = busy,
+            onScanNewDocument = { unitForVaultScan = defaultUnit },
+            onToggleTenantVisibility = { doc, visible ->
+                viewModel.updateScannedDocumentMetadata(doc, doc.title, doc.notes, visible)
+            },
+            onDeleteDocument = { doc -> viewModel.deleteScannedDocument(doc.id) },
+            onDismiss = { showFinanceVault = false }
+        )
+    }
+
+    unitForVaultScan?.let { targetUnit ->
+        val matchedLease = leases.firstOrNull { it.unitId == targetUnit.id && it.statusEnum() == LeaseStatus.ACTIVE }
+        DocumentScannerModal(
+            unitLabel = "${targetUnit.propertyName} • Unit ${targetUnit.unitNumber}",
+            tenantLabel = matchedLease?.tenantName,
+            allowedDocumentTypes = DocumentType.entries,
+            initialDocumentType = DocumentType.EXPENSE_RECEIPT,
+            allowTenantVisibilityToggle = true,
+            initialTenantVisible = false,
+            scanOcrState = scanOcrState,
+            onExtractWithAi = { bmp, hint -> viewModel.extractDocumentWithAi(bmp, hint) },
+            onClearOcr = { viewModel.clearDocumentOcr() },
+            onDismiss = { unitForVaultScan = null },
+            onConfirmScan = { payload ->
+                viewModel.uploadScannedDocument(
+                    unit = targetUnit,
+                    lease = matchedLease,
+                    documentType = payload.documentType,
+                    title = payload.title,
+                    notes = payload.notes,
+                    filterMode = payload.filterMode,
+                    pageImageRefs = payload.pageImageRefs,
+                    extractedReference = payload.extractedReference,
+                    extractedAmountCents = payload.extractedAmountCents,
+                    extractedDateText = payload.extractedDateText,
+                    extractedSummary = payload.extractedSummary,
+                    aiExtracted = payload.aiExtracted,
+                    tenantVisible = payload.tenantVisible,
+                    uploaderName = currentUser.fullName,
+                    uploaderRole = currentUser.activeRoleEnum()
+                ) {
+                    unitForVaultScan = null
                 }
             }
         )
@@ -393,21 +546,58 @@ fun LandlordFinanceScreen(
             }
         )
     }
+
+    if (showLateFeeSweepDialog) {
+        val allInvoices = (invoicesState as? UiState.Success)?.data ?: emptyList()
+        val candidates = remember(allInvoices, leases) {
+            LeaseAutomationEngine.evaluateOverdueLateFees(allInvoices, leases)
+        }
+        LateFeeSweepDialog(
+            candidates = candidates,
+            isBusy = busy,
+            onDismiss = { showLateFeeSweepDialog = false },
+            onConfirmSweep = {
+                viewModel.runLateFeeAssessmentSweep(currentUser.fullName) {
+                    showLateFeeSweepDialog = false
+                }
+            }
+        )
+    }
+
+    invoiceForLateFeeWaiver?.let { inv ->
+        WaiveLateFeeDialog(
+            invoice = inv,
+            isBusy = busy,
+            onDismiss = { invoiceForLateFeeWaiver = null },
+            onConfirmWaive = { reason ->
+                viewModel.waiveInvoiceLateFee(inv, reason, currentUser.fullName) {
+                    invoiceForLateFeeWaiver = null
+                }
+            }
+        )
+    }
 }
 
 @Composable
 private fun InvoicesTab(
     invoicesState: UiState<List<Invoice>>,
+    leases: List<Lease>,
     hasActiveLeases: Boolean,
     isBusy: Boolean,
+    canWaiveLateFee: (Invoice) -> Boolean,
     onGenerateInvoices: () -> Unit,
-    onSendReminders: () -> Unit
+    onSendReminders: () -> Unit,
+    onOpenLateFeeSweep: () -> Unit,
+    onWaiveLateFee: (Invoice) -> Unit
 ) {
     var selectedFilter by remember { mutableStateOf(LandlordInvoiceFilter.ALL) }
     var expandedInvoiceIds by remember { mutableStateOf(emptySet<String>()) }
     val allInvoicesList = (invoicesState as? UiState.Success)?.data ?: emptyList()
     val reminderCandidates = remember(allInvoicesList) {
         RentReminderEngine.evaluateInvoices(allInvoicesList, respectCooldown = true)
+    }
+    val lateFeeCandidates = remember(allInvoicesList, leases) {
+        LeaseAutomationEngine.evaluateOverdueLateFees(allInvoicesList, leases)
     }
 
     LazyColumn(
@@ -469,6 +659,51 @@ private fun InvoicesTab(
                             Icon(Icons.Filled.NotificationsActive, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("Remind (${reminderCandidates.size})")
+                        }
+                    }
+                }
+            }
+            item {
+                Card(
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (lateFeeCandidates.isNotEmpty()) StatusWarningBg.copy(alpha = 0.35f)
+                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                    ),
+                    border = BorderStroke(
+                        1.dp,
+                        if (lateFeeCandidates.isNotEmpty()) StatusWarning.copy(alpha = 0.45f)
+                        else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                    ),
+                    modifier = Modifier.fillMaxWidth().testTag("late_fee_automation_card")
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.padding(12.dp).fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text("Automated Late Fees", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                text = if (lateFeeCandidates.isEmpty()) {
+                                    "No overdue balances past grace period right now"
+                                } else {
+                                    "${lateFeeCandidates.size} overdue invoice(s) past grace period"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onOpenLateFeeSweep,
+                            enabled = !isBusy,
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("run_late_fee_sweep_button")
+                        ) {
+                            Icon(Icons.Filled.Gavel, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Assess (${lateFeeCandidates.size})")
                         }
                     }
                 }
@@ -569,6 +804,18 @@ private fun InvoicesTab(
                                             color = if (inv.outstandingCents > 0) StatusError else StatusSuccess
                                         )
                                     }
+                                    if (inv.lateFeeCents > 0L || inv.lateFeeWaived) {
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            if (inv.lateFeeWaived) {
+                                                StatusPill("Late Fee Waived", PillTone.INFO)
+                                            } else if (inv.lateFeeCents > 0L) {
+                                                StatusPill(
+                                                    "Late Fee +${CurrencyUtils.formatKes(inv.lateFeeCents)} (${LeaseAutomationEngine.formatPercent(inv.lateFeeRatePercent)})",
+                                                    PillTone.ERROR
+                                                )
+                                            }
+                                        }
+                                    }
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -604,8 +851,27 @@ private fun InvoicesTab(
                                             if (inv.previousBalanceCents > 0L) {
                                                 InvoiceBreakdownLine("Previous Arrears Carried Forward", CurrencyUtils.formatKes(inv.previousBalanceCents, true))
                                             }
+                                            if (inv.lateFeeCents > 0L) {
+                                                InvoiceBreakdownLine(
+                                                    "Late Fee (${LeaseAutomationEngine.formatPercent(inv.lateFeeRatePercent)})",
+                                                    CurrencyUtils.formatKes(inv.lateFeeCents, true),
+                                                    highlightError = true
+                                                )
+                                            } else if (inv.lateFeeWaived) {
+                                                val reasonSuffix = inv.lateFeeWaivedReason?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""
+                                                InvoiceBreakdownLine("Late Fee Waived$reasonSuffix", "KES 0.00")
+                                            }
                                             InvoiceBreakdownLine("Paid / Credit Applied", "- ${CurrencyUtils.formatKes(inv.paidCents, true)}")
                                             InvoiceBreakdownLine("Outstanding Balance", CurrencyUtils.formatKes(inv.outstandingCents, true), highlightError = inv.outstandingCents > 0L)
+                                        }
+                                        if (inv.lateFeeCents > 0L && !inv.lateFeeWaived && canWaiveLateFee(inv)) {
+                                            OutlinedButton(
+                                                onClick = { onWaiveLateFee(inv) },
+                                                enabled = !isBusy,
+                                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("waive_late_fee_button_${inv.id}")
+                                            ) {
+                                                Text("Waive Late Fee")
+                                            }
                                         }
                                     }
                                 }
@@ -1038,6 +1304,8 @@ fun KenyaMriTaxEstimateCard(grossCollectedCents: Long) {
 private fun ExpensesTab(
     expensesState: UiState<List<Expense>>,
     hasProperties: Boolean,
+    scannedReceiptsCount: Int,
+    onOpenReceiptVault: () -> Unit,
     onAddExpense: () -> Unit
 ) {
     LazyColumn(
@@ -1051,16 +1319,26 @@ private fun ExpensesTab(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Operating Expenses", style = MaterialTheme.typography.titleMedium)
-                Button(
-                    onClick = onAddExpense,
-                    enabled = hasProperties,
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                    modifier = Modifier.heightIn(min = 48.dp)
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Log Expense")
+                Text("Operating Expenses", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = onOpenReceiptVault,
+                        modifier = Modifier.heightIn(min = 48.dp).testTag("finance_receipt_vault_button")
+                    ) {
+                        Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Scans ($scannedReceiptsCount)", maxLines = 1)
+                    }
+                    Button(
+                        onClick = onAddExpense,
+                        enabled = hasProperties,
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Log Expense")
+                    }
                 }
             }
         }
@@ -1111,9 +1389,13 @@ private fun ExpensesTab(
 @Composable
 private fun RecordLandlordPaymentDialog(
     leases: List<Lease>,
+    units: List<RentalUnit> = emptyList(),
     isBusy: Boolean,
     savedMethods: List<SavedPaymentMethod> = emptyList(),
     selectedSavedMethod: SavedPaymentMethod? = null,
+    scanOcrState: ScanOcrUiState = ScanOcrUiState.Idle,
+    onExtractWithAi: (Bitmap, DocumentType?) -> Unit = { _, _ -> },
+    onClearOcr: () -> Unit = {},
     onSelectSavedMethod: (String?) -> Unit = {},
     onOpenPaymentMethods: (() -> Unit)? = null,
     onDismiss: () -> Unit,
@@ -1125,7 +1407,8 @@ private fun RecordLandlordPaymentDialog(
         Boolean,
         String?,
         PaymentChannelType?,
-        String?
+        String?,
+        PendingScanPayload?
     ) -> Unit
 ) {
     var selectedLease by remember { mutableStateOf(leases.firstOrNull()) }
@@ -1137,7 +1420,13 @@ private fun RecordLandlordPaymentDialog(
     var refCode by remember { mutableStateOf("") }
     var amountText by remember { mutableStateOf(selectedLease?.let { CurrencyUtils.centsToInputString(it.rentCents) } ?: "") }
     var verifyNow by remember { mutableStateOf(true) }
+    var pendingScan by remember { mutableStateOf<PendingScanPayload?>(null) }
+    var showScanner by remember { mutableStateOf(false) }
     var err by remember { mutableStateOf<String?>(null) }
+
+    val matchedUnit = remember(selectedLease, units) {
+        selectedLease?.let { l -> units.firstOrNull { it.id == l.unitId } }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1202,6 +1491,19 @@ private fun RecordLandlordPaymentDialog(
                         }
                     }
                 }
+                if (matchedUnit != null) {
+                    OutlinedButton(
+                        onClick = { showScanner = true },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("landlord_payment_scan_slip_button")
+                    ) {
+                        Icon(Icons.Filled.DocumentScanner, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (pendingScan == null) "Scan Payment Slip (AI)" else "Re-scan Payment Slip (${pendingScan!!.pageImageRefs.size}p)")
+                    }
+                    if (pendingScan != null) {
+                        StatusPill("Payment slip attached (${pendingScan!!.pageImageRefs.size}p)", PillTone.SUCCESS)
+                    }
+                }
                 ExposedDropdownMenuBox(expanded = methodExpanded, onExpandedChange = { methodExpanded = !methodExpanded }) {
                     OutlinedTextField(
                         value = method.label,
@@ -1253,7 +1555,8 @@ private fun RecordLandlordPaymentDialog(
                         verifyNow,
                         selectedSavedMethod?.id,
                         selectedSavedMethod?.channelTypeEnum(),
-                        selectedSavedMethod?.primaryShortcodeOrIdentifier()
+                        selectedSavedMethod?.primaryShortcodeOrIdentifier(),
+                        pendingScan
                     )
                 },
                 enabled = !isBusy
@@ -1261,24 +1564,61 @@ private fun RecordLandlordPaymentDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
+
+    if (showScanner && matchedUnit != null && selectedLease != null) {
+        DocumentScannerModal(
+            unitLabel = "${matchedUnit.propertyName} • Unit ${matchedUnit.unitNumber}",
+            tenantLabel = selectedLease!!.tenantName,
+            allowedDocumentTypes = listOf(DocumentType.PAYMENT_RECEIPT, DocumentType.OTHER),
+            initialDocumentType = DocumentType.PAYMENT_RECEIPT,
+            allowTenantVisibilityToggle = true,
+            initialTenantVisible = true,
+            scanOcrState = scanOcrState,
+            onExtractWithAi = onExtractWithAi,
+            onClearOcr = onClearOcr,
+            confirmButtonLabel = "Attach Slip & Fill",
+            onDismiss = { showScanner = false },
+            onConfirmScan = { payload ->
+                pendingScan = payload
+                if (!payload.extractedReference.isNullOrBlank() && refCode.isBlank()) {
+                    refCode = payload.extractedReference
+                }
+                if (payload.extractedAmountCents != null && payload.extractedAmountCents > 0L) {
+                    amountText = CurrencyUtils.centsToInputString(payload.extractedAmountCents)
+                }
+                showScanner = false
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RecordExpenseDialog(
     properties: List<Property>,
+    units: List<RentalUnit> = emptyList(),
     isBusy: Boolean,
+    scanOcrState: ScanOcrUiState = ScanOcrUiState.Idle,
+    onExtractWithAi: (Bitmap, DocumentType?) -> Unit = { _, _ -> },
+    onClearOcr: () -> Unit = {},
     onDismiss: () -> Unit,
-    onSubmit: (Property, ExpenseCategory, String, String, Long, String?) -> Unit
+    onSubmit: (Property, ExpenseCategory, String, String, Long, String?, RentalUnit?, PendingScanPayload?) -> Unit
 ) {
     var selectedProp by remember { mutableStateOf(properties.firstOrNull()) }
     var propExpanded by remember { mutableStateOf(false) }
+    val propUnits = remember(selectedProp?.id, units) {
+        selectedProp?.let { p -> units.filter { it.propertyId == p.id } } ?: emptyList()
+    }
+    var selectedUnit by remember(selectedProp?.id, propUnits) { mutableStateOf(propUnits.firstOrNull()) }
+    var unitExpanded by remember { mutableStateOf(false) }
     var category by remember { mutableStateOf(ExpenseCategory.MAINTENANCE) }
     var catExpanded by remember { mutableStateOf(false) }
     var title by remember { mutableStateOf("") }
     var desc by remember { mutableStateOf("") }
     var amountText by remember { mutableStateOf("") }
     var docRef by remember { mutableStateOf("") }
+    var pendingScan by remember { mutableStateOf<PendingScanPayload?>(null) }
+    var showScanner by remember { mutableStateOf(false) }
     var err by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
@@ -1300,6 +1640,34 @@ private fun RecordExpenseDialog(
                         properties.forEach { p ->
                             DropdownMenuItem(text = { Text(p.name) }, onClick = { selectedProp = p; propExpanded = false })
                         }
+                    }
+                }
+                if (propUnits.isNotEmpty()) {
+                    ExposedDropdownMenuBox(expanded = unitExpanded, onExpandedChange = { unitExpanded = !unitExpanded }) {
+                        OutlinedTextField(
+                            value = selectedUnit?.let { "Unit ${it.unitNumber}" } ?: "Select Unit for Receipt",
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Linked Unit (for Scanned Receipt)") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(unitExpanded) },
+                            modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = true).fillMaxWidth()
+                        )
+                        ExposedDropdownMenu(expanded = unitExpanded, onDismissRequest = { unitExpanded = false }) {
+                            propUnits.forEach { u ->
+                                DropdownMenuItem(text = { Text("Unit ${u.unitNumber}") }, onClick = { selectedUnit = u; unitExpanded = false })
+                            }
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = { showScanner = true },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("expense_scan_receipt_button")
+                    ) {
+                        Icon(Icons.Filled.DocumentScanner, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (pendingScan == null) "Scan Expense Receipt (AI)" else "Re-scan Receipt (${pendingScan!!.pageImageRefs.size}p)")
+                    }
+                    if (pendingScan != null) {
+                        StatusPill("Receipt attached (${pendingScan!!.pageImageRefs.size}p)", PillTone.SUCCESS)
                     }
                 }
                 ExposedDropdownMenuBox(expanded = catExpanded, onExpandedChange = { catExpanded = !catExpanded }) {
@@ -1331,11 +1699,37 @@ private fun RecordExpenseDialog(
                     if (prop == null) err = "Select a property"
                     else if (title.trim().length < 2) err = "Enter expense title"
                     else if (amount == null || amount <= 0L) err = "Enter valid KES amount"
-                    else onSubmit(prop, category, title, desc, amount, docRef.ifBlank { null })
+                    else onSubmit(prop, category, title, desc, amount, docRef.ifBlank { null }, selectedUnit, pendingScan)
                 },
                 enabled = !isBusy
             ) { Text("Log Expense") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
+
+    if (showScanner && selectedUnit != null) {
+        DocumentScannerModal(
+            unitLabel = "${selectedUnit!!.propertyName} • Unit ${selectedUnit!!.unitNumber}",
+            tenantLabel = null,
+            allowedDocumentTypes = listOf(DocumentType.EXPENSE_RECEIPT, DocumentType.OTHER),
+            initialDocumentType = DocumentType.EXPENSE_RECEIPT,
+            allowTenantVisibilityToggle = true,
+            initialTenantVisible = false,
+            scanOcrState = scanOcrState,
+            onExtractWithAi = onExtractWithAi,
+            onClearOcr = onClearOcr,
+            confirmButtonLabel = "Attach Receipt & Fill",
+            onDismiss = { showScanner = false },
+            onConfirmScan = { payload ->
+                pendingScan = payload
+                if (title.isBlank() && payload.title.isNotBlank()) title = payload.title
+                if (payload.extractedAmountCents != null && payload.extractedAmountCents > 0L) {
+                    amountText = CurrencyUtils.centsToInputString(payload.extractedAmountCents)
+                }
+                if (!payload.extractedReference.isNullOrBlank()) docRef = payload.extractedReference
+                if (desc.isBlank() && !payload.extractedSummary.isNullOrBlank()) desc = payload.extractedSummary
+                showScanner = false
+            }
+        )
+    }
 }

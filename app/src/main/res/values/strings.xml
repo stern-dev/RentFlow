@@ -36,4 +36,27 @@
     <string name="checklist_overview_filtered_empty_title">No Matching Checklists</string>
     <string name="checklist_overview_filtered_empty_message">No move-in inspections match your active status, property, or search filters.</string>
     <string name="checklist_overview_loading">Loading checklist overview…</string>
+    <string name="doc_scanner_title">Document Scanner</string>
+    <string name="doc_scanner_capture_cd">Capture document page</string>
+    <string name="doc_scanner_flash_cd">Toggle camera flash</string>
+    <string name="doc_scanner_gallery_fallback">Import from Gallery</string>
+    <string name="doc_scanner_smart_extract">Smart Extract (AI)</string>
+    <string name="doc_scanner_save_upload">Save &amp; Upload</string>
+    <string name="doc_vault_title">Document Vault</string>
+    <string name="doc_vault_empty_title">No Scanned Documents</string>
+    <string name="doc_vault_empty_message">Scan signed lease agreements, M-Pesa/bank receipts, or expense vouchers to store them securely per unit.</string>
+    <string name="lease_automation_summary_title">Lease Renewal Automation</string>
+    <string name="lease_automation_run_sweep">Run Renewal Sweep</string>
+    <string name="lease_automation_policy_button">Policy</string>
+    <string name="lease_automation_policy_title">Renewal &amp; Late Fee Policy</string>
+    <string name="lease_automation_sweep_title">Lease Renewal Sweep</string>
+    <string name="late_fee_automation_title">Automated Late Fees</string>
+    <string name="late_fee_assess_button">Assess Fees</string>
+    <string name="late_fee_sweep_title">Assess Overdue Late Fees</string>
+    <string name="late_fee_waive_button">Waive Late Fee</string>
+    <string name="late_fee_waive_title">Waive Late Fee</string>
+    <string name="tenant_renewal_offer_title">Lease Renewal Offer Ready</string>
+    <string name="tenant_renewal_review_button">Review Offer</string>
+    <string name="tenant_renewal_accept_button">Accept Renewal</string>
+    <string name="tenant_renewal_decline_button">Decline Offer</string>
 </resources>

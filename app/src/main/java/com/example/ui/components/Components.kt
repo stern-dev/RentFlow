@@ -69,15 +69,17 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.domain.finance.CurrencyUtils
 import com.example.domain.finance.MonthlyCashFlowPoint
-import com.example.ui.theme.ChampagneAccent
-import com.example.ui.theme.ChampagneContainer
-import com.example.ui.theme.ChampagneLight
+import com.example.ui.theme.BrushedSilver
+import com.example.ui.theme.CobaltLight
 import com.example.ui.theme.DarkOutline
+import com.example.ui.theme.DarkPrimaryContainer
 import com.example.ui.theme.DarkSurfaceVariant
 import com.example.ui.theme.DarkTextPrimary
 import com.example.ui.theme.DarkTextSecondary
 import com.example.ui.theme.LocalIsDarkTheme
-import com.example.ui.theme.ObsidianPrimary
+import com.example.ui.theme.MidnightInk
+import com.example.ui.theme.MidnightSlate
+import com.example.ui.theme.MutedCobalt
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusErrorBg
 import com.example.ui.theme.StatusErrorBgDark
@@ -149,8 +151,8 @@ fun RentFlowKpiCard(
     Card(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = modifier
             .then(if (onClick != null) Modifier.minimumInteractiveComponentSize().clickable { onClick() } else Modifier)
     ) {
@@ -253,8 +255,8 @@ fun EmptyStateCard(
     Card(
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = modifier.fillMaxWidth()
     ) {
         Column(
@@ -381,9 +383,10 @@ fun AiInsightCard(
     Card(
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f)
+            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f)
         ),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f)),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.38f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = modifier
             .fillMaxWidth()
             .animateContentSize()
@@ -493,29 +496,38 @@ fun GuidedOnboardingCard(
     Card(
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Surface(
                 shape = MaterialTheme.shapes.medium,
-                color = if (isDark) DarkSurfaceVariant else ObsidianPrimary,
-                border = if (isDark) BorderStroke(1.dp, DarkOutline) else null,
-                modifier = Modifier.fillMaxWidth()
+                color = Color.Transparent,
+                border = BorderStroke(1.dp, if (isDark) DarkOutline else BrushedSilver.copy(alpha = 0.24f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        brush = Brush.linearGradient(
+                            if (isDark) listOf(DarkSurfaceVariant, DarkPrimaryContainer)
+                            else listOf(MidnightInk, MidnightSlate)
+                        ),
+                        shape = MaterialTheme.shapes.medium
+                    )
             ) {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.padding(16.dp)
                 ) {
                     Surface(
-                        color = ChampagneAccent.copy(alpha = 0.22f),
+                        color = MutedCobalt.copy(alpha = 0.34f),
+                        border = BorderStroke(1.dp, BrushedSilver.copy(alpha = 0.32f)),
                         shape = RoundedCornerShape(999.dp)
                     ) {
                         Text(
                             text = "WORKSPACE SETUP",
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            color = ChampagneLight,
+                            color = BrushedSilver,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                         )
                     }
@@ -588,8 +600,8 @@ fun OccupancyDonutChart(
     Card(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = modifier.fillMaxWidth()
     ) {
         Row(
@@ -671,8 +683,8 @@ fun IncomeExpenseBarChart(
     Card(
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {

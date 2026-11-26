@@ -61,6 +61,26 @@ enum class LeaseStatus(val label: String) {
     RENEWED("Renewed")
 }
 
+enum class RenewalMode(val label: String) {
+    MANUAL("Manual"),
+    AUTO_RENEW("Auto-Renew"),
+    OFFER("Renewal Offer")
+}
+
+enum class EscalationType(val label: String) {
+    NONE("No Increase"),
+    PERCENT("Percentage (%)"),
+    FIXED_KES("Fixed KES")
+}
+
+enum class RenewalOfferStatus(val label: String) {
+    NONE("None"),
+    PENDING("Offer Pending"),
+    ACCEPTED("Offer Accepted"),
+    DECLINED("Offer Declined"),
+    AUTO_RENEWED("Auto-Renewed")
+}
+
 enum class InvoiceStatus(val label: String) {
     UNPAID("Unpaid"),
     PARTIALLY_PAID("Partially Paid"),
@@ -227,6 +247,20 @@ enum class RefundMethod(val label: String) {
     BANK_TRANSFER("Bank Transfer"),
     CASH("Cash"),
     NONE("No Refund Due")
+}
+
+enum class DocumentType(val label: String) {
+    LEASE_AGREEMENT("Lease Agreement"),
+    PAYMENT_RECEIPT("Payment Receipt"),
+    EXPENSE_RECEIPT("Expense Receipt"),
+    TENANT_ID_KYC("Tenant ID / KYC"),
+    OTHER("Other Document")
+}
+
+enum class ScanFilterMode(val label: String) {
+    ORIGINAL("Original"),
+    CRISP_DOCUMENT("Crisp Document"),
+    BLACK_AND_WHITE("B&W High Contrast")
 }
 
 @Keep
@@ -601,10 +635,32 @@ data class Lease(
     val landlordSignature: DigitalSignature? = null,
     val tenantSignature: DigitalSignature? = null,
     val signedChecklistId: String? = null,
+    val renewalMode: String = RenewalMode.OFFER.name,
+    val renewalLeadDays: Long = 30L,
+    val renewalDurationMonths: Long = 12L,
+    val escalationType: String = EscalationType.NONE.name,
+    val escalationPercent: Double = 0.0,
+    val escalationFixedCents: Long = 0L,
+    val gracePeriodDays: Long = 5L,
+    val lateFeePercent: Double = 5.0,
+    val lateFeeEnabled: Boolean = true,
+    val renewalOfferStatus: String = RenewalOfferStatus.NONE.name,
+    val offeredRentCents: Long? = null,
+    val offeredEndDateEpochMs: Long? = null,
+    val renewalOfferedAtEpochMs: Long? = null,
+    val renewalRespondedAtEpochMs: Long? = null,
+    val renewalResponseNote: String? = null,
+    val lastRenewalProcessedForEndMs: Long? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
     fun statusEnum(): LeaseStatus = safeEnum(status, LeaseStatus.ACTIVE)
+
+    fun renewalModeEnum(): RenewalMode = safeEnum(renewalMode, RenewalMode.MANUAL)
+
+    fun escalationTypeEnum(): EscalationType = safeEnum(escalationType, EscalationType.NONE)
+
+    fun renewalOfferStatusEnum(): RenewalOfferStatus = safeEnum(renewalOfferStatus, RenewalOfferStatus.NONE)
 
     fun isMutuallySigned(): Boolean = landlordSignature != null && tenantSignature != null
 
@@ -633,6 +689,22 @@ data class Lease(
         "landlordSignature" to landlordSignature?.toMap(),
         "tenantSignature" to tenantSignature?.toMap(),
         "signedChecklistId" to signedChecklistId?.trim()?.take(128)?.takeIf { it.isNotBlank() },
+        "renewalMode" to renewalMode,
+        "renewalLeadDays" to renewalLeadDays.coerceIn(1L, 180L),
+        "renewalDurationMonths" to renewalDurationMonths.coerceIn(1L, 60L),
+        "escalationType" to escalationType,
+        "escalationPercent" to escalationPercent.coerceIn(0.0, 100.0),
+        "escalationFixedCents" to escalationFixedCents.coerceAtLeast(0L),
+        "gracePeriodDays" to gracePeriodDays.coerceIn(0L, 30L),
+        "lateFeePercent" to lateFeePercent.coerceIn(0.0, 50.0),
+        "lateFeeEnabled" to lateFeeEnabled,
+        "renewalOfferStatus" to renewalOfferStatus,
+        "offeredRentCents" to offeredRentCents,
+        "offeredEndDateEpochMs" to offeredEndDateEpochMs,
+        "renewalOfferedAtEpochMs" to renewalOfferedAtEpochMs,
+        "renewalRespondedAtEpochMs" to renewalRespondedAtEpochMs,
+        "renewalResponseNote" to renewalResponseNote?.trim()?.take(500)?.takeIf { it.isNotBlank() },
+        "lastRenewalProcessedForEndMs" to lastRenewalProcessedForEndMs,
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     ).filterValues { it != null } as Map<String, Any>
@@ -666,6 +738,13 @@ data class Invoice(
     val status: String = InvoiceStatus.UNPAID.name,
     val lastReminderSentEpochMs: Long? = null,
     val reminderCount: Long = 0L,
+    val lateFeeCents: Long = 0L,
+    val lateFeeRatePercent: Double = 0.0,
+    val lateFeeAppliedAtEpochMs: Long? = null,
+    val lateFeeWaived: Boolean = false,
+    val lateFeeWaivedReason: String? = null,
+    val lateFeeWaivedAtEpochMs: Long? = null,
+    val gracePeriodEndsEpochMs: Long? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -697,6 +776,13 @@ data class Invoice(
         "status" to status,
         "lastReminderSentEpochMs" to lastReminderSentEpochMs,
         "reminderCount" to reminderCount,
+        "lateFeeCents" to lateFeeCents.coerceAtLeast(0L),
+        "lateFeeRatePercent" to lateFeeRatePercent.coerceIn(0.0, 50.0),
+        "lateFeeAppliedAtEpochMs" to lateFeeAppliedAtEpochMs,
+        "lateFeeWaived" to lateFeeWaived,
+        "lateFeeWaivedReason" to lateFeeWaivedReason?.trim()?.take(300)?.takeIf { it.isNotBlank() },
+        "lateFeeWaivedAtEpochMs" to lateFeeWaivedAtEpochMs,
+        "gracePeriodEndsEpochMs" to gracePeriodEndsEpochMs,
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     ).filterValues { it != null } as Map<String, Any>
@@ -1576,6 +1662,84 @@ data class DepositSettlement(
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     ).filterValues { it != null } as Map<String, Any>
+}
+
+@Keep
+@IgnoreExtraProperties
+data class ScannedDocument(
+    @DocumentId val id: String = "",
+    val orgId: String = "",
+    val propertyId: String = "",
+    val propertyName: String = "",
+    val unitId: String = "",
+    val unitNumber: String = "",
+    val ownerUid: String = "",
+    val managerUids: List<String> = emptyList(),
+    val authorizedUids: List<String> = emptyList(),
+    val leaseId: String? = null,
+    val tenantUid: String? = null,
+    val tenantName: String? = null,
+    val paymentId: String? = null,
+    val expenseId: String? = null,
+    val documentType: String = DocumentType.LEASE_AGREEMENT.name,
+    val title: String = "",
+    val notes: String? = null,
+    val filterMode: String = ScanFilterMode.CRISP_DOCUMENT.name,
+    val pageImageRefs: List<String> = emptyList(),
+    val extractedReference: String? = null,
+    val extractedAmountCents: Long? = null,
+    val extractedDateText: String? = null,
+    val extractedSummary: String? = null,
+    val aiExtracted: Boolean = false,
+    val tenantVisible: Boolean = true,
+    val uploadedByUid: String = "",
+    val uploadedByName: String = "",
+    val uploadedByRole: String = UserRole.LANDLORD.name,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun typeEnum(): DocumentType = safeEnum(documentType, DocumentType.OTHER)
+    fun filterModeEnum(): ScanFilterMode = safeEnum(filterMode, ScanFilterMode.CRISP_DOCUMENT)
+    fun uploaderRoleEnum(): UserRole = safeEnum(uploadedByRole, UserRole.LANDLORD)
+
+    @Suppress("UNCHECKED_CAST")
+    fun toCreateMap(): Map<String, Any> = mapOf(
+        "orgId" to orgId.trim(),
+        "propertyId" to propertyId.trim(),
+        "propertyName" to propertyName.trim().take(120),
+        "unitId" to unitId.trim(),
+        "unitNumber" to unitNumber.trim().take(40),
+        "ownerUid" to ownerUid.trim(),
+        "managerUids" to managerUids.distinct().take(15),
+        "authorizedUids" to (authorizedUids + ownerUid).map { it.trim() }.filter { it.isNotBlank() }.distinct().take(20),
+        "leaseId" to leaseId?.trim()?.take(128)?.takeIf { it.isNotBlank() },
+        "tenantUid" to tenantUid?.trim()?.take(128)?.takeIf { it.isNotBlank() },
+        "tenantName" to tenantName?.trim()?.take(100)?.takeIf { it.isNotBlank() },
+        "paymentId" to paymentId?.trim()?.take(128)?.takeIf { it.isNotBlank() },
+        "expenseId" to expenseId?.trim()?.take(128)?.takeIf { it.isNotBlank() },
+        "documentType" to typeEnum().name,
+        "title" to title.trim().take(140),
+        "notes" to notes?.trim()?.take(800)?.takeIf { it.isNotBlank() },
+        "filterMode" to filterModeEnum().name,
+        "pageImageRefs" to pageImageRefs.take(MAX_PAGES),
+        "extractedReference" to extractedReference?.trim()?.uppercase()?.take(60)?.takeIf { it.isNotBlank() },
+        "extractedAmountCents" to extractedAmountCents?.takeIf { it > 0L },
+        "extractedDateText" to extractedDateText?.trim()?.take(40)?.takeIf { it.isNotBlank() },
+        "extractedSummary" to extractedSummary?.trim()?.take(500)?.takeIf { it.isNotBlank() },
+        "aiExtracted" to aiExtracted,
+        "tenantVisible" to tenantVisible,
+        "uploadedByUid" to uploadedByUid.trim(),
+        "uploadedByName" to uploadedByName.trim().ifBlank { "RentFlow User" }.take(100),
+        "uploadedByRole" to uploaderRoleEnum().name,
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp()
+    ).filterValues { it != null } as Map<String, Any>
+
+    companion object {
+        const val MAX_PAGES = 4
+        const val MAX_SINGLE_PAGE_CHARS = 350_000
+        const val MAX_TOTAL_PAYLOAD_CHARS = 700_000
+    }
 }
 
 object KenyaCounties {

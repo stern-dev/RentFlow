@@ -11,14 +11,15 @@ import com.example.data.repository.ThemeMode
 import com.example.data.repository.ThemePreferencesRepository
 import com.example.ui.components.PillTone
 import com.example.ui.components.StatusPill
-import com.example.ui.theme.AlabasterBg
-import com.example.ui.theme.ChampagneAccent
-import com.example.ui.theme.ChampagneLight
-import com.example.ui.theme.CrispWhite
+import com.example.ui.theme.BrushedSilver
+import com.example.ui.theme.CobaltLight
 import com.example.ui.theme.DarkBg
 import com.example.ui.theme.DarkSurface
+import com.example.ui.theme.IceCardSurface
 import com.example.ui.theme.LocalIsDarkTheme
-import com.example.ui.theme.ObsidianPrimary
+import com.example.ui.theme.MidnightInk
+import com.example.ui.theme.MistBlueBg
+import com.example.ui.theme.MutedCobalt
 import com.example.ui.theme.RentFlowTheme
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -53,7 +54,7 @@ class RentFlowThemeTest {
     }
 
     @Test
-    fun `light theme applies obsidian and champagne palette with local flag false`() {
+    fun `light theme applies midnight ink and muted cobalt palette with tonal blue surfaces`() {
         var capturedPrimary: androidx.compose.ui.graphics.Color? = null
         var capturedSecondary: androidx.compose.ui.graphics.Color? = null
         var capturedBackground: androidx.compose.ui.graphics.Color? = null
@@ -74,21 +75,22 @@ class RentFlowThemeTest {
             }
         }
 
-        assertEquals(ObsidianPrimary, capturedPrimary)
-        assertEquals(ChampagneAccent, capturedSecondary)
-        assertEquals(AlabasterBg, capturedBackground)
-        assertEquals(CrispWhite, capturedSurface)
+        assertEquals(MidnightInk, capturedPrimary)
+        assertEquals(MutedCobalt, capturedSecondary)
+        assertEquals(MistBlueBg, capturedBackground)
+        assertEquals(IceCardSurface, capturedSurface)
         assertFalse(capturedIsDark ?: true)
         composeTestRule.onNodeWithText("VERIFIED").assertIsDisplayed()
         composeTestRule.onNodeWithText("PENDING").assertIsDisplayed()
     }
 
     @Test
-    fun `dark theme applies obsidian night palette with champagne gold accent and local flag true`() {
+    fun `dark theme applies deep midnight slate palette with cobalt and brushed silver accents`() {
         var capturedBackground: androidx.compose.ui.graphics.Color? = null
         var capturedSurface: androidx.compose.ui.graphics.Color? = null
         var capturedSecondary: androidx.compose.ui.graphics.Color? = null
         var capturedOnSecondary: androidx.compose.ui.graphics.Color? = null
+        var capturedTertiary: androidx.compose.ui.graphics.Color? = null
         var capturedIsDark: Boolean? = null
 
         composeTestRule.setContent {
@@ -97,6 +99,7 @@ class RentFlowThemeTest {
                 capturedSurface = MaterialTheme.colorScheme.surface
                 capturedSecondary = MaterialTheme.colorScheme.secondary
                 capturedOnSecondary = MaterialTheme.colorScheme.onSecondary
+                capturedTertiary = MaterialTheme.colorScheme.tertiary
                 capturedIsDark = LocalIsDarkTheme.current
                 Column {
                     StatusPill(label = "SIGNED", tone = PillTone.SUCCESS)
@@ -107,8 +110,9 @@ class RentFlowThemeTest {
 
         assertEquals(DarkBg, capturedBackground)
         assertEquals(DarkSurface, capturedSurface)
-        assertEquals(ChampagneLight, capturedSecondary)
-        assertEquals(ObsidianPrimary, capturedOnSecondary)
+        assertEquals(CobaltLight, capturedSecondary)
+        assertEquals(MidnightInk, capturedOnSecondary)
+        assertEquals(BrushedSilver, capturedTertiary)
         assertTrue(capturedIsDark ?: false)
         composeTestRule.onNodeWithText("SIGNED").assertIsDisplayed()
         composeTestRule.onNodeWithText("OVERDUE").assertIsDisplayed()

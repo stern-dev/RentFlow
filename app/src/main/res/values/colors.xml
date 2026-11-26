@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="obsidian_primary">#FF141519</color>
-    <color name="champagne_gold">#FFB58938</color>
-    <color name="alabaster_bg">#FFF7F5F2</color>
+    <color name="midnight_ink">#FF0F1E36</color>
+    <color name="muted_cobalt">#FF2D5B8F</color>
+    <color name="mist_blue_bg">#FFEDF2F7</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 </resources>

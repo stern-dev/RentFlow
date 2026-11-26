@@ -7,6 +7,7 @@ import com.example.data.firebase.guardFirestoreReads
 import com.example.data.firebase.handleFirestoreError
 import com.example.domain.finance.CurrencyUtils
 import com.example.domain.finance.FinancialEngine
+import com.example.domain.finance.LeaseAutomationEngine
 import com.example.domain.finance.RentReminderEngine
 import com.example.domain.model.AppNotification
 import com.example.domain.model.AuditLog
@@ -160,6 +161,7 @@ class FinanceRepository(
 
                 val invoiceNumber = "INV-${billingPeriod.replace("-", "")}-${lease.unitNumber.take(6).uppercase()}"
                 val dueDateMs = CurrencyUtils.computeDueDateEpochMs(billingPeriod, lease.dueDayOfMonth.toInt())
+                val graceEndsMs = LeaseAutomationEngine.computeGracePeriodEndsMs(dueDateMs, lease.gracePeriodDays)
 
                 val invoice = Invoice(
                     invoiceNumber = invoiceNumber,
@@ -183,7 +185,8 @@ class FinanceRepository(
                     paidCents = creditToApply,
                     outstandingCents = outstanding,
                     dueDateEpochMs = dueDateMs,
-                    status = status.name
+                    status = status.name,
+                    gracePeriodEndsEpochMs = graceEndsMs
                 )
 
                 db.runTransaction { tx ->
@@ -685,6 +688,213 @@ class FinanceRepository(
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.UPDATE, "invoices")
+            Result.failure(e)
+        }
+    }
+
+    data class LateFeeSweepSummary(
+        val assessedCount: Int,
+        val totalFeeCents: Long
+    )
+
+    suspend fun runLateFeeAssessmentSweep(
+        invoices: List<Invoice>,
+        leases: List<Lease>,
+        actorName: String
+    ): Result<LateFeeSweepSummary> {
+        return try {
+            val uid = requireUserId()
+            val nowMs = System.currentTimeMillis()
+            val candidates = LeaseAutomationEngine.evaluateOverdueLateFees(invoices, leases, nowMs)
+            if (candidates.isEmpty()) {
+                return Result.success(LateFeeSweepSummary(0, 0L))
+            }
+
+            var assessedCount = 0
+            var totalFeeCents = 0L
+
+            for (candidate in candidates) {
+                val inv = candidate.invoice
+                val invRef = db.collection("invoices").document(inv.id)
+                val appliedFee = db.runTransaction { tx ->
+                    val snap = tx.get(invRef)
+                    val freshStatus = snap.getString("status") ?: return@runTransaction 0L
+                    if (freshStatus == InvoiceStatus.PAID.name || freshStatus == InvoiceStatus.CANCELLED.name) {
+                        return@runTransaction 0L
+                    }
+                    if (snap.getLong("lateFeeAppliedAtEpochMs") != null ||
+                        snap.getBoolean("lateFeeWaived") == true ||
+                        (snap.getLong("lateFeeCents") ?: 0L) > 0L
+                    ) {
+                        return@runTransaction 0L
+                    }
+                    val freshOut = snap.getLong("outstandingCents") ?: 0L
+                    val freshTotal = snap.getLong("totalDueCents") ?: 0L
+                    if (freshOut <= 0L) return@runTransaction 0L
+
+                    val feeCents = LeaseAutomationEngine.computeLateFeeCents(freshOut, candidate.lateFeeRatePercent)
+                    if (feeCents <= 0L) return@runTransaction 0L
+
+                    val newTotal = (freshTotal + feeCents).coerceAtMost(2_000_000_000L)
+                    val newOut = (freshOut + feeCents).coerceAtMost(2_000_000_000L)
+
+                    tx.update(
+                        invRef,
+                        mapOf(
+                            "lateFeeCents" to feeCents,
+                            "lateFeeRatePercent" to candidate.lateFeeRatePercent,
+                            "lateFeeAppliedAtEpochMs" to nowMs,
+                            "gracePeriodEndsEpochMs" to candidate.gracePeriodEndsEpochMs,
+                            "totalDueCents" to newTotal,
+                            "outstandingCents" to newOut,
+                            "status" to InvoiceStatus.OVERDUE.name,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    )
+                    feeCents
+                }.await()
+
+                if (appliedFee <= 0L) continue
+                assessedCount++
+                totalFeeCents += appliedFee
+
+                db.collection("notifications").document().set(
+                    AppNotification(
+                        recipientUid = inv.tenantUid,
+                        senderUid = uid,
+                        orgId = inv.orgId,
+                        type = NotificationType.INVOICE.name,
+                        title = "Late Fee Assessed (${inv.invoiceNumber})",
+                        body = "A ${LeaseAutomationEngine.formatPercent(candidate.lateFeeRatePercent)} late fee (${CurrencyUtils.formatKes(appliedFee, true)}) was added to ${inv.invoiceNumber} after the ${candidate.lease.gracePeriodDays}-day grace period.",
+                        relatedEntityId = inv.id,
+                        read = false
+                    ).toCreateMap()
+                ).await()
+            }
+
+            if (assessedCount > 0) {
+                val orgId = candidates.first().invoice.orgId
+                db.collection("audit_logs").document().set(
+                    AuditLog(
+                        orgId = orgId,
+                        actorUid = uid,
+                        actorName = actorName,
+                        action = "ASSESS_LATE_FEES",
+                        entityType = "Invoice",
+                        entityId = "sweep_$assessedCount",
+                        details = "Assessed late fees on $assessedCount overdue invoice(s) totaling ${CurrencyUtils.formatKes(totalFeeCents, true)}"
+                    ).toCreateMap()
+                ).await()
+            }
+
+            Result.success(LateFeeSweepSummary(assessedCount, totalFeeCents))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "invoices")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun waiveInvoiceLateFee(
+        invoice: Invoice,
+        reason: String,
+        actorName: String
+    ): Result<Unit> {
+        val path = "invoices/${invoice.id}"
+        return try {
+            val uid = requireUserId()
+            if (invoice.ownerUid != uid) {
+                return Result.failure(SecurityException("Only the property owner can waive late fees."))
+            }
+            val cleanReason = reason.trim().take(300)
+            require(cleanReason.length >= 3) { "Please provide an audit reason (at least 3 characters)." }
+
+            val nowMs = System.currentTimeMillis()
+            val invRef = db.collection("invoices").document(invoice.id)
+            val leaseRef = db.collection("leases").document(invoice.leaseId)
+
+            val waivedAmount = db.runTransaction { tx ->
+                val snap = tx.get(invRef)
+                val freshWaived = snap.getBoolean("lateFeeWaived") == true
+                val freshFee = snap.getLong("lateFeeCents") ?: 0L
+                check(!freshWaived && freshFee > 0L) {
+                    "No active late fee found to waive on this invoice."
+                }
+                val freshTotal = snap.getLong("totalDueCents") ?: invoice.totalDueCents
+                val freshPaid = snap.getLong("paidCents") ?: invoice.paidCents
+                val freshDueMs = snap.getLong("dueDateEpochMs") ?: invoice.dueDateEpochMs
+
+                val waiver = LeaseAutomationEngine.computeLateFeeWaiver(
+                    invoice = invoice.copy(
+                        lateFeeCents = freshFee,
+                        totalDueCents = freshTotal,
+                        paidCents = freshPaid,
+                        dueDateEpochMs = freshDueMs
+                    ),
+                    nowMs = nowMs
+                )
+
+                if (waiver.creditRefundCents > 0L) {
+                    val leaseSnap = tx.get(leaseRef)
+                    val currentCredit = leaseSnap.getLong("creditBalanceCents") ?: 0L
+                    val updatedCredit = (currentCredit + waiver.creditRefundCents).coerceAtMost(1_000_000_000L)
+                    tx.update(
+                        leaseRef,
+                        mapOf(
+                            "creditBalanceCents" to updatedCredit,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    )
+                }
+
+                tx.update(
+                    invRef,
+                    mapOf(
+                        "lateFeeCents" to 0L,
+                        "lateFeeWaived" to true,
+                        "lateFeeWaivedReason" to cleanReason,
+                        "lateFeeWaivedAtEpochMs" to nowMs,
+                        "totalDueCents" to waiver.newTotalDueCents,
+                        "paidCents" to waiver.newPaidCents,
+                        "outstandingCents" to waiver.newOutstandingCents,
+                        "status" to waiver.newStatus.name,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+                waiver.waivedFeeCents
+            }.await()
+
+            db.collection("notifications").document().set(
+                AppNotification(
+                    recipientUid = invoice.tenantUid,
+                    senderUid = uid,
+                    orgId = invoice.orgId,
+                    type = NotificationType.INVOICE.name,
+                    title = "Late Fee Waived (${invoice.invoiceNumber})",
+                    body = "${CurrencyUtils.formatKes(waivedAmount, true)} late fee on ${invoice.invoiceNumber} was waived: $cleanReason",
+                    relatedEntityId = invoice.id,
+                    read = false
+                ).toCreateMap()
+            ).await()
+
+            db.collection("audit_logs").document().set(
+                AuditLog(
+                    orgId = invoice.orgId,
+                    actorUid = uid,
+                    actorName = actorName,
+                    action = "WAIVE_LATE_FEE",
+                    entityType = "Invoice",
+                    entityId = invoice.id,
+                    details = "Waived ${CurrencyUtils.formatKes(waivedAmount, true)} late fee on ${invoice.invoiceNumber}: $cleanReason"
+                ).toCreateMap()
+            ).await()
+
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
             Result.failure(e)
         }
     }

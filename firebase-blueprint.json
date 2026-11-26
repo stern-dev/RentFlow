@@ -196,6 +196,22 @@
         "landlordSignature": { "type": "object" },
         "tenantSignature": { "type": "object" },
         "signedChecklistId": { "type": "string" },
+        "renewalMode": { "type": "string", "enum": ["MANUAL", "AUTO_RENEW", "OFFER"] },
+        "renewalLeadDays": { "type": "integer" },
+        "renewalDurationMonths": { "type": "integer" },
+        "escalationType": { "type": "string", "enum": ["NONE", "PERCENT", "FIXED_KES"] },
+        "escalationPercent": { "type": "number" },
+        "escalationFixedCents": { "type": "integer" },
+        "gracePeriodDays": { "type": "integer" },
+        "lateFeePercent": { "type": "number" },
+        "lateFeeEnabled": { "type": "boolean" },
+        "renewalOfferStatus": { "type": "string", "enum": ["NONE", "PENDING", "ACCEPTED", "DECLINED", "AUTO_RENEWED"] },
+        "offeredRentCents": { "type": "integer" },
+        "offeredEndDateEpochMs": { "type": "integer" },
+        "renewalOfferedAtEpochMs": { "type": "integer" },
+        "renewalRespondedAtEpochMs": { "type": "integer" },
+        "renewalResponseNote": { "type": "string" },
+        "lastRenewalProcessedForEndMs": { "type": "integer" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -230,6 +246,13 @@
         "status": { "type": "string", "enum": ["UNPAID", "PARTIALLY_PAID", "PAID", "OVERDUE", "CANCELLED"] },
         "lastReminderSentEpochMs": { "type": "integer" },
         "reminderCount": { "type": "integer" },
+        "lateFeeCents": { "type": "integer" },
+        "lateFeeRatePercent": { "type": "number" },
+        "lateFeeAppliedAtEpochMs": { "type": "integer" },
+        "lateFeeWaived": { "type": "boolean" },
+        "lateFeeWaivedReason": { "type": "string" },
+        "lateFeeWaivedAtEpochMs": { "type": "integer" },
+        "gracePeriodEndsEpochMs": { "type": "integer" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -619,6 +642,43 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["leaseId", "orgId", "propertyId", "propertyName", "unitId", "unitNumber", "ownerUid", "managerUids", "authorizedUids", "tenantUid", "tenantName", "depositHeldCents", "arrearsIncludedCents", "creditAppliedCents", "deductions", "deductionsTotalCents", "netRefundCents", "balanceOwedCents", "moveOutDateEpochMs", "keysReturnedCount", "imageRefs", "status", "refundMethod", "createdByUid", "createdAt", "updatedAt"]
+    },
+    "ScannedDocument": {
+      "title": "ScannedDocument",
+      "description": "Camera-captured lease agreement, payment receipt, expense receipt, or KYC document compressed as JPEG pages and linked to a specific unit and optional lease/tenant.",
+      "type": "object",
+      "properties": {
+        "orgId": { "type": "string" },
+        "propertyId": { "type": "string" },
+        "propertyName": { "type": "string" },
+        "unitId": { "type": "string" },
+        "unitNumber": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "managerUids": { "type": "array" },
+        "authorizedUids": { "type": "array" },
+        "leaseId": { "type": "string" },
+        "tenantUid": { "type": "string" },
+        "tenantName": { "type": "string" },
+        "paymentId": { "type": "string" },
+        "expenseId": { "type": "string" },
+        "documentType": { "type": "string", "enum": ["LEASE_AGREEMENT", "PAYMENT_RECEIPT", "EXPENSE_RECEIPT", "TENANT_ID_KYC", "OTHER"] },
+        "title": { "type": "string" },
+        "notes": { "type": "string" },
+        "filterMode": { "type": "string", "enum": ["ORIGINAL", "CRISP_DOCUMENT", "BLACK_AND_WHITE"] },
+        "pageImageRefs": { "type": "array" },
+        "extractedReference": { "type": "string" },
+        "extractedAmountCents": { "type": "integer" },
+        "extractedDateText": { "type": "string" },
+        "extractedSummary": { "type": "string" },
+        "aiExtracted": { "type": "boolean" },
+        "tenantVisible": { "type": "boolean" },
+        "uploadedByUid": { "type": "string" },
+        "uploadedByName": { "type": "string" },
+        "uploadedByRole": { "type": "string", "enum": ["LANDLORD", "PROPERTY_MANAGER", "TENANT", "ADMIN"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orgId", "propertyId", "propertyName", "unitId", "unitNumber", "ownerUid", "managerUids", "authorizedUids", "documentType", "title", "filterMode", "pageImageRefs", "aiExtracted", "tenantVisible", "uploadedByUid", "uploadedByName", "uploadedByRole", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -717,6 +777,10 @@
     "/reported_issues/{issueId}": {
       "schema": { "$ref": "#/entities/ReportedIssue" },
       "description": "Platform support/issue reports for administrators."
+    },
+    "/scanned_documents/{docId}": {
+      "schema": { "$ref": "#/entities/ScannedDocument" },
+      "description": "Unit and tenant-linked scanned lease agreements, payment receipts, expense vouchers, and ID documents."
     }
   }
 }

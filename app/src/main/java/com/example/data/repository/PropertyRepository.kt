@@ -5,9 +5,13 @@ import com.example.R
 import com.example.data.firebase.OperationType
 import com.example.data.firebase.guardFirestoreReads
 import com.example.data.firebase.handleFirestoreError
+import com.example.domain.finance.CurrencyUtils
+import com.example.domain.finance.LeaseAutomationEngine
+import com.example.domain.finance.RenewalActionType
 import com.example.domain.model.AppNotification
 import com.example.domain.model.ApplicationStatus
 import com.example.domain.model.AuditLog
+import com.example.domain.model.EscalationType
 import com.example.domain.model.IssueStatus
 import com.example.domain.model.Lease
 import com.example.domain.model.LeaseStatus
@@ -15,6 +19,8 @@ import com.example.domain.model.NotificationType
 import com.example.domain.model.Organization
 import com.example.domain.model.Property
 import com.example.domain.model.PropertyCategory
+import com.example.domain.model.RenewalMode
+import com.example.domain.model.RenewalOfferStatus
 import com.example.domain.model.RentalApplication
 import com.example.domain.model.RentalUnit
 import com.example.domain.model.ReportedIssue
@@ -1027,6 +1033,14 @@ class PropertyRepository(
         }
     }
 
+    data class LeaseRenewalSweepSummary(
+        val autoRenewedCount: Int,
+        val offersSentCount: Int,
+        val skippedOwnerOnlyCount: Int
+    ) {
+        val totalProcessedCount: Int get() = autoRenewedCount + offersSentCount
+    }
+
     suspend fun createLease(
         unit: RentalUnit,
         tenantUid: String,
@@ -1038,7 +1052,16 @@ class PropertyRepository(
         endDateEpochMs: Long,
         dueDayOfMonth: Long,
         termsSummary: String,
-        actorName: String
+        actorName: String,
+        renewalMode: RenewalMode = RenewalMode.OFFER,
+        renewalLeadDays: Long = 30L,
+        renewalDurationMonths: Long = 12L,
+        escalationType: EscalationType = EscalationType.NONE,
+        escalationPercent: Double = 0.0,
+        escalationFixedCents: Long = 0L,
+        gracePeriodDays: Long = 5L,
+        lateFeePercent: Double = 5.0,
+        lateFeeEnabled: Boolean = true
     ): Result<String> {
         val leaseRef = db.collection("leases").document()
         return try {
@@ -1076,7 +1099,17 @@ class PropertyRepository(
                 dueDayOfMonth = dueDayOfMonth.coerceIn(1L, 28L),
                 status = LeaseStatus.ACTIVE.name,
                 creditBalanceCents = 0L,
-                termsSummary = termsSummary.trim().take(1500)
+                termsSummary = termsSummary.trim().take(1500),
+                renewalMode = renewalMode.name,
+                renewalLeadDays = renewalLeadDays.coerceIn(1L, 180L),
+                renewalDurationMonths = renewalDurationMonths.coerceIn(1L, 60L),
+                escalationType = escalationType.name,
+                escalationPercent = escalationPercent.coerceIn(0.0, 100.0),
+                escalationFixedCents = escalationFixedCents.coerceAtLeast(0L),
+                gracePeriodDays = gracePeriodDays.coerceIn(0L, 30L),
+                lateFeePercent = lateFeePercent.coerceIn(0.0, 50.0),
+                lateFeeEnabled = lateFeeEnabled,
+                renewalOfferStatus = RenewalOfferStatus.NONE.name
             )
             leaseRef.set(lease.toCreateMap()).await()
 
@@ -1138,6 +1171,8 @@ class PropertyRepository(
             val updates = mutableMapOf<String, Any>(
                 "endDateEpochMs" to newEndDateEpochMs,
                 "status" to LeaseStatus.ACTIVE.name,
+                "renewalOfferStatus" to RenewalOfferStatus.NONE.name,
+                "lastRenewalProcessedForEndMs" to lease.endDateEpochMs,
                 "updatedAt" to FieldValue.serverTimestamp()
             )
             if (lease.ownerUid == uid) {
@@ -1166,6 +1201,292 @@ class PropertyRepository(
                     details = "Renewed lease for ${lease.tenantName}"
                 ).toCreateMap()
             ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateLeaseAutomationPolicy(
+        lease: Lease,
+        renewalMode: RenewalMode,
+        renewalLeadDays: Long,
+        renewalDurationMonths: Long,
+        escalationType: EscalationType,
+        escalationPercent: Double,
+        escalationFixedCents: Long,
+        gracePeriodDays: Long,
+        lateFeePercent: Double,
+        lateFeeEnabled: Boolean,
+        actorName: String
+    ): Result<Unit> {
+        val path = "leases/${lease.id}"
+        return try {
+            val uid = requireUserId()
+            val isOwner = lease.ownerUid == uid
+            val clampedLead = renewalLeadDays.coerceIn(1L, 180L)
+            val clampedDuration = renewalDurationMonths.coerceIn(1L, 60L)
+            val clampedEscPercent = escalationPercent.coerceIn(0.0, 100.0)
+            val clampedEscFixed = escalationFixedCents.coerceIn(0L, 1_000_000_000L)
+            val clampedGrace = gracePeriodDays.coerceIn(0L, 30L)
+            val clampedLatePercent = lateFeePercent.coerceIn(0.0, 50.0)
+
+            val pricingChanged = escalationType != lease.escalationTypeEnum() ||
+                clampedEscPercent != lease.escalationPercent ||
+                clampedEscFixed != lease.escalationFixedCents ||
+                clampedGrace != lease.gracePeriodDays ||
+                clampedLatePercent != lease.lateFeePercent ||
+                lateFeeEnabled != lease.lateFeeEnabled
+
+            if (pricingChanged && !isOwner) {
+                return Result.failure(
+                    SecurityException("Only the property owner can edit rent escalation or late fee pricing.")
+                )
+            }
+
+            val updates = mutableMapOf<String, Any>(
+                "renewalMode" to renewalMode.name,
+                "renewalLeadDays" to clampedLead,
+                "renewalDurationMonths" to clampedDuration,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            if (isOwner) {
+                updates["escalationType"] = escalationType.name
+                updates["escalationPercent"] = clampedEscPercent
+                updates["escalationFixedCents"] = clampedEscFixed
+                updates["gracePeriodDays"] = clampedGrace
+                updates["lateFeePercent"] = clampedLatePercent
+                updates["lateFeeEnabled"] = lateFeeEnabled
+            }
+            db.collection("leases").document(lease.id).update(updates).await()
+
+            writeAuditLogSafe(
+                orgId = lease.orgId,
+                actorUid = uid,
+                actorName = actorName,
+                action = "UPDATE_LEASE_AUTOMATION",
+                entityType = "Lease",
+                entityId = lease.id,
+                details = "Updated automation for ${lease.propertyName} Unit ${lease.unitNumber}: ${renewalMode.label}, grace ${clampedGrace}d, late fee ${LeaseAutomationEngine.formatPercent(clampedLatePercent)}"
+            )
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun runLeaseRenewalSweep(
+        leases: List<Lease>,
+        actorName: String
+    ): Result<LeaseRenewalSweepSummary> {
+        return try {
+            val uid = requireUserId()
+            val nowMs = System.currentTimeMillis()
+            val candidates = LeaseAutomationEngine.evaluateLeaseRenewals(leases, nowMs)
+            if (candidates.isEmpty()) {
+                return Result.success(LeaseRenewalSweepSummary(0, 0, 0))
+            }
+
+            var autoRenewedCount = 0
+            var offersSentCount = 0
+            var skippedOwnerOnlyCount = 0
+
+            for (candidate in candidates) {
+                val lease = candidate.lease
+                val isOwner = lease.ownerUid == uid
+                if (candidate.actionType == RenewalActionType.AUTO_RENEW &&
+                    !isOwner &&
+                    candidate.projectedRentCents != lease.rentCents
+                ) {
+                    skippedOwnerOnlyCount++
+                    continue
+                }
+
+                val leaseRef = db.collection("leases").document(lease.id)
+                val applied = db.runTransaction { tx ->
+                    val snap = tx.get(leaseRef)
+                    val currentStatus = snap.getString("status") ?: return@runTransaction false
+                    if (currentStatus != LeaseStatus.ACTIVE.name) return@runTransaction false
+                    val currentEndMs = snap.getLong("endDateEpochMs") ?: return@runTransaction false
+                    val processedFor = snap.getLong("lastRenewalProcessedForEndMs")
+                    val currentOfferStatus = snap.getString("renewalOfferStatus") ?: RenewalOfferStatus.NONE.name
+                    if (processedFor == currentEndMs || currentOfferStatus == RenewalOfferStatus.PENDING.name) {
+                        return@runTransaction false
+                    }
+
+                    val updates = mutableMapOf<String, Any>(
+                        "lastRenewalProcessedForEndMs" to currentEndMs,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                    when (candidate.actionType) {
+                        RenewalActionType.AUTO_RENEW -> {
+                            updates["endDateEpochMs"] = candidate.projectedEndDateEpochMs
+                            updates["status"] = LeaseStatus.ACTIVE.name
+                            updates["renewalOfferStatus"] = RenewalOfferStatus.AUTO_RENEWED.name
+                            if (isOwner && candidate.projectedRentCents != lease.rentCents) {
+                                updates["rentCents"] = candidate.projectedRentCents
+                            }
+                        }
+                        RenewalActionType.SEND_OFFER -> {
+                            updates["renewalOfferStatus"] = RenewalOfferStatus.PENDING.name
+                            updates["offeredRentCents"] = candidate.projectedRentCents
+                            updates["offeredEndDateEpochMs"] = candidate.projectedEndDateEpochMs
+                            updates["renewalOfferedAtEpochMs"] = nowMs
+                        }
+                    }
+                    tx.update(leaseRef, updates)
+                    true
+                }.await()
+
+                if (!applied) continue
+
+                when (candidate.actionType) {
+                    RenewalActionType.AUTO_RENEW -> {
+                        autoRenewedCount++
+                        db.collection("notifications").document().set(
+                            AppNotification(
+                                recipientUid = lease.tenantUid,
+                                senderUid = uid,
+                                orgId = lease.orgId,
+                                type = NotificationType.LEASE.name,
+                                title = "Lease Auto-Renewed",
+                                body = "${lease.propertyName} Unit ${lease.unitNumber} renewed through ${CurrencyUtils.formatDate(candidate.projectedEndDateEpochMs)} at ${CurrencyUtils.formatKes(candidate.projectedRentCents, true)}/mo.",
+                                relatedEntityId = lease.id,
+                                read = false
+                            ).toCreateMap()
+                        ).await()
+                        writeAuditLogSafe(
+                            orgId = lease.orgId,
+                            actorUid = uid,
+                            actorName = actorName,
+                            action = "AUTO_RENEW_LEASE",
+                            entityType = "Lease",
+                            entityId = lease.id,
+                            details = "Auto-renewed ${lease.propertyName} Unit ${lease.unitNumber} until ${CurrencyUtils.formatDate(candidate.projectedEndDateEpochMs)} (${CurrencyUtils.formatKes(candidate.projectedRentCents, true)})"
+                        )
+                    }
+                    RenewalActionType.SEND_OFFER -> {
+                        offersSentCount++
+                        db.collection("notifications").document().set(
+                            AppNotification(
+                                recipientUid = lease.tenantUid,
+                                senderUid = uid,
+                                orgId = lease.orgId,
+                                type = NotificationType.LEASE.name,
+                                title = "Lease Renewal Offer Available",
+                                body = "Review your renewal offer for ${lease.propertyName} Unit ${lease.unitNumber}: ${CurrencyUtils.formatKes(candidate.projectedRentCents, true)}/mo until ${CurrencyUtils.formatDate(candidate.projectedEndDateEpochMs)}.",
+                                relatedEntityId = lease.id,
+                                read = false
+                            ).toCreateMap()
+                        ).await()
+                        writeAuditLogSafe(
+                            orgId = lease.orgId,
+                            actorUid = uid,
+                            actorName = actorName,
+                            action = "SEND_RENEWAL_OFFER",
+                            entityType = "Lease",
+                            entityId = lease.id,
+                            details = "Sent renewal offer for ${lease.propertyName} Unit ${lease.unitNumber} at ${CurrencyUtils.formatKes(candidate.projectedRentCents, true)}"
+                        )
+                    }
+                }
+            }
+
+            Result.success(
+                LeaseRenewalSweepSummary(
+                    autoRenewedCount = autoRenewedCount,
+                    offersSentCount = offersSentCount,
+                    skippedOwnerOnlyCount = skippedOwnerOnlyCount
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "leases")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun respondToRenewalOffer(
+        lease: Lease,
+        accept: Boolean,
+        responseNote: String?,
+        actorName: String
+    ): Result<Unit> {
+        val path = "leases/${lease.id}"
+        return try {
+            val uid = requireUserId()
+            require(lease.tenantUid == uid) { "Only the tenant on the lease can respond to a renewal offer." }
+            require(lease.statusEnum() == LeaseStatus.ACTIVE) { "Lease is not active." }
+            require(lease.renewalOfferStatusEnum() == RenewalOfferStatus.PENDING) {
+                "No pending renewal offer found for this lease."
+            }
+
+            val nowMs = System.currentTimeMillis()
+            val cleanNote = responseNote?.trim()?.take(500)?.takeIf { it.isNotBlank() }
+            val leaseRef = db.collection("leases").document(lease.id)
+
+            val (finalRentCents, finalEndMs) = db.runTransaction { tx ->
+                val snap = tx.get(leaseRef)
+                val status = snap.getString("status")
+                val offerStatus = snap.getString("renewalOfferStatus")
+                check(status == LeaseStatus.ACTIVE.name && offerStatus == RenewalOfferStatus.PENDING.name) {
+                    "This renewal offer has already been processed."
+                }
+                val offeredRent = snap.getLong("offeredRentCents") ?: lease.rentCents
+                val offeredEnd = snap.getLong("offeredEndDateEpochMs") ?: lease.endDateEpochMs
+
+                val updates = mutableMapOf<String, Any>(
+                    "renewalOfferStatus" to if (accept) RenewalOfferStatus.ACCEPTED.name else RenewalOfferStatus.DECLINED.name,
+                    "renewalRespondedAtEpochMs" to nowMs,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                if (cleanNote != null) {
+                    updates["renewalResponseNote"] = cleanNote
+                }
+                if (accept) {
+                    updates["rentCents"] = offeredRent
+                    updates["endDateEpochMs"] = offeredEnd
+                    updates["status"] = LeaseStatus.ACTIVE.name
+                }
+                tx.update(leaseRef, updates)
+                offeredRent to offeredEnd
+            }.await()
+
+            val notifTitle = if (accept) "Renewal Offer Accepted" else "Renewal Offer Declined"
+            val notifBody = if (accept) {
+                "${lease.tenantName} accepted renewal for ${lease.propertyName} Unit ${lease.unitNumber} at ${CurrencyUtils.formatKes(finalRentCents, true)}/mo until ${CurrencyUtils.formatDate(finalEndMs)}."
+            } else {
+                "${lease.tenantName} declined the renewal offer for ${lease.propertyName} Unit ${lease.unitNumber}.${cleanNote?.let { " Note: $it" } ?: ""}"
+            }
+            db.collection("notifications").document().set(
+                AppNotification(
+                    recipientUid = lease.ownerUid,
+                    senderUid = uid,
+                    orgId = lease.orgId,
+                    type = NotificationType.LEASE.name,
+                    title = notifTitle,
+                    body = notifBody.take(500),
+                    relatedEntityId = lease.id,
+                    read = false
+                ).toCreateMap()
+            ).await()
+
+            writeAuditLogSafe(
+                orgId = lease.orgId,
+                actorUid = uid,
+                actorName = actorName,
+                action = if (accept) "ACCEPT_RENEWAL_OFFER" else "DECLINE_RENEWAL_OFFER",
+                entityType = "Lease",
+                entityId = lease.id,
+                details = notifBody.take(300)
+            )
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e

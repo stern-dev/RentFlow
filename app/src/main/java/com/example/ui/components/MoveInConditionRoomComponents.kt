@@ -87,9 +87,9 @@ internal fun RoomSectionHeaderCard(
         ),
         border = BorderStroke(
             width = 1.dp,
-            color = if (allChecked) MaterialTheme.colorScheme.secondary.copy(alpha = 0.65f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
+            color = if (allChecked) MaterialTheme.colorScheme.secondary.copy(alpha = 0.65f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = Modifier
             .fillMaxWidth()
             .testTag("room_section_header_${room.roomId}")
@@ -212,10 +212,10 @@ internal fun RoomInspectionItemCard(
             color = when {
                 isFlaggedIssue -> StatusWarning.copy(alpha = 0.5f)
                 isInspected -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.6f)
-                else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
+                else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)
             }
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = Modifier
             .fillMaxWidth()
             .testTag("inspection_item_card_${item.itemId}")

@@ -100,8 +100,8 @@ import com.example.domain.finance.PdfPrintAndShareHelper
 import com.example.domain.model.Lease
 import com.example.domain.model.MoveInConditionChecklist
 import androidx.compose.foundation.shape.RoundedCornerShape
-import com.example.ui.theme.CrispWhite
 import com.example.ui.theme.LocalIsDarkTheme
+import com.example.ui.theme.PaperWhite
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.StatusWarningBg
@@ -341,9 +341,9 @@ fun PdfViewerFullScreen(
                 if (uiState is PdfViewerUiState.Ready) {
                     val doc = uiState.document
                     Surface(
-                        tonalElevation = 0.dp,
-                        shadowElevation = 0.dp,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
+                        tonalElevation = 2.dp,
+                        shadowElevation = 2.dp,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)),
                         color = MaterialTheme.colorScheme.surface,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -718,9 +718,9 @@ private fun PdfPageSheetCard(
 ) {
     Card(
         shape = MaterialTheme.shapes.small,
-        colors = CardDefaults.cardColors(containerColor = CrispWhite),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        colors = CardDefaults.cardColors(containerColor = PaperWhite),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         modifier = modifier.aspectRatio(595f / 842f)
     ) {
         Box(modifier = Modifier.fillMaxSize()) {

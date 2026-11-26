@@ -442,7 +442,7 @@ class MpesaReceiptAutomationTest {
                     isBusy = false,
                     initialPrefilledReceipt = detectedReceipt,
                     onDismiss = {},
-                    onSubmit = { _, _, _, _, _, _, _, _ -> }
+                    onSubmit = { _, _, _, _, _, _, _, _, _ -> }
                 )
             }
         }
