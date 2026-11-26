@@ -71,6 +71,8 @@ object NotificationHelper {
     const val EVENT_LEASE_AUTO_RENEWED = "LEASE_AUTO_RENEWED"
     const val EVENT_LEASE_RENEWAL_RESPONSE = "LEASE_RENEWAL_RESPONSE"
     const val EVENT_LATE_FEE_ASSESSED = "LATE_FEE_ASSESSED"
+    const val EVENT_MOVE_OUT_NOTICE_SUBMITTED = "MOVE_OUT_NOTICE_SUBMITTED"
+    const val EVENT_MOVE_OUT_NOTICE_REVIEWED = "MOVE_OUT_NOTICE_REVIEWED"
 
     private const val DEDUP_WINDOW_MS = 30_000L
     private const val MAX_DEDUP_ENTRIES = 64
@@ -156,7 +158,8 @@ object NotificationHelper {
             EVENT_CHECKLIST_PENDING_REVIEW,
             EVENT_SETTLEMENT_ISSUED,
             EVENT_SETTLEMENT_SETTLED,
-            EVENT_LEASE_RENEWAL_OFFER -> ROUTE_TENANT_HOME
+            EVENT_LEASE_RENEWAL_OFFER,
+            EVENT_MOVE_OUT_NOTICE_REVIEWED -> ROUTE_TENANT_HOME
             EVENT_LEASE_AUTO_RENEWED -> when (recipientRole?.trim()?.uppercase()) {
                 "LANDLORD", "PROPERTY_MANAGER" -> ROUTE_LANDLORD_PORTFOLIO
                 else -> ROUTE_TENANT_HOME
@@ -165,7 +168,8 @@ object NotificationHelper {
             EVENT_CHECKLIST_DISPUTED,
             EVENT_SETTLEMENT_APPROVED,
             EVENT_SETTLEMENT_DISPUTED,
-            EVENT_LEASE_RENEWAL_RESPONSE -> ROUTE_LANDLORD_PORTFOLIO
+            EVENT_LEASE_RENEWAL_RESPONSE,
+            EVENT_MOVE_OUT_NOTICE_SUBMITTED -> ROUTE_LANDLORD_PORTFOLIO
             EVENT_RENT_REMINDER -> when (recipientRole?.trim()?.uppercase()) {
                 "LANDLORD", "PROPERTY_MANAGER" -> ROUTE_LANDLORD_FINANCE
                 else -> ROUTE_TENANT_PAY
@@ -197,7 +201,8 @@ object NotificationHelper {
             EVENT_SETTLEMENT_APPROVED,
             EVENT_SETTLEMENT_DISPUTED,
             EVENT_LEASE_AUTO_RENEWED,
-            EVENT_LEASE_RENEWAL_RESPONSE -> TAB_LANDLORD_LEASES
+            EVENT_LEASE_RENEWAL_RESPONSE,
+            EVENT_MOVE_OUT_NOTICE_SUBMITTED -> TAB_LANDLORD_LEASES
             else -> null
         }
     }

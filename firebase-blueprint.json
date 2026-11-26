@@ -212,6 +212,15 @@
         "renewalRespondedAtEpochMs": { "type": "integer" },
         "renewalResponseNote": { "type": "string" },
         "lastRenewalProcessedForEndMs": { "type": "integer" },
+        "noticePeriodDays": { "type": "integer" },
+        "autoBillingEnabled": { "type": "boolean" },
+        "billingLeadDays": { "type": "integer" },
+        "moveOutNoticeStatus": { "type": "string", "enum": ["NONE", "SUBMITTED", "ACKNOWLEDGED", "DECLINED", "WITHDRAWN"] },
+        "requestedMoveOutEpochMs": { "type": "integer" },
+        "moveOutNoticeSubmittedAtMs": { "type": "integer" },
+        "moveOutNoticeReason": { "type": "string" },
+        "moveOutNoticeReviewedAtMs": { "type": "integer" },
+        "moveOutNoticeResponseNote": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -223,6 +232,7 @@
       "type": "object",
       "properties": {
         "invoiceNumber": { "type": "string" },
+        "scheduleId": { "type": "string" },
         "leaseId": { "type": "string" },
         "orgId": { "type": "string" },
         "propertyId": { "type": "string" },
@@ -235,6 +245,7 @@
         "tenantUid": { "type": "string" },
         "tenantName": { "type": "string" },
         "billingPeriod": { "type": "string" },
+        "billingDateEpochMs": { "type": "integer" },
         "rentCents": { "type": "integer" },
         "extraChargesCents": { "type": "integer" },
         "extraChargesNote": { "type": "string" },
@@ -243,7 +254,9 @@
         "paidCents": { "type": "integer" },
         "outstandingCents": { "type": "integer" },
         "dueDateEpochMs": { "type": "integer" },
-        "status": { "type": "string", "enum": ["UNPAID", "PARTIALLY_PAID", "PAID", "OVERDUE", "CANCELLED"] },
+        "issuedAtEpochMs": { "type": "integer" },
+        "paidAtEpochMs": { "type": "integer" },
+        "status": { "type": "string", "enum": ["DRAFT", "ISSUED", "UNPAID", "PARTIALLY_PAID", "PAID", "OVERDUE", "CANCELLED"] },
         "lastReminderSentEpochMs": { "type": "integer" },
         "reminderCount": { "type": "integer" },
         "lateFeeCents": { "type": "integer" },
@@ -253,10 +266,44 @@
         "lateFeeWaivedReason": { "type": "string" },
         "lateFeeWaivedAtEpochMs": { "type": "integer" },
         "gracePeriodEndsEpochMs": { "type": "integer" },
+        "prorated": { "type": "boolean" },
+        "prorationNote": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["invoiceNumber", "leaseId", "orgId", "propertyId", "propertyName", "unitId", "unitNumber", "ownerUid", "managerUids", "authorizedUids", "tenantUid", "tenantName", "billingPeriod", "rentCents", "extraChargesCents", "previousBalanceCents", "totalDueCents", "paidCents", "outstandingCents", "dueDateEpochMs", "status", "createdAt", "updatedAt"]
+    },
+    "RecurringInvoiceSchedule": {
+      "title": "RecurringInvoiceSchedule",
+      "description": "Recurring monthly billing schedule keyed by leaseId. Grace period and late-fee settings are referenced strictly from the linked Lease document.",
+      "type": "object",
+      "properties": {
+        "orgId": { "type": "string" },
+        "propertyId": { "type": "string" },
+        "propertyName": { "type": "string" },
+        "unitId": { "type": "string" },
+        "unitNumber": { "type": "string" },
+        "leaseId": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "managerUids": { "type": "array" },
+        "authorizedUids": { "type": "array" },
+        "tenantUid": { "type": "string" },
+        "tenantName": { "type": "string" },
+        "amountCents": { "type": "integer" },
+        "recurringExtraCents": { "type": "integer" },
+        "recurringExtraNote": { "type": "string" },
+        "billingDayOfMonth": { "type": "integer" },
+        "leadDays": { "type": "integer" },
+        "nextBillingEpochMs": { "type": "integer" },
+        "lastBilledPeriod": { "type": "string" },
+        "lastInvoiceId": { "type": "string" },
+        "lastBilledAtEpochMs": { "type": "integer" },
+        "scheduleStatus": { "type": "string", "enum": ["ACTIVE", "PAUSED", "ENDED"] },
+        "issueMode": { "type": "string", "enum": ["AUTO_ISSUE", "DRAFT_FOR_REVIEW"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orgId", "propertyId", "propertyName", "unitId", "unitNumber", "leaseId", "ownerUid", "managerUids", "authorizedUids", "tenantUid", "tenantName", "amountCents", "recurringExtraCents", "billingDayOfMonth", "leadDays", "nextBillingEpochMs", "scheduleStatus", "issueMode", "createdAt", "updatedAt"]
     },
     "Payment": {
       "title": "Payment",
@@ -737,6 +784,10 @@
     "/deposit_settlements/{settlementId}": {
       "schema": { "$ref": "#/entities/DepositSettlement" },
       "description": "Move-out inspections and itemized security deposit settlement ledgers."
+    },
+    "/recurring_invoices/{scheduleId}": {
+      "schema": { "$ref": "#/entities/RecurringInvoiceSchedule" },
+      "description": "Recurring monthly invoice schedules keyed by leaseId (grace period terms sourced strictly from leases/{leaseId})."
     },
     "/invoices/{invoiceId}": {
       "schema": { "$ref": "#/entities/Invoice" },

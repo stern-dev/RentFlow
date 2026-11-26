@@ -48,6 +48,9 @@ import com.example.domain.model.PaymentChannelType
 import com.example.domain.model.PaymentMethod
 import com.example.domain.model.Property
 import com.example.domain.model.PropertyCategory
+import com.example.domain.model.RecurringInvoiceSchedule
+import com.example.domain.model.RecurringIssueMode
+import com.example.domain.model.RecurringScheduleStatus
 import com.example.domain.model.RenewalMode
 import com.example.domain.model.RentalApplication
 import com.example.domain.model.RentalUnit
@@ -181,6 +184,11 @@ class LandlordViewModel(
     val invoices: StateFlow<UiState<List<Invoice>>> = financeRepo.observeInvoicesForLandlord(currentUserId)
         .asUiState("LandlordVM", "Failed to load invoices")
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
+
+    val recurringSchedules: StateFlow<UiState<List<RecurringInvoiceSchedule>>> =
+        financeRepo.observeRecurringSchedulesForLandlord(currentUserId)
+            .asUiState("LandlordVM", "Failed to load recurring schedules")
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
     val payments: StateFlow<UiState<List<Payment>>> = financeRepo.observePaymentsForLandlord(currentUserId)
         .asUiState("LandlordVM", "Failed to load payments")
@@ -608,6 +616,9 @@ class LandlordViewModel(
         gracePeriodDays: Long = 5L,
         lateFeePercent: Double = 5.0,
         lateFeeEnabled: Boolean = true,
+        noticePeriodDays: Long = 30L,
+        autoBillingEnabled: Boolean = true,
+        billingLeadDays: Long = 5L,
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
@@ -632,7 +643,10 @@ class LandlordViewModel(
                 escalationFixedCents = escalationFixedCents,
                 gracePeriodDays = gracePeriodDays,
                 lateFeePercent = lateFeePercent,
-                lateFeeEnabled = lateFeeEnabled
+                lateFeeEnabled = lateFeeEnabled,
+                noticePeriodDays = noticePeriodDays,
+                autoBillingEnabled = autoBillingEnabled,
+                billingLeadDays = billingLeadDays
             )
             _busy.value = false
             res.fold(
@@ -668,6 +682,9 @@ class LandlordViewModel(
         gracePeriodDays: Long,
         lateFeePercent: Double,
         lateFeeEnabled: Boolean,
+        noticePeriodDays: Long = lease.noticePeriodDays,
+        autoBillingEnabled: Boolean = lease.autoBillingEnabled,
+        billingLeadDays: Long = lease.billingLeadDays,
         actorName: String,
         onSuccess: () -> Unit = {}
     ) {
@@ -684,6 +701,9 @@ class LandlordViewModel(
                 gracePeriodDays = gracePeriodDays,
                 lateFeePercent = lateFeePercent,
                 lateFeeEnabled = lateFeeEnabled,
+                noticePeriodDays = noticePeriodDays,
+                autoBillingEnabled = autoBillingEnabled,
+                billingLeadDays = billingLeadDays,
                 actorName = actorName
             )
             _busy.value = false
@@ -694,6 +714,38 @@ class LandlordViewModel(
                 },
                 onFailure = {
                     _feedback.value = it.localizedMessage ?: "Failed to update automation policy"
+                }
+            )
+        }
+    }
+
+    fun reviewMoveOutNotice(
+        lease: Lease,
+        acknowledge: Boolean,
+        responseNote: String?,
+        actorName: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _busy.value = true
+            val res = propertyRepo.reviewMoveOutNotice(
+                lease = lease,
+                acknowledge = acknowledge,
+                responseNote = responseNote,
+                actorName = actorName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = if (acknowledge) {
+                        "Move-out notice acknowledged for Unit ${lease.unitNumber}"
+                    } else {
+                        "Revision note sent to ${lease.tenantName}"
+                    }
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to review move-out notice"
                 }
             )
         }
@@ -935,22 +987,164 @@ class LandlordViewModel(
         billingPeriod: String,
         extraChargesCents: Long,
         extraChargesNote: String?,
-        actorName: String
+        actorName: String,
+        issueAsDraft: Boolean = false
     ) {
         viewModelScope.launch {
             val leaseList = (leases.value as? UiState.Success)?.data ?: emptyList()
             val invList = (invoices.value as? UiState.Success)?.data ?: emptyList()
+            val scheduleList = (recurringSchedules.value as? UiState.Success)?.data ?: emptyList()
             _busy.value = true
             val res = financeRepo.generateMonthlyInvoices(
-                leaseList, invList, billingPeriod, extraChargesCents, extraChargesNote, actorName
+                leases = leaseList,
+                existingInvoices = invList,
+                billingPeriod = billingPeriod,
+                extraChargesCents = extraChargesCents,
+                extraChargesNote = extraChargesNote,
+                actorName = actorName,
+                schedules = scheduleList,
+                issueAsDraft = issueAsDraft
             )
             _busy.value = false
             _feedback.value = res.fold(
                 onSuccess = { count ->
-                    if (count == 0) "All active leases already invoiced for $billingPeriod"
-                    else "Generated $count invoice(s) for $billingPeriod"
+                    when {
+                        count == 0 -> "All active leases already invoiced for $billingPeriod"
+                        issueAsDraft -> "Staged $count draft invoice(s) for $billingPeriod"
+                        else -> "Generated $count invoice(s) for $billingPeriod"
+                    }
                 },
                 onFailure = { it.localizedMessage ?: "Failed to generate invoices" }
+            )
+        }
+    }
+
+    fun runAutoBillingSweep(
+        actorName: String,
+        onComplete: (FinanceRepository.AutoBillingSweepSummary) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val leaseList = (leases.value as? UiState.Success)?.data ?: emptyList()
+            val invList = (invoices.value as? UiState.Success)?.data ?: emptyList()
+            val scheduleList = (recurringSchedules.value as? UiState.Success)?.data ?: emptyList()
+            _busy.value = true
+            val res = financeRepo.runAutoBillingSweep(
+                leases = leaseList,
+                existingInvoices = invList,
+                actorName = actorName,
+                schedules = scheduleList
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = { summary ->
+                    _feedback.value = if (summary.generatedCount == 0) {
+                        "No leases are inside their automated billing window right now"
+                    } else {
+                        val proratedNote = if (summary.proratedCount > 0) " (${summary.proratedCount} prorated)" else ""
+                        val draftNote = if (summary.draftCount > 0) " • ${summary.draftCount} staged as draft" else ""
+                        "Auto-billed ${summary.generatedCount} invoice(s)$proratedNote$draftNote totaling ${CurrencyUtils.formatKes(summary.totalBilledCents, true)}"
+                    }
+                    onComplete(summary)
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Auto-billing sweep failed"
+                }
+            )
+        }
+    }
+
+    fun saveRecurringSchedule(
+        lease: Lease,
+        existingSchedule: RecurringInvoiceSchedule?,
+        amountCents: Long,
+        recurringExtraCents: Long,
+        recurringExtraNote: String?,
+        billingDayOfMonth: Long,
+        leadDays: Long,
+        scheduleStatus: RecurringScheduleStatus,
+        issueMode: RecurringIssueMode,
+        actorName: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _busy.value = true
+            val res = financeRepo.upsertRecurringSchedule(
+                lease = lease,
+                existingSchedule = existingSchedule,
+                amountCents = amountCents,
+                recurringExtraCents = recurringExtraCents,
+                recurringExtraNote = recurringExtraNote,
+                billingDayOfMonth = billingDayOfMonth,
+                leadDays = leadDays,
+                scheduleStatus = scheduleStatus,
+                issueMode = issueMode,
+                actorName = actorName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = "Recurring schedule updated for Unit ${lease.unitNumber}"
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to save recurring schedule"
+                }
+            )
+        }
+    }
+
+    fun issueDraftInvoice(
+        invoice: Invoice,
+        lease: Lease,
+        extraChargesCents: Long,
+        extraChargesNote: String?,
+        actorName: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _busy.value = true
+            val res = financeRepo.issueDraftInvoice(
+                invoice = invoice,
+                lease = lease,
+                extraChargesCents = extraChargesCents,
+                extraChargesNote = extraChargesNote,
+                actorName = actorName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = "Issued ${invoice.invoiceNumber} to ${invoice.tenantName}"
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to issue draft invoice"
+                }
+            )
+        }
+    }
+
+    fun cancelDraftInvoice(
+        invoice: Invoice,
+        reason: String?,
+        actorName: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _busy.value = true
+            val res = financeRepo.cancelDraftInvoice(
+                invoice = invoice,
+                reason = reason,
+                actorName = actorName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = "Cancelled draft ${invoice.invoiceNumber}"
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to cancel draft invoice"
+                }
             )
         }
     }

@@ -59,4 +59,9 @@
     <string name="tenant_renewal_review_button">Review Offer</string>
     <string name="tenant_renewal_accept_button">Accept Renewal</string>
     <string name="tenant_renewal_decline_button">Decline Offer</string>
+    <string name="auto_billing_title">Automated Monthly Billing</string>
+    <string name="auto_billing_sweep_title">Automated Monthly Billing Sweep</string>
+    <string name="move_out_notice_title">Move-Out Notice</string>
+    <string name="move_out_notice_submit_button">Give Move-Out Notice</string>
+    <string name="move_out_notice_review_title">Review Move-Out Notice</string>
 </resources>

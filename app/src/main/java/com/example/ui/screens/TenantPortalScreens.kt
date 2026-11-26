@@ -111,6 +111,7 @@ import com.example.domain.model.MaintenanceRequest
 import com.example.domain.model.MaintenanceStatus
 import com.example.domain.model.MoveInChecklist
 import com.example.domain.model.MoveInConditionChecklist
+import com.example.domain.model.MoveOutNoticeStatus
 import com.example.domain.model.MpesaReceipt
 import com.example.domain.model.Payment
 import com.example.domain.model.PaymentChannelType
@@ -141,6 +142,8 @@ import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusPill
 import com.example.ui.components.TenantDepositSettlementReviewDialog
 import com.example.ui.components.TenantMoveInChecklistReviewDialog
+import com.example.ui.components.TenantMoveOutNoticeCard
+import com.example.ui.components.TenantMoveOutNoticeDialog
 import com.example.ui.components.TenantRenewalOfferCard
 import com.example.ui.components.TenantRenewalOfferReviewDialog
 import com.example.ui.components.exportDepositSettlementPdf
@@ -216,6 +219,7 @@ fun TenantDashboardScreen(
     var conditionChecklistForPdfViewer by remember { mutableStateOf<Pair<MoveInConditionChecklist, Lease?>?>(null) }
     var settlementForReview by remember { mutableStateOf<DepositSettlement?>(null) }
     var leaseOfferToReview by remember { mutableStateOf<Lease?>(null) }
+    var showMoveOutNoticeDialog by remember { mutableStateOf(false) }
     var showTenantVault by remember { mutableStateOf(false) }
     var showTenantScanner by remember { mutableStateOf(false) }
 
@@ -578,6 +582,23 @@ fun TenantDashboardScreen(
             }
         }
 
+        val activeMoveOutLease = activeLease?.takeIf { it.statusEnum() == LeaseStatus.ACTIVE }
+        if (activeMoveOutLease != null) {
+            item(key = "tenant_move_out_notice_section") {
+                TenantMoveOutNoticeCard(
+                    lease = activeMoveOutLease,
+                    isBusy = busy,
+                    onOpenSubmitNotice = { showMoveOutNoticeDialog = true },
+                    onWithdrawNotice = {
+                        viewModel.withdrawMoveOutNotice(
+                            lease = activeMoveOutLease,
+                            actorName = currentUser.fullName
+                        )
+                    }
+                )
+            }
+        }
+
         if (activeLease != null || activeConditionChecklist != null) {
             item(key = "tenant_condition_checklist_summary") {
                 val label = activeLease?.let { "${it.propertyName} • Unit ${it.unitNumber}" }
@@ -833,6 +854,24 @@ fun TenantDashboardScreen(
                     responseNote = note,
                     actorName = currentUser.fullName,
                     onSuccess = { leaseOfferToReview = null }
+                )
+            }
+        )
+    }
+
+    if (showMoveOutNoticeDialog && activeLease != null && activeLease?.statusEnum() == LeaseStatus.ACTIVE) {
+        val targetLease = activeLease!!
+        TenantMoveOutNoticeDialog(
+            lease = targetLease,
+            isBusy = busy,
+            onDismiss = { showMoveOutNoticeDialog = false },
+            onSubmit = { requestedMs, reason ->
+                viewModel.submitMoveOutNotice(
+                    lease = targetLease,
+                    requestedMoveOutEpochMs = requestedMs,
+                    reason = reason,
+                    actorName = currentUser.fullName,
+                    onSuccess = { showMoveOutNoticeDialog = false }
                 )
             }
         )
@@ -1157,10 +1196,12 @@ fun TenantPaymentsScreen(
                                     )
                                 }
                             } else {
-                                items(filteredInvoices, key = { it.id }) { inv ->
+                                items(filteredInvoices.filter { it.statusEnum() != InvoiceStatus.DRAFT }, key = { it.id }) { inv ->
                                     val expanded = inv.id in expandedInvoiceIds
                                     val isHighlighted = inv.id == highlightedInvoiceId
                                     val tone = when (inv.statusEnum()) {
+                                        InvoiceStatus.DRAFT -> PillTone.NEUTRAL
+                                        InvoiceStatus.ISSUED -> PillTone.INFO
                                         InvoiceStatus.PAID -> PillTone.SUCCESS
                                         InvoiceStatus.PARTIALLY_PAID -> PillTone.WARNING
                                         InvoiceStatus.OVERDUE -> PillTone.ERROR
@@ -1211,8 +1252,11 @@ fun TenantPaymentsScreen(
                                                     color = if (inv.outstandingCents > 0L) StatusError else StatusSuccess
                                                 )
                                             }
-                                            if (inv.lateFeeCents > 0L || inv.lateFeeWaived) {
+                                            if (inv.prorated || inv.lateFeeCents > 0L || inv.lateFeeWaived) {
                                                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    if (inv.prorated) {
+                                                        StatusPill("Prorated", PillTone.INFO)
+                                                    }
                                                     if (inv.lateFeeWaived) {
                                                         StatusPill("Late Fee Waived", PillTone.INFO)
                                                     } else if (inv.lateFeeCents > 0L) {
@@ -1222,7 +1266,8 @@ fun TenantPaymentsScreen(
                                                         )
                                                     }
                                                 }
-                                            } else if (inv.gracePeriodEndsEpochMs != null && inv.outstandingCents > 0L && activeLease?.lateFeeEnabled == true) {
+                                            }
+                                            if (inv.lateFeeCents == 0L && !inv.lateFeeWaived && inv.gracePeriodEndsEpochMs != null && inv.outstandingCents > 0L && activeLease?.lateFeeEnabled == true) {
                                                 Text(
                                                     "Grace period ends: ${CurrencyUtils.formatDate(inv.gracePeriodEndsEpochMs)}",
                                                     style = MaterialTheme.typography.labelSmall,
@@ -1249,7 +1294,14 @@ fun TenantPaymentsScreen(
                                             if (expanded) {
                                                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
                                                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                    TenantBreakdownRow("Monthly Rent", CurrencyUtils.formatKes(inv.rentCents, true))
+                                                    if (inv.prorated && !inv.prorationNote.isNullOrBlank()) {
+                                                        Text(
+                                                            inv.prorationNote,
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = MaterialTheme.colorScheme.secondary
+                                                        )
+                                                    }
+                                                    TenantBreakdownRow(if (inv.prorated) "Prorated Monthly Rent" else "Monthly Rent", CurrencyUtils.formatKes(inv.rentCents, true))
                                                     if (inv.extraChargesCents > 0L || !inv.extraChargesNote.isNullOrBlank()) {
                                                         val label = inv.extraChargesNote?.takeIf { it.isNotBlank() }?.let { "Extra Charges ($it)" } ?: "Extra Charges"
                                                         TenantBreakdownRow(label, CurrencyUtils.formatKes(inv.extraChargesCents, true))
@@ -1269,6 +1321,12 @@ fun TenantPaymentsScreen(
                                                     }
                                                     TenantBreakdownRow("Paid / Credit Applied", "- ${CurrencyUtils.formatKes(inv.paidCents, true)}")
                                                     TenantBreakdownRow("Remaining Balance", CurrencyUtils.formatKes(inv.outstandingCents, true), isError = inv.outstandingCents > 0L)
+                                                    inv.issuedAtEpochMs?.let { issuedMs ->
+                                                        TenantBreakdownRow("Issued On", CurrencyUtils.formatDate(issuedMs))
+                                                    }
+                                                    inv.paidAtEpochMs?.let { paidMs ->
+                                                        TenantBreakdownRow("Settled On", CurrencyUtils.formatDate(paidMs))
+                                                    }
                                                 }
                                             }
                                             if (inv.outstandingCents > 0L && activeLease != null) {

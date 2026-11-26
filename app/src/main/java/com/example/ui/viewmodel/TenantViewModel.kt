@@ -21,6 +21,7 @@ import com.example.domain.model.DepositSettlement
 import com.example.domain.model.DigitalSignature
 import com.example.domain.model.DocumentType
 import com.example.domain.model.Invoice
+import com.example.domain.model.InvoiceStatus
 import com.example.domain.model.Lease
 import com.example.domain.model.LeaseStatus
 import com.example.domain.model.MaintenanceCategory
@@ -65,6 +66,7 @@ class TenantViewModel(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
     val invoices: StateFlow<UiState<List<Invoice>>> = financeRepo.observeMyInvoices(currentUserId)
+        .map { list -> list.filter { it.statusEnum() != InvoiceStatus.DRAFT } }
         .asUiState("TenantVM", "Failed to load invoices")
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
@@ -435,6 +437,58 @@ class TenantViewModel(
                 },
                 onFailure = {
                     _feedback.value = it.localizedMessage ?: "Failed to submit renewal response"
+                }
+            )
+        }
+    }
+
+    fun submitMoveOutNotice(
+        lease: Lease,
+        requestedMoveOutEpochMs: Long,
+        reason: String?,
+        actorName: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _busy.value = true
+            val res = propertyRepo.submitMoveOutNotice(
+                lease = lease,
+                requestedMoveOutEpochMs = requestedMoveOutEpochMs,
+                reason = reason,
+                actorName = actorName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = "Move-out notice submitted to your landlord"
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to submit move-out notice"
+                }
+            )
+        }
+    }
+
+    fun withdrawMoveOutNotice(
+        lease: Lease,
+        actorName: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _busy.value = true
+            val res = propertyRepo.withdrawMoveOutNotice(
+                lease = lease,
+                actorName = actorName
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = {
+                    _feedback.value = "Move-out notice withdrawn"
+                    onSuccess()
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to withdraw move-out notice"
                 }
             )
         }

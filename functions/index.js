@@ -14,9 +14,13 @@ const {
 } = require("./handoverHelpers");
 const {
   formatKesWhole: formatKesAutomation,
+  nairobiBillingPeriodForEpochMs,
+  computeNextBillingEpochMs,
+  evaluateAutoBillingCandidate,
   evaluateLeaseRenewalCandidate,
   evaluateOverdueLateFeeCandidate,
   buildLeaseRenewalDispatch,
+  buildMoveOutNoticeDispatch,
 } = require("./automationHelpers");
 
 initializeApp();
@@ -254,9 +258,44 @@ function formatNairobiShortDate(epochMs) {
   }
 }
 
+async function notifyInvoiceIssued(db, invoiceId, inv) {
+  if (!inv || !inv.tenantUid || inv.status === "CANCELLED" || inv.status === "DRAFT") return;
+
+  const tokenEntries = await fetchActiveTokensForUsers(db, [inv.tenantUid], "notifyRentDue");
+
+  const amountCents = Number(
+    inv.outstandingCents !== undefined && inv.outstandingCents !== null
+      ? inv.outstandingCents
+      : inv.totalDueCents || 0
+  );
+  const amountLabel = formatKesWhole(amountCents);
+  const dueLabel = formatNairobiShortDate(inv.dueDateEpochMs);
+  const periodText = inv.billingPeriod ? ` (${inv.billingPeriod})` : "";
+  const invNumPrefix = inv.invoiceNumber ? `${inv.invoiceNumber}: ` : "";
+
+  const title = `New Rent Invoice • Unit ${inv.unitNumber || "-"}`.slice(0, 140);
+  const body = `${invNumPrefix}${inv.propertyName || "RentFlow"}${periodText} — ${amountLabel} due ${dueLabel}. Tap to pay via M-Pesa.`.slice(0, 500);
+
+  await dispatchPush(db, tokenEntries, RENT_CHANNEL_ID, {
+    title,
+    body,
+    data: {
+      eventType: "INVOICE_GENERATED",
+      targetRoute: "tenant_pay",
+      targetTab: "0",
+      invoiceId: String(invoiceId),
+      unitId: String(inv.unitId || ""),
+      status: String(inv.status || "ISSUED"),
+      recipientRole: "TENANT",
+      title,
+      body,
+    },
+  });
+}
+
 /**
- * Sends automated FCM push notifications to a tenant whenever a new rent
- * invoice document is generated for their lease.
+ * Sends automated FCM push notifications to a tenant whenever a non-draft
+ * rent invoice document is created for their lease.
  */
 exports.onInvoiceCreated = onDocumentCreated(
   {
@@ -268,40 +307,31 @@ exports.onInvoiceCreated = onDocumentCreated(
     if (!snap) return;
 
     const inv = snap.data() || {};
-    if (!inv.tenantUid || inv.status === "CANCELLED") return;
+    if (!inv.tenantUid || inv.status === "CANCELLED" || inv.status === "DRAFT") return;
 
-    const invoiceId = event.params.invoiceId;
     const db = getFirestore(DATABASE_ID);
-    const tokenEntries = await fetchActiveTokensForUsers(db, [inv.tenantUid], "notifyRentDue");
+    await notifyInvoiceIssued(db, event.params.invoiceId, inv);
+  }
+);
 
-    const amountCents = Number(
-      inv.outstandingCents !== undefined && inv.outstandingCents !== null
-        ? inv.outstandingCents
-        : inv.totalDueCents || 0
-    );
-    const amountLabel = formatKesWhole(amountCents);
-    const dueLabel = formatNairobiShortDate(inv.dueDateEpochMs);
-    const periodText = inv.billingPeriod ? ` (${inv.billingPeriod})` : "";
-    const invNumPrefix = inv.invoiceNumber ? `${inv.invoiceNumber}: ` : "";
+/**
+ * Sends automated FCM push notifications when a DRAFT invoice is issued to
+ * the tenant (DRAFT -> ISSUED / PARTIALLY_PAID / PAID / OVERDUE).
+ */
+exports.onInvoiceUpdated = onDocumentUpdated(
+  {
+    document: "invoices/{invoiceId}",
+    database: DATABASE_ID,
+  },
+  async (event) => {
+    const before = event.data?.before?.data();
+    const after = event.data?.after?.data();
+    if (!before || !after) return;
+    if (before.status !== "DRAFT") return;
+    if (after.status === "DRAFT" || after.status === "CANCELLED") return;
 
-    const title = `New Rent Invoice • Unit ${inv.unitNumber || "-"}`.slice(0, 140);
-    const body = `${invNumPrefix}${inv.propertyName || "RentFlow"}${periodText} — ${amountLabel} due ${dueLabel}. Tap to pay via M-Pesa.`.slice(0, 500);
-
-    await dispatchPush(db, tokenEntries, RENT_CHANNEL_ID, {
-      title,
-      body,
-      data: {
-        eventType: "INVOICE_GENERATED",
-        targetRoute: "tenant_pay",
-        targetTab: "0",
-        invoiceId: String(invoiceId),
-        unitId: String(inv.unitId || ""),
-        status: String(inv.status || "UNPAID"),
-        recipientRole: "TENANT",
-        title,
-        body,
-      },
-    });
+    const db = getFirestore(DATABASE_ID);
+    await notifyInvoiceIssued(db, event.params.invoiceId, after);
   }
 );
 
@@ -395,7 +425,7 @@ exports.scheduledRentDueReminders = onSchedule(
 
     const snap = await db
       .collection("invoices")
-      .where("status", "in", ["UNPAID", "PARTIALLY_PAID", "OVERDUE"])
+      .where("status", "in", ["ISSUED", "UNPAID", "PARTIALLY_PAID", "OVERDUE"])
       .get();
 
     if (snap.empty) {
@@ -632,9 +662,37 @@ exports.onDepositSettlementWritten = onDocumentWritten(
   }
 );
 
+async function dispatchLeasePlan(db, leaseId, plan) {
+  if (!plan) return;
+  const claimed = await claimServerEventIdempotency(db, plan.eventKey, {
+    entityType: "Lease",
+    entityId: leaseId,
+    eventType: plan.eventType,
+    status: plan.status,
+  });
+  if (!claimed) return;
+
+  const tokenEntries = await fetchActiveTokensForUsers(db, plan.recipients, "notifyRentDue");
+  await dispatchPush(db, tokenEntries, RENT_CHANNEL_ID, {
+    title: plan.title,
+    body: plan.body,
+    data: {
+      eventType: plan.eventType,
+      targetRoute: plan.targetRoute,
+      targetTab: String(plan.targetTab || ""),
+      leaseId: plan.leaseId,
+      unitId: plan.unitId,
+      status: plan.status,
+      recipientRole: plan.recipientRole,
+      title: plan.title,
+      body: plan.body,
+    },
+  });
+}
+
 /**
- * Dispatches idempotent FCM push notifications when a lease renewal offer is
- * sent, auto-renewed, or accepted/declined by the tenant.
+ * Dispatches idempotent FCM push notifications when a lease renewal offer or
+ * tenant move-out notice transitions.
  */
 exports.onLeaseUpdated = onDocumentWritten(
   {
@@ -647,34 +705,13 @@ exports.onLeaseUpdated = onDocumentWritten(
     if (!after) return;
 
     const leaseId = event.params.leaseId;
-    const plan = buildLeaseRenewalDispatch(leaseId, before, after);
-    if (!plan) return;
+    const renewalPlan = buildLeaseRenewalDispatch(leaseId, before, after);
+    const moveOutPlan = buildMoveOutNoticeDispatch(leaseId, before, after);
+    if (!renewalPlan && !moveOutPlan) return;
 
     const db = getFirestore(DATABASE_ID);
-    const claimed = await claimServerEventIdempotency(db, plan.eventKey, {
-      entityType: "Lease",
-      entityId: leaseId,
-      eventType: plan.eventType,
-      status: plan.status,
-    });
-    if (!claimed) return;
-
-    const tokenEntries = await fetchActiveTokensForUsers(db, plan.recipients, "notifyRentDue");
-    await dispatchPush(db, tokenEntries, RENT_CHANNEL_ID, {
-      title: plan.title,
-      body: plan.body,
-      data: {
-        eventType: plan.eventType,
-        targetRoute: plan.targetRoute,
-        targetTab: String(plan.targetTab || ""),
-        leaseId: plan.leaseId,
-        unitId: plan.unitId,
-        status: plan.status,
-        recipientRole: plan.recipientRole,
-        title: plan.title,
-        body: plan.body,
-      },
-    });
+    await dispatchLeasePlan(db, leaseId, renewalPlan);
+    await dispatchLeasePlan(db, leaseId, moveOutPlan);
   }
 );
 
@@ -713,6 +750,7 @@ exports.scheduledLeaseAndLateFeeAutomation = onSchedule(
         if (!fresh.exists) return false;
         const d = fresh.data() || {};
         if (d.status !== "ACTIVE") return false;
+        if (d.moveOutNoticeStatus === "SUBMITTED" || d.moveOutNoticeStatus === "ACKNOWLEDGED") return false;
         if (d.lastRenewalProcessedForEndMs === d.endDateEpochMs) return false;
         if (d.renewalOfferStatus === "PENDING" || d.renewalOfferStatus === "DECLINED") return false;
 
@@ -779,7 +817,7 @@ exports.scheduledLeaseAndLateFeeAutomation = onSchedule(
 
     const openInvoicesSnap = await db
       .collection("invoices")
-      .where("status", "in", ["UNPAID", "PARTIALLY_PAID", "OVERDUE"])
+      .where("status", "in", ["ISSUED", "UNPAID", "PARTIALLY_PAID", "OVERDUE"])
       .get();
 
     let lateFeesAssessed = 0;
@@ -805,7 +843,7 @@ exports.scheduledLeaseAndLateFeeAutomation = onSchedule(
         const fresh = await tx.get(invDoc.ref);
         if (!fresh.exists) return null;
         const d = fresh.data() || {};
-        if (d.status === "PAID" || d.status === "CANCELLED") return null;
+        if (d.status === "DRAFT" || d.status === "PAID" || d.status === "CANCELLED") return null;
         if (d.lateFeeAppliedAtEpochMs || d.lateFeeWaived === true || Number(d.lateFeeCents || 0) > 0) {
           return null;
         }
@@ -885,4 +923,181 @@ exports.scheduledLeaseAndLateFeeAutomation = onSchedule(
     });
   }
 );
+
+/**
+ * Runs daily at 08:00 Africa/Nairobi to automatically generate deterministic
+ * monthly rent invoices (including mid-month proration for acknowledged move-out
+ * notices) for active leases within their billingLeadDays window.
+ */
+exports.scheduledMonthlyRentBilling = onSchedule(
+  {
+    schedule: "every day 08:00",
+    timeZone: "Africa/Nairobi",
+  },
+  async () => {
+    const db = getFirestore(DATABASE_ID);
+    const nowMs = Date.now();
+    const billingPeriod = nairobiBillingPeriodForEpochMs(nowMs);
+    const periodCompact = billingPeriod.replace("-", "");
+
+    const activeLeasesSnap = await db
+      .collection("leases")
+      .where("status", "==", "ACTIVE")
+      .get();
+
+    let generatedCount = 0;
+
+    for (const leaseDoc of activeLeasesSnap.docs) {
+      const lease = { id: leaseDoc.id, ...(leaseDoc.data() || {}) };
+      const schedRef = db.collection("recurring_invoices").doc(leaseDoc.id);
+      const schedSnap = await schedRef.get();
+      const schedule = schedSnap.exists ? { id: schedSnap.id, ...(schedSnap.data() || {}) } : null;
+
+      const leaseInvSnap = await db
+        .collection("invoices")
+        .where("leaseId", "==", leaseDoc.id)
+        .get();
+      const leaseInvoices = leaseInvSnap.docs.map((doc) => ({ id: doc.id, ...(doc.data() || {}) }));
+
+      const candidate = evaluateAutoBillingCandidate(lease, leaseInvoices, billingPeriod, nowMs, schedule);
+      if (!candidate) continue;
+
+      const invoiceRef = db.collection("invoices").doc(candidate.deterministicId);
+      const unitCompact = String(lease.unitNumber || "U")
+        .replace(/[^a-zA-Z0-9]/g, "")
+        .slice(0, 6)
+        .toUpperCase() || "U";
+      const suffix = leaseDoc.id.replace(/[^a-zA-Z0-9]/g, "").slice(-4).toUpperCase() || "01";
+      const invoiceNumber = `INV-${periodCompact}-${unitCompact}-${suffix}`.slice(0, 50);
+
+      const created = await db.runTransaction(async (tx) => {
+        const freshInv = await tx.get(invoiceRef);
+        if (freshInv.exists) return null;
+
+        const freshLeaseSnap = await tx.get(leaseDoc.ref);
+        if (!freshLeaseSnap.exists) return null;
+        const freshLease = { id: freshLeaseSnap.id, ...(freshLeaseSnap.data() || {}) };
+
+        const freshSchedSnap = await tx.get(schedRef);
+        const freshSchedule = freshSchedSnap.exists
+          ? { id: freshSchedSnap.id, ...(freshSchedSnap.data() || {}) }
+          : null;
+
+        const recomputed = evaluateAutoBillingCandidate(
+          freshLease,
+          leaseInvoices,
+          billingPeriod,
+          nowMs,
+          freshSchedule
+        );
+        if (!recomputed) return null;
+
+        const isDraft = recomputed.status === "DRAFT";
+        const invoicePayload = {
+          invoiceNumber,
+          scheduleId: recomputed.scheduleId,
+          leaseId: leaseDoc.id,
+          orgId: String(freshLease.orgId || ""),
+          propertyId: String(freshLease.propertyId || ""),
+          propertyName: String(freshLease.propertyName || ""),
+          unitId: String(freshLease.unitId || ""),
+          unitNumber: String(freshLease.unitNumber || ""),
+          ownerUid: String(freshLease.ownerUid || ""),
+          managerUids: Array.isArray(freshLease.managerUids) ? freshLease.managerUids : [],
+          authorizedUids: Array.isArray(freshLease.authorizedUids) ? freshLease.authorizedUids : [],
+          tenantUid: String(freshLease.tenantUid || ""),
+          tenantName: String(freshLease.tenantName || ""),
+          billingPeriod,
+          billingDateEpochMs: recomputed.billingDateEpochMs,
+          rentCents: recomputed.rentCents,
+          extraChargesCents: recomputed.extraChargesCents,
+          previousBalanceCents: recomputed.previousBalanceCents,
+          totalDueCents: recomputed.totalDueCents,
+          paidCents: recomputed.paidCents,
+          outstandingCents: recomputed.outstandingCents,
+          dueDateEpochMs: recomputed.dueDateEpochMs,
+          gracePeriodEndsEpochMs: recomputed.gracePeriodEndsEpochMs,
+          status: recomputed.status,
+          prorated: recomputed.prorated,
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        };
+        if (recomputed.extraChargesNote) {
+          invoicePayload.extraChargesNote = String(recomputed.extraChargesNote).slice(0, 300);
+        }
+        if (recomputed.issuedAtEpochMs) {
+          invoicePayload.issuedAtEpochMs = recomputed.issuedAtEpochMs;
+        }
+        if (recomputed.paidAtEpochMs) {
+          invoicePayload.paidAtEpochMs = recomputed.paidAtEpochMs;
+        }
+        if (recomputed.prorationNote) {
+          invoicePayload.prorationNote = String(recomputed.prorationNote).slice(0, 200);
+        }
+
+        tx.set(invoiceRef, invoicePayload);
+
+        if (!isDraft && recomputed.creditToApplyCents > 0) {
+          const remainingCredit = Math.max(
+            0,
+            Number(freshLease.creditBalanceCents || 0) - recomputed.creditToApplyCents
+          );
+          tx.update(leaseDoc.ref, {
+            creditBalanceCents: remainingCredit,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        }
+
+        if (freshSchedSnap.exists) {
+          const schedDay = freshSchedule?.billingDayOfMonth ?? freshLease.dueDayOfMonth ?? 5;
+          const schedLead = freshSchedule?.leadDays ?? freshLease.billingLeadDays ?? 5;
+          tx.update(schedRef, {
+            lastBilledPeriod: billingPeriod,
+            lastInvoiceId: candidate.deterministicId,
+            lastBilledAtEpochMs: nowMs,
+            nextBillingEpochMs: computeNextBillingEpochMs(billingPeriod, schedDay, schedLead),
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        }
+
+        return recomputed;
+      });
+
+      if (!created) continue;
+      generatedCount += 1;
+
+      const isDraft = created.status === "DRAFT";
+      const amountLabel = formatKesAutomation(created.outstandingCents);
+      const prorationSuffix = created.prorationNote ? ` (${created.prorationNote})` : "";
+      if (!isDraft && lease.tenantUid) {
+        await db.collection("notifications").add({
+          recipientUid: lease.tenantUid,
+          senderUid: lease.ownerUid || "system_auto_billing",
+          orgId: lease.orgId || "system_automation",
+          type: "INVOICE",
+          title: `Auto-Billed Rent • ${billingPeriod}`.slice(0, 140),
+          body: `${lease.propertyName || "Property"} Unit ${lease.unitNumber || "-"}: ${amountLabel} due${prorationSuffix}.`.slice(0, 500),
+          relatedEntityId: candidate.deterministicId,
+          read: false,
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+
+      await db.collection("audit_logs").add({
+        orgId: String(lease.orgId || ""),
+        actorUid: "system_auto_billing",
+        actorName: "Automated Billing Scheduler",
+        action: isDraft ? "STAGE_DRAFT_INVOICES" : "AUTO_BILL_MONTHLY_RENT",
+        entityType: "Invoice",
+        entityId: candidate.deterministicId,
+        details: `${isDraft ? "Staged draft" : "Auto-generated"} ${invoiceNumber} for Unit ${lease.unitNumber || "-"} (${formatKesAutomation(created.rentCents)})${prorationSuffix}`.slice(0, 500),
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    }
+
+    logger.info("Scheduled monthly rent billing completed.", { billingPeriod, generatedCount });
+  }
+);
+
 

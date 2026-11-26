@@ -15,6 +15,7 @@ import com.example.domain.model.EscalationType
 import com.example.domain.model.IssueStatus
 import com.example.domain.model.Lease
 import com.example.domain.model.LeaseStatus
+import com.example.domain.model.MoveOutNoticeStatus
 import com.example.domain.model.NotificationType
 import com.example.domain.model.Organization
 import com.example.domain.model.Property
@@ -1061,7 +1062,10 @@ class PropertyRepository(
         escalationFixedCents: Long = 0L,
         gracePeriodDays: Long = 5L,
         lateFeePercent: Double = 5.0,
-        lateFeeEnabled: Boolean = true
+        lateFeeEnabled: Boolean = true,
+        noticePeriodDays: Long = 30L,
+        autoBillingEnabled: Boolean = true,
+        billingLeadDays: Long = 5L
     ): Result<String> {
         val leaseRef = db.collection("leases").document()
         return try {
@@ -1109,9 +1113,20 @@ class PropertyRepository(
                 gracePeriodDays = gracePeriodDays.coerceIn(0L, 30L),
                 lateFeePercent = lateFeePercent.coerceIn(0.0, 50.0),
                 lateFeeEnabled = lateFeeEnabled,
-                renewalOfferStatus = RenewalOfferStatus.NONE.name
+                renewalOfferStatus = RenewalOfferStatus.NONE.name,
+                noticePeriodDays = noticePeriodDays.coerceIn(1L, 90L),
+                autoBillingEnabled = autoBillingEnabled,
+                billingLeadDays = billingLeadDays.coerceIn(0L, 15L),
+                moveOutNoticeStatus = MoveOutNoticeStatus.NONE.name
             )
             leaseRef.set(lease.toCreateMap()).await()
+
+            val persistedLease = lease.copy(id = leaseRef.id)
+            val initialSchedule = LeaseAutomationEngine.buildScheduleForLease(
+                lease = persistedLease,
+                nowMs = System.currentTimeMillis()
+            )
+            db.collection("recurring_invoices").document(leaseRef.id).set(initialSchedule.toCreateMap()).await()
 
             db.collection("units").document(unit.id).update(
                 mapOf(
@@ -1179,6 +1194,18 @@ class PropertyRepository(
                 updates["rentCents"] = newRentCents
             }
             db.collection("leases").document(lease.id).update(updates).await()
+            if (lease.ownerUid == uid && newRentCents != lease.rentCents) {
+                val schedRef = db.collection("recurring_invoices").document(lease.id)
+                val schedSnap = schedRef.get().await()
+                if (schedSnap.exists()) {
+                    schedRef.update(
+                        mapOf(
+                            "amountCents" to newRentCents.coerceAtLeast(1L),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
+            }
             val notif = AppNotification(
                 recipientUid = lease.tenantUid,
                 senderUid = uid,
@@ -1221,6 +1248,9 @@ class PropertyRepository(
         gracePeriodDays: Long,
         lateFeePercent: Double,
         lateFeeEnabled: Boolean,
+        noticePeriodDays: Long = lease.noticePeriodDays,
+        autoBillingEnabled: Boolean = lease.autoBillingEnabled,
+        billingLeadDays: Long = lease.billingLeadDays,
         actorName: String
     ): Result<Unit> {
         val path = "leases/${lease.id}"
@@ -1233,6 +1263,8 @@ class PropertyRepository(
             val clampedEscFixed = escalationFixedCents.coerceIn(0L, 1_000_000_000L)
             val clampedGrace = gracePeriodDays.coerceIn(0L, 30L)
             val clampedLatePercent = lateFeePercent.coerceIn(0.0, 50.0)
+            val clampedNoticeDays = noticePeriodDays.coerceIn(1L, 90L)
+            val clampedBillingLeadDays = billingLeadDays.coerceIn(0L, 15L)
 
             val pricingChanged = escalationType != lease.escalationTypeEnum() ||
                 clampedEscPercent != lease.escalationPercent ||
@@ -1241,9 +1273,13 @@ class PropertyRepository(
                 clampedLatePercent != lease.lateFeePercent ||
                 lateFeeEnabled != lease.lateFeeEnabled
 
-            if (pricingChanged && !isOwner) {
+            val noticeBillingChanged = clampedNoticeDays != lease.noticePeriodDays ||
+                autoBillingEnabled != lease.autoBillingEnabled ||
+                clampedBillingLeadDays != lease.billingLeadDays
+
+            if ((pricingChanged || noticeBillingChanged) && !isOwner) {
                 return Result.failure(
-                    SecurityException("Only the property owner can edit rent escalation or late fee pricing.")
+                    SecurityException("Only the property owner can edit pricing, notice period, or auto-billing settings.")
                 )
             }
 
@@ -1260,8 +1296,31 @@ class PropertyRepository(
                 updates["gracePeriodDays"] = clampedGrace
                 updates["lateFeePercent"] = clampedLatePercent
                 updates["lateFeeEnabled"] = lateFeeEnabled
+                updates["noticePeriodDays"] = clampedNoticeDays
+                updates["autoBillingEnabled"] = autoBillingEnabled
+                updates["billingLeadDays"] = clampedBillingLeadDays
             }
             db.collection("leases").document(lease.id).update(updates).await()
+            if (isOwner && noticeBillingChanged) {
+                val schedRef = db.collection("recurring_invoices").document(lease.id)
+                val schedSnap = schedRef.get().await()
+                if (schedSnap.exists()) {
+                    val currentStatus = schedSnap.getString("scheduleStatus")
+                    val nextStatus = when {
+                        !autoBillingEnabled -> com.example.domain.model.RecurringScheduleStatus.PAUSED.name
+                        currentStatus == com.example.domain.model.RecurringScheduleStatus.PAUSED.name && autoBillingEnabled ->
+                            com.example.domain.model.RecurringScheduleStatus.ACTIVE.name
+                        else -> currentStatus ?: com.example.domain.model.RecurringScheduleStatus.ACTIVE.name
+                    }
+                    schedRef.update(
+                        mapOf(
+                            "leadDays" to clampedBillingLeadDays,
+                            "scheduleStatus" to nextStatus,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
+            }
 
             writeAuditLogSafe(
                 orgId = lease.orgId,
@@ -1270,7 +1329,7 @@ class PropertyRepository(
                 action = "UPDATE_LEASE_AUTOMATION",
                 entityType = "Lease",
                 entityId = lease.id,
-                details = "Updated automation for ${lease.propertyName} Unit ${lease.unitNumber}: ${renewalMode.label}, grace ${clampedGrace}d, late fee ${LeaseAutomationEngine.formatPercent(clampedLatePercent)}"
+                details = "Updated automation for ${lease.propertyName} Unit ${lease.unitNumber}: ${renewalMode.label}, grace ${clampedGrace}d, notice ${clampedNoticeDays}d, auto-bill=${autoBillingEnabled}"
             )
             Result.success(Unit)
         } catch (e: CancellationException) {
@@ -1514,6 +1573,15 @@ class PropertyRepository(
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             ).await()
+            val schedRef = db.collection("recurring_invoices").document(lease.id)
+            if (schedRef.get().await().exists()) {
+                schedRef.update(
+                    mapOf(
+                        "scheduleStatus" to com.example.domain.model.RecurringScheduleStatus.ENDED.name,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
             db.collection("units").document(lease.unitId).update(
                 mapOf(
                     "status" to UnitStatus.AVAILABLE.name,
@@ -1547,6 +1615,205 @@ class PropertyRepository(
                     details = "Terminated lease for ${lease.tenantName}: $noticeReason"
                 ).toCreateMap()
             ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun submitMoveOutNotice(
+        lease: Lease,
+        requestedMoveOutEpochMs: Long,
+        reason: String?,
+        actorName: String
+    ): Result<Unit> {
+        val path = "leases/${lease.id}"
+        return try {
+            val uid = requireUserId()
+            require(lease.tenantUid == uid) { "Only the tenant on the lease can submit a move-out notice." }
+            require(lease.statusEnum() == LeaseStatus.ACTIVE) { "Move-out notices can only be submitted on active leases." }
+            val currentNotice = lease.moveOutNoticeStatusEnum()
+            require(currentNotice in listOf(MoveOutNoticeStatus.NONE, MoveOutNoticeStatus.DECLINED, MoveOutNoticeStatus.WITHDRAWN)) {
+                "A move-out notice is already ${currentNotice.label.lowercase()} for this lease."
+            }
+            require(requestedMoveOutEpochMs > 0L) { "Select a valid target move-out date." }
+
+            val nowMs = System.currentTimeMillis()
+            val cleanReason = reason?.trim()?.take(500)?.takeIf { it.isNotBlank() }
+            val updates = mutableMapOf<String, Any>(
+                "moveOutNoticeStatus" to MoveOutNoticeStatus.SUBMITTED.name,
+                "requestedMoveOutEpochMs" to requestedMoveOutEpochMs,
+                "moveOutNoticeSubmittedAtMs" to nowMs,
+                "moveOutNoticeReviewedAtMs" to FieldValue.delete(),
+                "moveOutNoticeResponseNote" to FieldValue.delete(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            updates["moveOutNoticeReason"] = cleanReason ?: FieldValue.delete()
+
+            db.collection("leases").document(lease.id).update(updates).await()
+
+            val vacateDateLabel = CurrencyUtils.formatDate(requestedMoveOutEpochMs)
+            db.collection("notifications").document().set(
+                AppNotification(
+                    recipientUid = lease.ownerUid,
+                    senderUid = uid,
+                    orgId = lease.orgId,
+                    type = NotificationType.LEASE.name,
+                    title = "Move-Out Notice • Unit ${lease.unitNumber}",
+                    body = "${lease.tenantName} submitted notice to vacate ${lease.propertyName} Unit ${lease.unitNumber} on $vacateDateLabel.",
+                    relatedEntityId = lease.id,
+                    read = false
+                ).toCreateMap()
+            ).await()
+
+            writeAuditLogSafe(
+                orgId = lease.orgId,
+                actorUid = uid,
+                actorName = actorName,
+                action = "SUBMIT_MOVE_OUT_NOTICE",
+                entityType = "Lease",
+                entityId = lease.id,
+                details = "${lease.tenantName} submitted move-out notice for $vacateDateLabel"
+            )
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun withdrawMoveOutNotice(
+        lease: Lease,
+        actorName: String
+    ): Result<Unit> {
+        val path = "leases/${lease.id}"
+        return try {
+            val uid = requireUserId()
+            require(lease.tenantUid == uid) { "Only the tenant on the lease can withdraw a move-out notice." }
+            require(lease.statusEnum() == LeaseStatus.ACTIVE) { "Lease is not active." }
+            require(lease.moveOutNoticeStatusEnum() == MoveOutNoticeStatus.SUBMITTED) {
+                "Only a submitted pending notice can be withdrawn."
+            }
+
+            db.collection("leases").document(lease.id).update(
+                mapOf(
+                    "moveOutNoticeStatus" to MoveOutNoticeStatus.WITHDRAWN.name,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+
+            db.collection("notifications").document().set(
+                AppNotification(
+                    recipientUid = lease.ownerUid,
+                    senderUid = uid,
+                    orgId = lease.orgId,
+                    type = NotificationType.LEASE.name,
+                    title = "Move-Out Notice Withdrawn",
+                    body = "${lease.tenantName} withdrew the move-out notice for ${lease.propertyName} Unit ${lease.unitNumber}.",
+                    relatedEntityId = lease.id,
+                    read = false
+                ).toCreateMap()
+            ).await()
+
+            writeAuditLogSafe(
+                orgId = lease.orgId,
+                actorUid = uid,
+                actorName = actorName,
+                action = "WITHDRAW_MOVE_OUT_NOTICE",
+                entityType = "Lease",
+                entityId = lease.id,
+                details = "${lease.tenantName} withdrew move-out notice for ${lease.propertyName} Unit ${lease.unitNumber}"
+            )
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun reviewMoveOutNotice(
+        lease: Lease,
+        acknowledge: Boolean,
+        responseNote: String?,
+        actorName: String
+    ): Result<Unit> {
+        val path = "leases/${lease.id}"
+        return try {
+            val uid = requireUserId()
+            if (uid !in lease.authorizedUids) {
+                return Result.failure(SecurityException("You are not authorized to review move-out notices for this lease."))
+            }
+            require(lease.statusEnum() == LeaseStatus.ACTIVE) { "Lease is not active." }
+            require(lease.moveOutNoticeStatusEnum() == MoveOutNoticeStatus.SUBMITTED) {
+                "No submitted move-out notice is awaiting review."
+            }
+
+            val nowMs = System.currentTimeMillis()
+            val cleanNote = responseNote?.trim()?.take(500)?.takeIf { it.isNotBlank() }
+            val targetStatus = if (acknowledge) MoveOutNoticeStatus.ACKNOWLEDGED else MoveOutNoticeStatus.DECLINED
+            val leaseRef = db.collection("leases").document(lease.id)
+
+            db.runTransaction { tx ->
+                val snap = tx.get(leaseRef)
+                val status = snap.getString("status")
+                val noticeStatus = snap.getString("moveOutNoticeStatus") ?: MoveOutNoticeStatus.NONE.name
+                check(status == LeaseStatus.ACTIVE.name && noticeStatus == MoveOutNoticeStatus.SUBMITTED.name) {
+                    "Move-out notice has already been reviewed or withdrawn."
+                }
+                val updates = mutableMapOf<String, Any>(
+                    "moveOutNoticeStatus" to targetStatus.name,
+                    "moveOutNoticeReviewedAtMs" to nowMs,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                if (cleanNote != null) {
+                    updates["moveOutNoticeResponseNote"] = cleanNote
+                }
+                if (acknowledge && snap.getString("renewalOfferStatus") == RenewalOfferStatus.PENDING.name) {
+                    updates["renewalOfferStatus"] = RenewalOfferStatus.NONE.name
+                }
+                tx.update(leaseRef, updates)
+            }.await()
+
+            val vacateDateLabel = lease.requestedMoveOutEpochMs?.let { CurrencyUtils.formatDate(it) } ?: "selected date"
+            val notifTitle = if (acknowledge) {
+                "Move-Out Notice Acknowledged"
+            } else {
+                "Move-Out Notice Needs Revision"
+            }
+            val notifBody = if (acknowledge) {
+                "Your notice to vacate ${lease.propertyName} Unit ${lease.unitNumber} on $vacateDateLabel was acknowledged.${cleanNote?.let { " Note: $it" } ?: ""}"
+            } else {
+                "Management requested an update on your move-out notice for ${lease.propertyName} Unit ${lease.unitNumber}.${cleanNote?.let { " Note: $it" } ?: ""}"
+            }
+            db.collection("notifications").document().set(
+                AppNotification(
+                    recipientUid = lease.tenantUid,
+                    senderUid = uid,
+                    orgId = lease.orgId,
+                    type = NotificationType.LEASE.name,
+                    title = notifTitle,
+                    body = notifBody.take(500),
+                    relatedEntityId = lease.id,
+                    read = false
+                ).toCreateMap()
+            ).await()
+
+            writeAuditLogSafe(
+                orgId = lease.orgId,
+                actorUid = uid,
+                actorName = actorName,
+                action = if (acknowledge) "ACKNOWLEDGE_MOVE_OUT_NOTICE" else "DECLINE_MOVE_OUT_NOTICE",
+                entityType = "Lease",
+                entityId = lease.id,
+                details = notifBody.take(300)
+            )
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e

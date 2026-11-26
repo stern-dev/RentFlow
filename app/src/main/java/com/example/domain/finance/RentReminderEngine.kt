@@ -32,7 +32,9 @@ object RentReminderEngine {
         return invoices.mapNotNull { inv ->
             if (inv.outstandingCents <= 0L) return@mapNotNull null
             val status = inv.statusEnum()
-            if (status == InvoiceStatus.PAID || status == InvoiceStatus.CANCELLED) return@mapNotNull null
+            if (status == InvoiceStatus.DRAFT || status == InvoiceStatus.PAID || status == InvoiceStatus.CANCELLED) {
+                return@mapNotNull null
+            }
 
             if (respectCooldown && inv.lastReminderSentEpochMs != null) {
                 if ((nowMs - inv.lastReminderSentEpochMs) < COOLDOWN_MS) return@mapNotNull null

@@ -124,6 +124,7 @@ import com.example.domain.model.EscalationType
 import com.example.domain.model.MoveInChecklist
 import com.example.domain.model.MoveInChecklistStatus
 import com.example.domain.model.MoveInConditionChecklist
+import com.example.domain.model.MoveOutNoticeStatus
 import com.example.domain.model.RenewalMode
 import com.example.domain.model.ScannedDocument
 import com.example.ui.components.BuildingLocationPickerDialog
@@ -141,6 +142,7 @@ import com.example.ui.components.LeaseRenewalSweepDialog
 import com.example.ui.components.LoadingStateBox
 import com.example.ui.components.MoveInChecklistPdfViewerDialog
 import com.example.ui.components.MoveInConditionChecklistFullScreenDialog
+import com.example.ui.components.MoveOutNoticeReviewDialog
 import com.example.ui.components.PendingScanPayload
 import com.example.ui.components.PillTone
 import com.example.ui.components.SectionHeader
@@ -227,6 +229,7 @@ fun LandlordPortfolioScreen(
     var conditionChecklistForPdfViewer by remember { mutableStateOf<Pair<MoveInConditionChecklist, Lease?>?>(null) }
     var leaseForSettlementDialog by remember { mutableStateOf<Lease?>(null) }
     var leaseForAutomationPolicy by remember { mutableStateOf<Lease?>(null) }
+    var leaseForMoveOutReview by remember { mutableStateOf<Lease?>(null) }
     var showRenewalSweepDialog by remember { mutableStateOf(false) }
     var vaultTarget by remember { mutableStateOf<Pair<String?, String>?>(null) }
     var scannerTarget by remember { mutableStateOf<Triple<RentalUnit, Lease?, DocumentType>?>(null) }
@@ -440,8 +443,10 @@ fun LandlordPortfolioScreen(
                     canManageChecklist = { lease -> PermissionPolicy.canManageLeaseChecklist(uid, activeRole, lease) },
                     canManageSettlement = { lease -> PermissionPolicy.canManageDepositSettlement(uid, activeRole, lease) },
                     canRunRenewalSweep = { lease -> PermissionPolicy.canRunLeaseRenewalSweep(uid, activeRole, lease) },
+                    canReviewMoveOut = { lease -> PermissionPolicy.canReviewMoveOutNotice(uid, activeRole, lease) },
                     onOpenRenewalSweep = { showRenewalSweepDialog = true },
                     onEditAutomationPolicy = { lease -> leaseForAutomationPolicy = lease },
+                    onReviewMoveOutNotice = { lease -> leaseForMoveOutReview = lease },
                     onExportPdf = { lease ->
                         val linkedChecklist = conditionChecklists.firstOrNull { it.leaseId == lease.id }
                         ReportExporter.exportSignedLeaseAgreementPdf(
@@ -645,7 +650,7 @@ fun LandlordPortfolioScreen(
             preselectedApp = app,
             isBusy = busy,
             onDismiss = { unitForLeaseDialog = null },
-            onCreate = { tenantUid, tenantName, tenantPhone, rentCents, depCents, startMs, endMs, dueDay, terms, renewalMode, escalationType, escalationPercent, escalationFixedCents, graceDays, lateFeePct, lateFeeEnabled ->
+            onCreate = { tenantUid, tenantName, tenantPhone, rentCents, depCents, startMs, endMs, dueDay, terms, renewalMode, escalationType, escalationPercent, escalationFixedCents, graceDays, lateFeePct, lateFeeEnabled, noticePeriodDays, autoBillingEnabled, billingLeadDays ->
                 viewModel.createLease(
                     unit = unit,
                     tenantUid = tenantUid,
@@ -664,7 +669,10 @@ fun LandlordPortfolioScreen(
                     escalationFixedCents = escalationFixedCents,
                     gracePeriodDays = graceDays,
                     lateFeePercent = lateFeePct,
-                    lateFeeEnabled = lateFeeEnabled
+                    lateFeeEnabled = lateFeeEnabled,
+                    noticePeriodDays = noticePeriodDays,
+                    autoBillingEnabled = autoBillingEnabled,
+                    billingLeadDays = billingLeadDays
                 ) {
                     unitForLeaseDialog = null
                 }
@@ -690,7 +698,7 @@ fun LandlordPortfolioScreen(
             canEditPricing = PermissionPolicy.canEditLeaseAutomationPricing(uid, activeRole, lease),
             isBusy = busy,
             onDismiss = { leaseForAutomationPolicy = null },
-            onSave = { mode, leadDays, durMos, escType, escPct, escFixed, graceDays, latePct, lateEnabled ->
+            onSave = { mode, leadDays, durMos, escType, escPct, escFixed, graceDays, latePct, lateEnabled, noticeDays, autoBill, billLead ->
                 viewModel.updateLeaseAutomationPolicy(
                     lease = lease,
                     renewalMode = mode,
@@ -702,8 +710,28 @@ fun LandlordPortfolioScreen(
                     gracePeriodDays = graceDays,
                     lateFeePercent = latePct,
                     lateFeeEnabled = lateEnabled,
+                    noticePeriodDays = noticeDays,
+                    autoBillingEnabled = autoBill,
+                    billingLeadDays = billLead,
                     actorName = currentUser.fullName,
                     onSuccess = { leaseForAutomationPolicy = null }
+                )
+            }
+        )
+    }
+
+    leaseForMoveOutReview?.let { lease ->
+        MoveOutNoticeReviewDialog(
+            lease = lease,
+            isBusy = busy,
+            onDismiss = { leaseForMoveOutReview = null },
+            onReview = { acknowledge, note ->
+                viewModel.reviewMoveOutNotice(
+                    lease = lease,
+                    acknowledge = acknowledge,
+                    responseNote = note,
+                    actorName = currentUser.fullName,
+                    onSuccess = { leaseForMoveOutReview = null }
                 )
             }
         )
@@ -1980,8 +2008,10 @@ private fun LeasesTab(
     canManageChecklist: (Lease) -> Boolean,
     canManageSettlement: (Lease) -> Boolean,
     canRunRenewalSweep: (Lease) -> Boolean,
+    canReviewMoveOut: (Lease) -> Boolean,
     onOpenRenewalSweep: () -> Unit,
     onEditAutomationPolicy: (Lease) -> Unit,
+    onReviewMoveOutNotice: (Lease) -> Unit,
     onExportPdf: (Lease) -> Unit,
     onOpenChecklist: (Lease) -> Unit,
     onOpenConditionChecklist: (Lease) -> Unit,
@@ -2134,6 +2164,64 @@ private fun LeasesTab(
                                     }
                                 }
                                 LeaseAutomationBadges(lease = lease)
+                                val moveOutStatus = lease.moveOutNoticeStatusEnum()
+                                if (lease.statusEnum() == LeaseStatus.ACTIVE &&
+                                    (moveOutStatus == MoveOutNoticeStatus.SUBMITTED || moveOutStatus == MoveOutNoticeStatus.ACKNOWLEDGED)
+                                ) {
+                                    val vacateLabel = lease.requestedMoveOutEpochMs?.let { CurrencyUtils.formatDate(it) } ?: "Target date"
+                                    Card(
+                                        shape = MaterialTheme.shapes.small,
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = if (moveOutStatus == MoveOutNoticeStatus.SUBMITTED) {
+                                                StatusWarningBg.copy(alpha = 0.4f)
+                                            } else {
+                                                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f)
+                                            }
+                                        ),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.padding(10.dp).fillMaxWidth()
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                                Text(
+                                                    if (moveOutStatus == MoveOutNoticeStatus.SUBMITTED) {
+                                                        "Move-Out Notice Pending Review"
+                                                    } else {
+                                                        "Vacating $vacateLabel"
+                                                    },
+                                                    style = MaterialTheme.typography.labelMedium
+                                                )
+                                                if (!lease.moveOutNoticeReason.isNullOrBlank()) {
+                                                    Text(
+                                                        lease.moveOutNoticeReason,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        maxLines = 2
+                                                    )
+                                                }
+                                            }
+                                            if (moveOutStatus == MoveOutNoticeStatus.SUBMITTED && canReviewMoveOut(lease)) {
+                                                Button(
+                                                    onClick = { onReviewMoveOutNotice(lease) },
+                                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                                                    modifier = Modifier.heightIn(min = 48.dp).testTag("review_move_out_notice_${lease.id}")
+                                                ) {
+                                                    Text("Review Notice")
+                                                }
+                                            } else if (moveOutStatus == MoveOutNoticeStatus.ACKNOWLEDGED && canManageSettlement(lease)) {
+                                                OutlinedButton(
+                                                    onClick = { onOpenSettlement(lease) },
+                                                    modifier = Modifier.heightIn(min = 48.dp).testTag("move_out_settlement_jump_${lease.id}")
+                                                ) {
+                                                    Text("Deposit Settlement")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     OutlinedButton(
                                         onClick = { onExportPdf(lease) },
@@ -3022,7 +3110,10 @@ private fun CreateLeaseDialog(
         escalationFixedCents: Long,
         gracePeriodDays: Long,
         lateFeePercent: Double,
-        lateFeeEnabled: Boolean
+        lateFeeEnabled: Boolean,
+        noticePeriodDays: Long,
+        autoBillingEnabled: Boolean,
+        billingLeadDays: Long
     ) -> Unit
 ) {
     var tenantUid by remember { mutableStateOf(preselectedApp?.applicantUid ?: "") }
@@ -3039,6 +3130,9 @@ private fun CreateLeaseDialog(
     var graceDaysText by remember { mutableStateOf("5") }
     var lateFeePctText by remember { mutableStateOf("5") }
     var lateFeeEnabled by remember { mutableStateOf(true) }
+    var noticePeriodDaysText by remember { mutableStateOf("30") }
+    var autoBillingEnabled by remember { mutableStateOf(true) }
+    var billingLeadDaysText by remember { mutableStateOf("5") }
     var err by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
@@ -3059,7 +3153,7 @@ private fun CreateLeaseDialog(
                 OutlinedTextField(value = dueDay, onValueChange = { dueDay = it }, label = { Text("Rent Due Day (1-28)") }, singleLine = true)
                 OutlinedTextField(value = terms, onValueChange = { terms = it }, label = { Text("Tenancy Terms") }, maxLines = 3)
 
-                Text("Renewal & Late Fee Defaults", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+                Text("Renewal, Billing & Late Fee Defaults", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     RenewalMode.entries.forEach { mode ->
                         FilterChip(
@@ -3112,6 +3206,32 @@ private fun CreateLeaseDialog(
                         )
                     }
                 }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Auto-Bill Monthly Rent", style = MaterialTheme.typography.bodySmall)
+                    Switch(checked = autoBillingEnabled, onCheckedChange = { autoBillingEnabled = it })
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = noticePeriodDaysText,
+                        onValueChange = { noticePeriodDaysText = it.filter { c -> c.isDigit() }.take(2) },
+                        label = { Text("Notice (Days)") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (autoBillingEnabled) {
+                        OutlinedTextField(
+                            value = billingLeadDaysText,
+                            onValueChange = { billingLeadDaysText = it.filter { c -> c.isDigit() }.take(2) },
+                            label = { Text("Bill Lead (Days)") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
@@ -3129,6 +3249,8 @@ private fun CreateLeaseDialog(
                     } else 0L
                     val graceDays = graceDaysText.toLongOrNull()?.coerceIn(0L, 30L) ?: 5L
                     val latePct = lateFeePctText.toDoubleOrNull()?.coerceIn(0.0, 50.0) ?: 5.0
+                    val noticeDays = noticePeriodDaysText.toLongOrNull()?.coerceIn(1L, 90L) ?: 30L
+                    val billingLead = billingLeadDaysText.toLongOrNull()?.coerceIn(0L, 15L) ?: 5L
                     val startMs = System.currentTimeMillis()
                     val endMs = startMs + months * 30L * 86_400_000L
                     when {
@@ -3152,7 +3274,10 @@ private fun CreateLeaseDialog(
                             escFixedCents,
                             graceDays,
                             latePct,
-                            lateFeeEnabled
+                            lateFeeEnabled,
+                            noticeDays,
+                            autoBillingEnabled,
+                            billingLead
                         )
                     }
                 },

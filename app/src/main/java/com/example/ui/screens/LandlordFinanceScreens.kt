@@ -89,21 +89,27 @@ import com.example.domain.model.PaymentMethod
 import com.example.domain.model.PaymentStatus
 import com.example.domain.model.PaymentVerificationSource
 import com.example.domain.model.Property
+import com.example.domain.model.RecurringInvoiceSchedule
+import com.example.domain.model.RecurringIssueMode
+import com.example.domain.model.RecurringScheduleStatus
 import com.example.domain.model.RentalUnit
 import com.example.domain.model.SavedPaymentMethod
 import com.example.domain.model.ScannedDocument
 import com.example.domain.model.UserProfile
 import com.example.domain.model.UserRole
 import com.example.domain.security.PermissionPolicy
+import com.example.ui.components.AutoBillingSweepDialog
 import com.example.ui.components.CriticalActionConfirmationDialog
 import com.example.ui.components.DocumentScannerModal
 import com.example.ui.components.DocumentVaultDialog
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.ErrorBannerCard
+import com.example.ui.components.IssueDraftInvoiceDialog
 import com.example.ui.components.LateFeeSweepDialog
 import com.example.ui.components.LoadingStateBox
 import com.example.ui.components.PendingScanPayload
 import com.example.ui.components.PillTone
+import com.example.ui.components.RecurringScheduleEditorDialog
 import com.example.ui.components.StatusPill
 import com.example.ui.components.WaiveLateFeeDialog
 import com.example.ui.theme.StatusError
@@ -117,7 +123,8 @@ import com.example.ui.viewmodel.UiState
 
 private enum class LandlordInvoiceFilter(val label: String) {
     ALL("All"),
-    UNPAID("Unpaid"),
+    DRAFT("Draft"),
+    ISSUED("Issued / Unpaid"),
     OVERDUE("Overdue"),
     PARTIALLY_PAID("Partial"),
     PAID("Paid")
@@ -145,6 +152,7 @@ fun LandlordFinanceScreen(
     onReauthenticate: suspend (Context) -> Result<Unit> = { Result.success(Unit) }
 ) {
     val invoicesState by viewModel.invoices.collectAsStateWithLifecycle()
+    val schedulesState by viewModel.recurringSchedules.collectAsStateWithLifecycle()
     val paymentsState by viewModel.payments.collectAsStateWithLifecycle()
     val expensesState by viewModel.expenses.collectAsStateWithLifecycle()
     val leasesState by viewModel.leases.collectAsStateWithLifecycle()
@@ -160,6 +168,7 @@ fun LandlordFinanceScreen(
     val selectedSavedMethod = effectiveSavedMethod?.value
 
     val leases = (leasesState as? UiState.Success)?.data ?: emptyList()
+    val schedules = (schedulesState as? UiState.Success)?.data ?: emptyList()
     val properties = (propertiesState as? UiState.Success)?.data ?: emptyList()
     val units = (unitsState as? UiState.Success)?.data ?: emptyList()
     val scannedDocuments = (scannedDocsState as? UiState.Success)?.data ?: emptyList()
@@ -171,6 +180,11 @@ fun LandlordFinanceScreen(
     var showFinanceVault by remember { mutableStateOf(false) }
     var unitForVaultScan by remember { mutableStateOf<RentalUnit?>(null) }
     var showQuickPasteMpesaDialog by remember { mutableStateOf(false) }
+    var showAutoBillingSweepDialog by remember { mutableStateOf(false) }
+    var showSchedulePickerDialog by remember { mutableStateOf(false) }
+    var leaseForScheduleEditor by remember { mutableStateOf<Lease?>(null) }
+    var draftInvoiceToIssue by remember { mutableStateOf<Invoice?>(null) }
+    var draftInvoiceToCancel by remember { mutableStateOf<Invoice?>(null) }
     var showLateFeeSweepDialog by remember { mutableStateOf(false) }
     var invoiceForLateFeeWaiver by remember { mutableStateOf<Invoice?>(null) }
     var paymentToVerify by remember { mutableStateOf<Payment?>(null) }
@@ -178,6 +192,9 @@ fun LandlordFinanceScreen(
     var paymentToReverse by remember { mutableStateOf<Payment?>(null) }
 
     val tabs = listOf("Invoices", "Payments", "Expenses")
+    val canRunAutoBilling = remember(leases, currentUser.userId, currentUser.activeRole) {
+        leases.any { PermissionPolicy.canRunAutoBillingSweep(currentUser.userId, currentUser.activeRoleEnum(), it) }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         SecondaryTabRow(selectedTabIndex = selectedTab) {
@@ -190,12 +207,21 @@ fun LandlordFinanceScreen(
             0 -> InvoicesTab(
                 invoicesState = invoicesState,
                 leases = leases,
+                schedules = schedules,
                 hasActiveLeases = leases.any { it.statusEnum() == LeaseStatus.ACTIVE },
+                canRunAutoBilling = canRunAutoBilling,
                 isBusy = busy,
                 canWaiveLateFee = { inv ->
                     PermissionPolicy.canWaiveLateFee(currentUser.userId, currentUser.activeRoleEnum(), inv.ownerUid)
                 },
+                canManageDraft = { inv ->
+                    PermissionPolicy.canIssueOrCancelDraftInvoice(currentUser.userId, currentUser.activeRoleEnum(), inv)
+                },
                 onGenerateInvoices = { showGenerateInvoiceDialog = true },
+                onOpenAutoBillingSweep = { showAutoBillingSweepDialog = true },
+                onManageSchedules = { showSchedulePickerDialog = true },
+                onIssueDraft = { inv -> draftInvoiceToIssue = inv },
+                onCancelDraft = { inv -> draftInvoiceToCancel = inv },
                 onSendReminders = { viewModel.sendBatchRentReminders(currentUser.fullName) },
                 onOpenLateFeeSweep = { showLateFeeSweepDialog = true },
                 onWaiveLateFee = { inv -> invoiceForLateFeeWaiver = inv }
@@ -247,6 +273,7 @@ fun LandlordFinanceScreen(
         var period by remember { mutableStateOf(CurrencyUtils.currentBillingPeriod()) }
         var extraText by remember { mutableStateOf("0") }
         var extraNote by remember { mutableStateOf("") }
+        var issueAsDraft by remember { mutableStateOf(false) }
         var err by remember { mutableStateOf<String?>(null) }
         AlertDialog(
             onDismissRequest = { showGenerateInvoiceDialog = false },
@@ -276,6 +303,25 @@ fun LandlordFinanceScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text("Stage as Drafts for Review", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Tenants are not notified until you review extras and issue each draft.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = issueAsDraft,
+                            onCheckedChange = { issueAsDraft = it },
+                            modifier = Modifier.testTag("generate_as_draft_switch")
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -288,12 +334,18 @@ fun LandlordFinanceScreen(
                         } else if (extraCents == null || extraCents < 0L) {
                             err = "Enter a valid non-negative KES amount for shared fees"
                         } else {
-                            viewModel.generateMonthlyInvoices(trimmedPeriod, extraCents, extraNote.ifBlank { null }, currentUser.fullName)
+                            viewModel.generateMonthlyInvoices(
+                                billingPeriod = trimmedPeriod,
+                                extraChargesCents = extraCents,
+                                extraChargesNote = extraNote.ifBlank { null },
+                                actorName = currentUser.fullName,
+                                issueAsDraft = issueAsDraft
+                            )
                             showGenerateInvoiceDialog = false
                         }
                     },
                     enabled = !busy
-                ) { Text("Generate") }
+                ) { Text(if (issueAsDraft) "Stage Drafts" else "Generate") }
             },
             dismissButton = { TextButton(onClick = { showGenerateInvoiceDialog = false }) { Text("Cancel") } }
         )
@@ -547,6 +599,179 @@ fun LandlordFinanceScreen(
         )
     }
 
+    if (showAutoBillingSweepDialog) {
+        val allInvoices = (invoicesState as? UiState.Success)?.data ?: emptyList()
+        val candidates = remember(allInvoices, leases, schedules) {
+            LeaseAutomationEngine.evaluateAutoBillingCandidates(
+                leases = leases,
+                existingInvoices = allInvoices,
+                schedules = schedules
+            )
+        }
+        AutoBillingSweepDialog(
+            candidates = candidates,
+            isBusy = busy,
+            onDismiss = { showAutoBillingSweepDialog = false },
+            onConfirmSweep = {
+                viewModel.runAutoBillingSweep(currentUser.fullName) {
+                    showAutoBillingSweepDialog = false
+                }
+            }
+        )
+    }
+
+    if (showSchedulePickerDialog) {
+        val activeLeases = remember(leases) { leases.filter { it.statusEnum() == LeaseStatus.ACTIVE } }
+        val scheduleByLease = remember(schedules) { schedules.associateBy { it.leaseId } }
+        AlertDialog(
+            onDismissRequest = { showSchedulePickerDialog = false },
+            title = { Text("Recurring Billing Schedules") },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.verticalScroll(rememberScrollState())
+                ) {
+                    if (activeLeases.isEmpty()) {
+                        Text("No active leases available for recurring schedules.", style = MaterialTheme.typography.bodyMedium)
+                    } else {
+                        Text(
+                            "Select a lease to customize monthly billing mode, recurring extras, or schedule status. Grace periods always come from the Lease.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        activeLeases.forEach { lease ->
+                            val sched = scheduleByLease[lease.id]
+                            val status = sched?.scheduleStatusEnum()
+                                ?: if (lease.autoBillingEnabled) RecurringScheduleStatus.ACTIVE else RecurringScheduleStatus.PAUSED
+                            val mode = sched?.issueModeEnum() ?: RecurringIssueMode.AUTO_ISSUE
+                            Card(
+                                shape = MaterialTheme.shapes.small,
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        showSchedulePickerDialog = false
+                                        leaseForScheduleEditor = lease
+                                    }
+                                    .testTag("select_recurring_schedule_${lease.id}")
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(10.dp).fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                        Text("${lease.propertyName} • Unit ${lease.unitNumber}", style = MaterialTheme.typography.labelLarge)
+                                        Text(
+                                            "${lease.tenantName} • ${mode.label} • Due Day ${sched?.billingDayOfMonth ?: lease.dueDayOfMonth} • Grace ${lease.gracePeriodDays}d",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    StatusPill(
+                                        status.label,
+                                        when (status) {
+                                            RecurringScheduleStatus.ACTIVE -> PillTone.SUCCESS
+                                            RecurringScheduleStatus.PAUSED -> PillTone.WARNING
+                                            RecurringScheduleStatus.ENDED -> PillTone.NEUTRAL
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSchedulePickerDialog = false }) { Text("Close") }
+            }
+        )
+    }
+
+    leaseForScheduleEditor?.let { lease ->
+        val existingSchedule = schedules.firstOrNull { it.leaseId == lease.id }
+        val canEditPricing = PermissionPolicy.canEditRecurringSchedulePricing(
+            uid = currentUser.userId,
+            activeRole = currentUser.activeRoleEnum(),
+            lease = lease
+        )
+        RecurringScheduleEditorDialog(
+            lease = lease,
+            existingSchedule = existingSchedule,
+            canEditPricing = canEditPricing,
+            isBusy = busy,
+            onDismiss = { leaseForScheduleEditor = null },
+            onSave = { amountCents, extraCents, extraNote, day, lead, status, mode ->
+                viewModel.saveRecurringSchedule(
+                    lease = lease,
+                    existingSchedule = existingSchedule,
+                    amountCents = amountCents,
+                    recurringExtraCents = extraCents,
+                    recurringExtraNote = extraNote,
+                    billingDayOfMonth = day,
+                    leadDays = lead,
+                    scheduleStatus = status,
+                    issueMode = mode,
+                    actorName = currentUser.fullName
+                ) {
+                    leaseForScheduleEditor = null
+                }
+            }
+        )
+    }
+
+    draftInvoiceToIssue?.let { draftInv ->
+        val matchedLease = leases.firstOrNull { it.id == draftInv.leaseId }
+        if (matchedLease != null) {
+            IssueDraftInvoiceDialog(
+                invoice = draftInv,
+                lease = matchedLease,
+                isBusy = busy,
+                onDismiss = { draftInvoiceToIssue = null },
+                onConfirmIssue = { extraCents, extraNote ->
+                    viewModel.issueDraftInvoice(
+                        invoice = draftInv,
+                        lease = matchedLease,
+                        extraChargesCents = extraCents,
+                        extraChargesNote = extraNote,
+                        actorName = currentUser.fullName
+                    ) {
+                        draftInvoiceToIssue = null
+                    }
+                }
+            )
+        }
+    }
+
+    draftInvoiceToCancel?.let { draftInv ->
+        AlertDialog(
+            onDismissRequest = { draftInvoiceToCancel = null },
+            title = { Text("Cancel Draft Invoice") },
+            text = {
+                Text("Cancel draft ${draftInv.invoiceNumber} for ${draftInv.tenantName}? Cancelled drafts are never sent to tenants.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.cancelDraftInvoice(
+                            invoice = draftInv,
+                            reason = "Cancelled before issuing",
+                            actorName = currentUser.fullName
+                        ) {
+                            draftInvoiceToCancel = null
+                        }
+                    },
+                    enabled = !busy,
+                    colors = ButtonDefaults.buttonColors(containerColor = StatusError),
+                    modifier = Modifier.heightIn(min = 48.dp).testTag("confirm_cancel_draft_button")
+                ) { Text("Cancel Draft") }
+            },
+            dismissButton = {
+                TextButton(onClick = { draftInvoiceToCancel = null }) { Text("Keep Draft") }
+            }
+        )
+    }
+
     if (showLateFeeSweepDialog) {
         val allInvoices = (invoicesState as? UiState.Success)?.data ?: emptyList()
         val candidates = remember(allInvoices, leases) {
@@ -582,10 +807,17 @@ fun LandlordFinanceScreen(
 private fun InvoicesTab(
     invoicesState: UiState<List<Invoice>>,
     leases: List<Lease>,
+    schedules: List<RecurringInvoiceSchedule>,
     hasActiveLeases: Boolean,
+    canRunAutoBilling: Boolean,
     isBusy: Boolean,
     canWaiveLateFee: (Invoice) -> Boolean,
+    canManageDraft: (Invoice) -> Boolean,
     onGenerateInvoices: () -> Unit,
+    onOpenAutoBillingSweep: () -> Unit,
+    onManageSchedules: () -> Unit,
+    onIssueDraft: (Invoice) -> Unit,
+    onCancelDraft: (Invoice) -> Unit,
     onSendReminders: () -> Unit,
     onOpenLateFeeSweep: () -> Unit,
     onWaiveLateFee: (Invoice) -> Unit
@@ -593,6 +825,13 @@ private fun InvoicesTab(
     var selectedFilter by remember { mutableStateOf(LandlordInvoiceFilter.ALL) }
     var expandedInvoiceIds by remember { mutableStateOf(emptySet<String>()) }
     val allInvoicesList = (invoicesState as? UiState.Success)?.data ?: emptyList()
+    val autoBillCandidates = remember(allInvoicesList, leases, schedules) {
+        LeaseAutomationEngine.evaluateAutoBillingCandidates(
+            leases = leases,
+            existingInvoices = allInvoicesList,
+            schedules = schedules
+        )
+    }
     val reminderCandidates = remember(allInvoicesList) {
         RentReminderEngine.evaluateInvoices(allInvoicesList, respectCooldown = true)
     }
@@ -621,6 +860,76 @@ private fun InvoicesTab(
                     Icon(Icons.Filled.Receipt, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
                     Text("Bill Month")
+                }
+            }
+        }
+        if (hasActiveLeases || allInvoicesList.isNotEmpty()) {
+            item {
+                val activeSchedCount = schedules.count { it.scheduleStatusEnum() == RecurringScheduleStatus.ACTIVE }
+                val draftSchedCount = schedules.count { it.issueModeEnum() == RecurringIssueMode.DRAFT_FOR_REVIEW }
+                Card(
+                    shape = MaterialTheme.shapes.medium,
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth().testTag("auto_billing_card")
+                ) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(12.dp).fillMaxWidth()
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                Text("Automated Monthly Billing", style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    text = if (autoBillCandidates.isEmpty()) {
+                                        "All auto-billed leases are up to date for this cycle"
+                                    } else {
+                                        val prorated = autoBillCandidates.count { it.prorated }
+                                        val drafts = autoBillCandidates.count { it.targetStatus == InvoiceStatus.DRAFT }
+                                        "${autoBillCandidates.size} lease(s) ready to bill" +
+                                            (if (prorated > 0) " ($prorated prorated)" else "") +
+                                            if (drafts > 0) " • $drafts draft" else ""
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (schedules.isNotEmpty()) {
+                                    Text(
+                                        text = "$activeSchedCount active schedule(s) • $draftSchedCount draft-for-review • Grace periods from Leases",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                            }
+                            OutlinedButton(
+                                onClick = onOpenAutoBillingSweep,
+                                enabled = !isBusy && canRunAutoBilling,
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .testTag("run_auto_billing_sweep_button")
+                            ) {
+                                Icon(Icons.Filled.Receipt, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Auto-Bill (${autoBillCandidates.size})")
+                            }
+                        }
+                        if (hasActiveLeases && canRunAutoBilling) {
+                            OutlinedButton(
+                                onClick = onManageSchedules,
+                                enabled = !isBusy,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .testTag("manage_recurring_schedules_button")
+                            ) {
+                                Text("Configure Recurring Schedules (${schedules.size.coerceAtLeast(leases.count { it.statusEnum() == LeaseStatus.ACTIVE })})")
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -729,7 +1038,11 @@ private fun InvoicesTab(
                             items(LandlordInvoiceFilter.entries) { filter ->
                                 val count = when (filter) {
                                     LandlordInvoiceFilter.ALL -> allInvoices.size
-                                    LandlordInvoiceFilter.UNPAID -> allInvoices.count { it.statusEnum() == InvoiceStatus.UNPAID }
+                                    LandlordInvoiceFilter.DRAFT -> allInvoices.count { it.statusEnum() == InvoiceStatus.DRAFT }
+                                    LandlordInvoiceFilter.ISSUED -> allInvoices.count {
+                                        val st = it.statusEnum()
+                                        st == InvoiceStatus.ISSUED || st == InvoiceStatus.UNPAID
+                                    }
                                     LandlordInvoiceFilter.OVERDUE -> allInvoices.count { it.statusEnum() == InvoiceStatus.OVERDUE }
                                     LandlordInvoiceFilter.PARTIALLY_PAID -> allInvoices.count { it.statusEnum() == InvoiceStatus.PARTIALLY_PAID }
                                     LandlordInvoiceFilter.PAID -> allInvoices.count { it.statusEnum() == InvoiceStatus.PAID }
@@ -746,7 +1059,11 @@ private fun InvoicesTab(
 
                     val filtered = when (selectedFilter) {
                         LandlordInvoiceFilter.ALL -> allInvoices
-                        LandlordInvoiceFilter.UNPAID -> allInvoices.filter { it.statusEnum() == InvoiceStatus.UNPAID }
+                        LandlordInvoiceFilter.DRAFT -> allInvoices.filter { it.statusEnum() == InvoiceStatus.DRAFT }
+                        LandlordInvoiceFilter.ISSUED -> allInvoices.filter {
+                            val st = it.statusEnum()
+                            st == InvoiceStatus.ISSUED || st == InvoiceStatus.UNPAID
+                        }
                         LandlordInvoiceFilter.OVERDUE -> allInvoices.filter { it.statusEnum() == InvoiceStatus.OVERDUE }
                         LandlordInvoiceFilter.PARTIALLY_PAID -> allInvoices.filter { it.statusEnum() == InvoiceStatus.PARTIALLY_PAID }
                         LandlordInvoiceFilter.PAID -> allInvoices.filter { it.statusEnum() == InvoiceStatus.PAID }
@@ -766,6 +1083,8 @@ private fun InvoicesTab(
                         items(filtered, key = { it.id }) { inv ->
                             val expanded = inv.id in expandedInvoiceIds
                             val tone = when (inv.statusEnum()) {
+                                InvoiceStatus.DRAFT -> PillTone.NEUTRAL
+                                InvoiceStatus.ISSUED -> PillTone.INFO
                                 InvoiceStatus.PAID -> PillTone.SUCCESS
                                 InvoiceStatus.PARTIALLY_PAID -> PillTone.WARNING
                                 InvoiceStatus.OVERDUE -> PillTone.ERROR
@@ -804,8 +1123,11 @@ private fun InvoicesTab(
                                             color = if (inv.outstandingCents > 0) StatusError else StatusSuccess
                                         )
                                     }
-                                    if (inv.lateFeeCents > 0L || inv.lateFeeWaived) {
+                                    if (inv.prorated || inv.lateFeeCents > 0L || inv.lateFeeWaived) {
                                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            if (inv.prorated) {
+                                                StatusPill("Prorated", PillTone.INFO)
+                                            }
                                             if (inv.lateFeeWaived) {
                                                 StatusPill("Late Fee Waived", PillTone.INFO)
                                             } else if (inv.lateFeeCents > 0L) {
@@ -843,7 +1165,17 @@ private fun InvoicesTab(
                                     if (expanded) {
                                         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
                                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            InvoiceBreakdownLine("Base Monthly Rent", CurrencyUtils.formatKes(inv.rentCents, true))
+                                            if (inv.prorated && !inv.prorationNote.isNullOrBlank()) {
+                                                Text(
+                                                    inv.prorationNote,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.secondary
+                                                )
+                                            }
+                                            InvoiceBreakdownLine(
+                                                if (inv.prorated) "Prorated Monthly Rent" else "Base Monthly Rent",
+                                                CurrencyUtils.formatKes(inv.rentCents, true)
+                                            )
                                             if (inv.extraChargesCents > 0L || !inv.extraChargesNote.isNullOrBlank()) {
                                                 val extraLabel = inv.extraChargesNote?.takeIf { it.isNotBlank() }?.let { "Extra Charges ($it)" } ?: "Extra Charges"
                                                 InvoiceBreakdownLine(extraLabel, CurrencyUtils.formatKes(inv.extraChargesCents, true))
@@ -863,6 +1195,41 @@ private fun InvoicesTab(
                                             }
                                             InvoiceBreakdownLine("Paid / Credit Applied", "- ${CurrencyUtils.formatKes(inv.paidCents, true)}")
                                             InvoiceBreakdownLine("Outstanding Balance", CurrencyUtils.formatKes(inv.outstandingCents, true), highlightError = inv.outstandingCents > 0L)
+                                            inv.billingDateEpochMs?.let { bMs ->
+                                                InvoiceBreakdownLine("Billing Date", CurrencyUtils.formatDate(bMs))
+                                            }
+                                            inv.issuedAtEpochMs?.let { iMs ->
+                                                InvoiceBreakdownLine("Issued Date", CurrencyUtils.formatDate(iMs))
+                                            }
+                                            inv.paidAtEpochMs?.let { pMs ->
+                                                InvoiceBreakdownLine("Paid Date", CurrencyUtils.formatDate(pMs))
+                                            }
+                                        }
+                                        if (inv.statusEnum() == InvoiceStatus.DRAFT && canManageDraft(inv)) {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Button(
+                                                    onClick = { onIssueDraft(inv) },
+                                                    enabled = !isBusy,
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .heightIn(min = 48.dp)
+                                                        .testTag("issue_draft_invoice_button_${inv.id}")
+                                                ) {
+                                                    Text("Issue Invoice")
+                                                }
+                                                OutlinedButton(
+                                                    onClick = { onCancelDraft(inv) },
+                                                    enabled = !isBusy,
+                                                    modifier = Modifier
+                                                        .heightIn(min = 48.dp)
+                                                        .testTag("cancel_draft_invoice_button_${inv.id}")
+                                                ) {
+                                                    Text("Cancel Draft", color = StatusError)
+                                                }
+                                            }
                                         }
                                         if (inv.lateFeeCents > 0L && !inv.lateFeeWaived && canWaiveLateFee(inv)) {
                                             OutlinedButton(

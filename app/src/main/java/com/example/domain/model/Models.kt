@@ -81,12 +81,33 @@ enum class RenewalOfferStatus(val label: String) {
     AUTO_RENEWED("Auto-Renewed")
 }
 
+enum class MoveOutNoticeStatus(val label: String) {
+    NONE("None"),
+    SUBMITTED("Notice Pending"),
+    ACKNOWLEDGED("Exit Scheduled"),
+    DECLINED("Revision Requested"),
+    WITHDRAWN("Withdrawn")
+}
+
 enum class InvoiceStatus(val label: String) {
+    DRAFT("Draft"),
+    ISSUED("Issued"),
     UNPAID("Unpaid"),
     PARTIALLY_PAID("Partially Paid"),
     PAID("Paid"),
     OVERDUE("Overdue"),
     CANCELLED("Cancelled")
+}
+
+enum class RecurringScheduleStatus(val label: String) {
+    ACTIVE("Active"),
+    PAUSED("Paused"),
+    ENDED("Ended")
+}
+
+enum class RecurringIssueMode(val label: String) {
+    AUTO_ISSUE("Auto-Issue"),
+    DRAFT_FOR_REVIEW("Draft for Review")
 }
 
 enum class PaymentMethod(val label: String) {
@@ -651,6 +672,15 @@ data class Lease(
     val renewalRespondedAtEpochMs: Long? = null,
     val renewalResponseNote: String? = null,
     val lastRenewalProcessedForEndMs: Long? = null,
+    val noticePeriodDays: Long = 30L,
+    val autoBillingEnabled: Boolean = true,
+    val billingLeadDays: Long = 5L,
+    val moveOutNoticeStatus: String = MoveOutNoticeStatus.NONE.name,
+    val requestedMoveOutEpochMs: Long? = null,
+    val moveOutNoticeSubmittedAtMs: Long? = null,
+    val moveOutNoticeReason: String? = null,
+    val moveOutNoticeReviewedAtMs: Long? = null,
+    val moveOutNoticeResponseNote: String? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -661,6 +691,8 @@ data class Lease(
     fun escalationTypeEnum(): EscalationType = safeEnum(escalationType, EscalationType.NONE)
 
     fun renewalOfferStatusEnum(): RenewalOfferStatus = safeEnum(renewalOfferStatus, RenewalOfferStatus.NONE)
+
+    fun moveOutNoticeStatusEnum(): MoveOutNoticeStatus = safeEnum(moveOutNoticeStatus, MoveOutNoticeStatus.NONE)
 
     fun isMutuallySigned(): Boolean = landlordSignature != null && tenantSignature != null
 
@@ -705,6 +737,15 @@ data class Lease(
         "renewalRespondedAtEpochMs" to renewalRespondedAtEpochMs,
         "renewalResponseNote" to renewalResponseNote?.trim()?.take(500)?.takeIf { it.isNotBlank() },
         "lastRenewalProcessedForEndMs" to lastRenewalProcessedForEndMs,
+        "noticePeriodDays" to noticePeriodDays.coerceIn(1L, 90L),
+        "autoBillingEnabled" to autoBillingEnabled,
+        "billingLeadDays" to billingLeadDays.coerceIn(0L, 15L),
+        "moveOutNoticeStatus" to moveOutNoticeStatus,
+        "requestedMoveOutEpochMs" to requestedMoveOutEpochMs,
+        "moveOutNoticeSubmittedAtMs" to moveOutNoticeSubmittedAtMs,
+        "moveOutNoticeReason" to moveOutNoticeReason?.trim()?.take(500)?.takeIf { it.isNotBlank() },
+        "moveOutNoticeReviewedAtMs" to moveOutNoticeReviewedAtMs,
+        "moveOutNoticeResponseNote" to moveOutNoticeResponseNote?.trim()?.take(500)?.takeIf { it.isNotBlank() },
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     ).filterValues { it != null } as Map<String, Any>
@@ -715,6 +756,7 @@ data class Lease(
 data class Invoice(
     @DocumentId val id: String = "",
     val invoiceNumber: String = "",
+    val scheduleId: String? = null,
     val leaseId: String = "",
     val orgId: String = "",
     val propertyId: String = "",
@@ -727,6 +769,7 @@ data class Invoice(
     val tenantUid: String = "",
     val tenantName: String = "",
     val billingPeriod: String = "",
+    val billingDateEpochMs: Long? = null,
     val rentCents: Long = 0L,
     val extraChargesCents: Long = 0L,
     val extraChargesNote: String? = null,
@@ -735,6 +778,8 @@ data class Invoice(
     val paidCents: Long = 0L,
     val outstandingCents: Long = 0L,
     val dueDateEpochMs: Long = 0L,
+    val issuedAtEpochMs: Long? = null,
+    val paidAtEpochMs: Long? = null,
     val status: String = InvoiceStatus.UNPAID.name,
     val lastReminderSentEpochMs: Long? = null,
     val reminderCount: Long = 0L,
@@ -745,14 +790,24 @@ data class Invoice(
     val lateFeeWaivedReason: String? = null,
     val lateFeeWaivedAtEpochMs: Long? = null,
     val gracePeriodEndsEpochMs: Long? = null,
+    val prorated: Boolean = false,
+    val prorationNote: String? = null,
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
     fun statusEnum(): InvoiceStatus = safeEnum(status, InvoiceStatus.UNPAID)
 
+    fun isDraft(): Boolean = statusEnum() == InvoiceStatus.DRAFT
+
+    fun isOpenReceivable(): Boolean {
+        val st = statusEnum()
+        return st != InvoiceStatus.DRAFT && st != InvoiceStatus.CANCELLED && st != InvoiceStatus.PAID
+    }
+
     @Suppress("UNCHECKED_CAST")
     fun toCreateMap(): Map<String, Any> = mapOf(
         "invoiceNumber" to invoiceNumber,
+        "scheduleId" to scheduleId?.trim()?.take(128)?.takeIf { it.isNotBlank() },
         "leaseId" to leaseId,
         "orgId" to orgId,
         "propertyId" to propertyId,
@@ -765,6 +820,7 @@ data class Invoice(
         "tenantUid" to tenantUid,
         "tenantName" to tenantName,
         "billingPeriod" to billingPeriod,
+        "billingDateEpochMs" to billingDateEpochMs,
         "rentCents" to rentCents,
         "extraChargesCents" to extraChargesCents,
         "extraChargesNote" to extraChargesNote?.takeIf { it.isNotBlank() },
@@ -773,6 +829,8 @@ data class Invoice(
         "paidCents" to paidCents,
         "outstandingCents" to outstandingCents,
         "dueDateEpochMs" to dueDateEpochMs,
+        "issuedAtEpochMs" to issuedAtEpochMs,
+        "paidAtEpochMs" to paidAtEpochMs,
         "status" to status,
         "lastReminderSentEpochMs" to lastReminderSentEpochMs,
         "reminderCount" to reminderCount,
@@ -783,6 +841,79 @@ data class Invoice(
         "lateFeeWaivedReason" to lateFeeWaivedReason?.trim()?.take(300)?.takeIf { it.isNotBlank() },
         "lateFeeWaivedAtEpochMs" to lateFeeWaivedAtEpochMs,
         "gracePeriodEndsEpochMs" to gracePeriodEndsEpochMs,
+        "prorated" to prorated,
+        "prorationNote" to prorationNote?.trim()?.take(200)?.takeIf { it.isNotBlank() },
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp()
+    ).filterValues { it != null } as Map<String, Any>
+}
+
+/**
+ * Recurring monthly billing template keyed deterministically by `leaseId`.
+ * Grace period and late-fee settings are referenced strictly from the linked [Lease] document.
+ */
+@Keep
+@IgnoreExtraProperties
+data class RecurringInvoiceSchedule(
+    @DocumentId val id: String = "",
+    val orgId: String = "",
+    val propertyId: String = "",
+    val propertyName: String = "",
+    val unitId: String = "",
+    val unitNumber: String = "",
+    val leaseId: String = "",
+    val ownerUid: String = "",
+    val managerUids: List<String> = emptyList(),
+    val authorizedUids: List<String> = emptyList(),
+    val tenantUid: String = "",
+    val tenantName: String = "",
+    val amountCents: Long = 0L,
+    val recurringExtraCents: Long = 0L,
+    val recurringExtraNote: String? = null,
+    val billingDayOfMonth: Long = 5L,
+    val leadDays: Long = 5L,
+    val nextBillingEpochMs: Long = 0L,
+    val lastBilledPeriod: String? = null,
+    val lastInvoiceId: String? = null,
+    val lastBilledAtEpochMs: Long? = null,
+    val scheduleStatus: String = RecurringScheduleStatus.ACTIVE.name,
+    val issueMode: String = RecurringIssueMode.AUTO_ISSUE.name,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun scheduleStatusEnum(): RecurringScheduleStatus =
+        safeEnum(scheduleStatus, RecurringScheduleStatus.ACTIVE)
+
+    fun issueModeEnum(): RecurringIssueMode =
+        safeEnum(issueMode, RecurringIssueMode.AUTO_ISSUE)
+
+    fun totalMonthlyTemplateCents(): Long =
+        (amountCents.coerceAtLeast(0L) + recurringExtraCents.coerceAtLeast(0L))
+
+    @Suppress("UNCHECKED_CAST")
+    fun toCreateMap(): Map<String, Any> = mapOf(
+        "orgId" to orgId,
+        "propertyId" to propertyId,
+        "propertyName" to propertyName,
+        "unitId" to unitId,
+        "unitNumber" to unitNumber,
+        "leaseId" to leaseId,
+        "ownerUid" to ownerUid,
+        "managerUids" to managerUids,
+        "authorizedUids" to authorizedUids,
+        "tenantUid" to tenantUid,
+        "tenantName" to tenantName,
+        "amountCents" to amountCents.coerceAtLeast(1L),
+        "recurringExtraCents" to recurringExtraCents.coerceAtLeast(0L),
+        "recurringExtraNote" to recurringExtraNote?.trim()?.take(200)?.takeIf { it.isNotBlank() },
+        "billingDayOfMonth" to billingDayOfMonth.coerceIn(1L, 28L),
+        "leadDays" to leadDays.coerceIn(0L, 15L),
+        "nextBillingEpochMs" to nextBillingEpochMs.coerceAtLeast(1L),
+        "lastBilledPeriod" to lastBilledPeriod?.trim()?.takeIf { it.isNotBlank() },
+        "lastInvoiceId" to lastInvoiceId?.trim()?.takeIf { it.isNotBlank() },
+        "lastBilledAtEpochMs" to lastBilledAtEpochMs,
+        "scheduleStatus" to scheduleStatusEnum().name,
+        "issueMode" to issueModeEnum().name,
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     ).filterValues { it != null } as Map<String, Any>

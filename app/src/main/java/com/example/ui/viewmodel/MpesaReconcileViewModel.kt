@@ -204,7 +204,10 @@ class MpesaReconcileViewModel(
     ): Result<String> {
         val leaseInvoices = invoices.filter { it.leaseId == lease.id }
         val openInvoiceId = leaseInvoices
-            .firstOrNull { it.statusEnum() != InvoiceStatus.CANCELLED && it.outstandingCents > 0L }
+            .firstOrNull {
+                val st = it.statusEnum()
+                st != InvoiceStatus.CANCELLED && st != InvoiceStatus.DRAFT && it.outstandingCents > 0L
+            }
             ?.id
 
         val submitRes = financeRepo.submitPayment(

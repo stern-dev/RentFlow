@@ -4045,4 +4045,638 @@ test("Automated lease renewals and late fees: RBAC, tenant renewal offer respons
   );
 });
 
+test("Lease Move-Out Notice & Automated Monthly Billing: notice lifecycle, owner settings, manager review, and prorated invoices", async () => {
+  const rulesUnitPath = require.resolve("@firebase/rules-unit-testing");
+  const firebaseCompat = require(require.resolve("firebase/compat/app", { paths: [rulesUnitPath] }));
+  require(require.resolve("firebase/compat/firestore", { paths: [rulesUnitPath] }));
+  const deleteFieldVal = firebaseCompat.firestore.FieldValue.delete();
+
+  const now = pastDate(50000);
+  const startMs = Date.now() - 180 * 86400000;
+  const endMs = Date.now() + 120 * 86400000;
+  const requestedMoveOutMs = Date.now() + 40 * 86400000;
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, {
+      uid: LANDLORD_UID,
+      fullName: "Wanjiku Kamau",
+      email: "landlord@example.com",
+      roles: ["LANDLORD"],
+      now,
+    });
+    await seedUser(db, {
+      uid: MANAGER_UID,
+      fullName: "Grace Njeri",
+      email: "manager@example.com",
+      roles: ["PROPERTY_MANAGER"],
+      now,
+    });
+    await seedUser(db, {
+      uid: TENANT_UID,
+      fullName: "Brian Ochieng",
+      email: "tenant@example.com",
+      roles: ["TENANT"],
+      now,
+    });
+    await seedUser(db, {
+      uid: OTHER_TENANT_UID,
+      fullName: "Other Tenant",
+      email: "other@example.com",
+      roles: ["TENANT"],
+      now,
+    });
+    await db.collection("organizations").doc("org_notice").set({
+      name: "Kilimani Estates",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID, MANAGER_UID],
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("properties").doc("prop_notice").set({
+      orgId: "org_notice",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      name: "Kilimani Court",
+      category: "APARTMENTS",
+      city: "Nairobi",
+      neighborhood: "Kilimani",
+      addressLine: "Denis Pritt Rd",
+      description: "Quiet residential suites",
+      imageRefs: [],
+      archived: false,
+      hasPublishedUnits: false,
+      totalUnitsCount: 1,
+      occupiedUnitsCount: 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("units").doc("unit_notice").set({
+      propertyId: "prop_notice",
+      propertyName: "Kilimani Court",
+      propertyCity: "Nairobi",
+      propertyCategory: "APARTMENTS",
+      orgId: "org_notice",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      unitNumber: "K-204",
+      unitType: "ONE_BEDROOM",
+      rentCents: 4000000,
+      depositCents: 4000000,
+      status: "OCCUPIED",
+      amenities: ["Backup Generator"],
+      description: "1BR apartment",
+      imageRefs: [],
+      published: false,
+      currentTenantUid: TENANT_UID,
+      currentLeaseId: "lease_notice_1",
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  const landlordDb = authedDb(LANDLORD_UID, "landlord@example.com");
+  const managerDb = authedDb(MANAGER_UID, "manager@example.com");
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com");
+  const otherTenantDb = authedDb(OTHER_TENANT_UID, "other@example.com");
+
+  // 1. Landlord creates lease with notice & auto-billing defaults
+  await assertSucceeds(
+    landlordDb.collection("leases").doc("lease_notice_1").set({
+      orgId: "org_notice",
+      propertyId: "prop_notice",
+      propertyName: "Kilimani Court",
+      unitId: "unit_notice",
+      unitNumber: "K-204",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      tenantPhone: "+254712345678",
+      rentCents: 4000000,
+      depositCents: 4000000,
+      startDateEpochMs: startMs,
+      endDateEpochMs: endMs,
+      dueDayOfMonth: 5,
+      status: "ACTIVE",
+      creditBalanceCents: 0,
+      termsSummary: "Standard 12-month tenancy",
+      noticePeriodDays: 30,
+      autoBillingEnabled: true,
+      billingLeadDays: 5,
+      moveOutNoticeStatus: "NONE",
+      renewalOfferStatus: "PENDING",
+      offeredRentCents: 4200000,
+      offeredEndDateEpochMs: endMs + 365 * 86400000,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Reject out-of-range noticePeriodDays and billingLeadDays
+  await assertFails(
+    landlordDb.collection("leases").doc("lease_notice_1").update({
+      noticePeriodDays: 0,
+      updatedAt: pastDate(4000),
+    })
+  );
+  await assertFails(
+    landlordDb.collection("leases").doc("lease_notice_1").update({
+      billingLeadDays: 16,
+      updatedAt: pastDate(4000),
+    })
+  );
+
+  // 2. Manager CANNOT change owner-only noticePeriodDays, autoBillingEnabled, or billingLeadDays
+  await assertFails(
+    managerDb.collection("leases").doc("lease_notice_1").update({
+      noticePeriodDays: 45,
+      updatedAt: pastDate(3900),
+    })
+  );
+  await assertFails(
+    managerDb.collection("leases").doc("lease_notice_1").update({
+      autoBillingEnabled: false,
+      updatedAt: pastDate(3900),
+    })
+  );
+  await assertFails(
+    managerDb.collection("leases").doc("lease_notice_1").update({
+      billingLeadDays: 7,
+      updatedAt: pastDate(3900),
+    })
+  );
+
+  // Owner CAN update notice & auto-billing config
+  await assertSucceeds(
+    landlordDb.collection("leases").doc("lease_notice_1").update({
+      noticePeriodDays: 30,
+      autoBillingEnabled: true,
+      billingLeadDays: 6,
+      updatedAt: pastDate(3800),
+    })
+  );
+
+  // 3. Another tenant CANNOT submit move-out notice; actual tenant CANNOT alter billing/rent fields
+  await assertFails(
+    otherTenantDb.collection("leases").doc("lease_notice_1").update({
+      moveOutNoticeStatus: "SUBMITTED",
+      requestedMoveOutEpochMs: requestedMoveOutMs,
+      moveOutNoticeSubmittedAtMs: Date.now() - 10000,
+      moveOutNoticeReason: "Relocating for work",
+      updatedAt: pastDate(3700),
+    })
+  );
+  await assertFails(
+    tenantDb.collection("leases").doc("lease_notice_1").update({
+      moveOutNoticeStatus: "SUBMITTED",
+      requestedMoveOutEpochMs: requestedMoveOutMs,
+      moveOutNoticeSubmittedAtMs: Date.now() - 10000,
+      noticePeriodDays: 7,
+      updatedAt: pastDate(3700),
+    })
+  );
+
+  // Tenant CAN submit move-out notice
+  await assertSucceeds(
+    tenantDb.collection("leases").doc("lease_notice_1").update({
+      moveOutNoticeStatus: "SUBMITTED",
+      requestedMoveOutEpochMs: requestedMoveOutMs,
+      moveOutNoticeSubmittedAtMs: Date.now() - 9000,
+      moveOutNoticeReason: "Relocating to Mombasa",
+      updatedAt: pastDate(3600),
+    })
+  );
+
+  // Tenant CAN withdraw a SUBMITTED notice, then re-submit
+  await assertSucceeds(
+    tenantDb.collection("leases").doc("lease_notice_1").update({
+      moveOutNoticeStatus: "WITHDRAWN",
+      updatedAt: pastDate(3500),
+    })
+  );
+  await assertSucceeds(
+    tenantDb.collection("leases").doc("lease_notice_1").update({
+      moveOutNoticeStatus: "SUBMITTED",
+      requestedMoveOutEpochMs: requestedMoveOutMs,
+      moveOutNoticeSubmittedAtMs: Date.now() - 8000,
+      moveOutNoticeReason: "Confirmed relocation date",
+      updatedAt: pastDate(3400),
+    })
+  );
+
+  // 4. Property Manager CAN decline the move-out notice
+  await assertSucceeds(
+    managerDb.collection("leases").doc("lease_notice_1").update({
+      moveOutNoticeStatus: "DECLINED",
+      moveOutNoticeReviewedAtMs: Date.now() - 7000,
+      moveOutNoticeResponseNote: "Please select an end-of-month handover slot.",
+      updatedAt: pastDate(3300),
+    })
+  );
+
+  // Tenant CANNOT resubmit after DECLINED without clearing review fields
+  await assertFails(
+    tenantDb.collection("leases").doc("lease_notice_1").update({
+      moveOutNoticeStatus: "SUBMITTED",
+      requestedMoveOutEpochMs: requestedMoveOutMs + 5 * 86400000,
+      moveOutNoticeSubmittedAtMs: Date.now() - 6000,
+      moveOutNoticeReason: "Updated to end of month",
+      updatedAt: pastDate(3200),
+    })
+  );
+
+  // Tenant CAN resubmit when deleting moveOutNoticeReviewedAtMs and moveOutNoticeResponseNote
+  await assertSucceeds(
+    tenantDb.collection("leases").doc("lease_notice_1").update({
+      moveOutNoticeStatus: "SUBMITTED",
+      requestedMoveOutEpochMs: requestedMoveOutMs + 5 * 86400000,
+      moveOutNoticeSubmittedAtMs: Date.now() - 5000,
+      moveOutNoticeReason: "Updated to end of month",
+      moveOutNoticeReviewedAtMs: deleteFieldVal,
+      moveOutNoticeResponseNote: deleteFieldVal,
+      updatedAt: pastDate(3100),
+    })
+  );
+
+  // 5. Manager CAN acknowledge move-out notice and reset pending renewalOfferStatus to NONE
+  await assertSucceeds(
+    managerDb.collection("leases").doc("lease_notice_1").update({
+      moveOutNoticeStatus: "ACKNOWLEDGED",
+      requestedMoveOutEpochMs: requestedMoveOutMs + 5 * 86400000,
+      moveOutNoticeReviewedAtMs: Date.now() - 4000,
+      moveOutNoticeResponseNote: "Inspection scheduled at 10:00 AM.",
+      renewalOfferStatus: "NONE",
+      updatedAt: pastDate(3000),
+    })
+  );
+
+  // Once ACKNOWLEDGED, tenant CANNOT withdraw or re-submit
+  await assertFails(
+    tenantDb.collection("leases").doc("lease_notice_1").update({
+      moveOutNoticeStatus: "WITHDRAWN",
+      updatedAt: pastDate(2900),
+    })
+  );
+
+  // 6. Prorated monthly invoice creation succeeds within bounds and rejects invalid prorationNote
+  const dueMs = Date.now() + 3 * 86400000;
+  await assertSucceeds(
+    managerDb.collection("invoices").doc("lease_notice_1_2026-11").set({
+      invoiceNumber: "INV-202611-K204",
+      leaseId: "lease_notice_1",
+      orgId: "org_notice",
+      propertyId: "prop_notice",
+      propertyName: "Kilimani Court",
+      unitId: "unit_notice",
+      unitNumber: "K-204",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      billingPeriod: "2026-11",
+      rentCents: 2000000,
+      extraChargesCents: 0,
+      previousBalanceCents: 0,
+      totalDueCents: 2000000,
+      paidCents: 0,
+      outstandingCents: 2000000,
+      dueDateEpochMs: dueMs,
+      gracePeriodEndsEpochMs: dueMs + 5 * 86400000,
+      status: "UNPAID",
+      prorated: true,
+      prorationNote: "Prorated 15/30 days (move-out 15 Nov 2026)",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  await assertFails(
+    landlordDb.collection("invoices").doc("lease_notice_1_2026-12").set({
+      invoiceNumber: "INV-202612-K204",
+      leaseId: "lease_notice_1",
+      orgId: "org_notice",
+      propertyId: "prop_notice",
+      propertyName: "Kilimani Court",
+      unitId: "unit_notice",
+      unitNumber: "K-204",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      billingPeriod: "2026-12",
+      rentCents: 2000000,
+      extraChargesCents: 0,
+      previousBalanceCents: 0,
+      totalDueCents: 2000000,
+      paidCents: 0,
+      outstandingCents: 2000000,
+      dueDateEpochMs: dueMs,
+      status: "UNPAID",
+      prorated: "yes",
+      prorationNote: "x".repeat(210),
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+});
+
+test("RecurringInvoiceSchedule RBAC, lease-only grace period invariant, and DRAFT/ISSUED invoice isolation", async () => {
+  const rulesUnitPath = require.resolve("@firebase/rules-unit-testing");
+  const firebaseCompat = require(require.resolve("firebase/compat/app", { paths: [rulesUnitPath] }));
+  require(require.resolve("firebase/compat/firestore", { paths: [rulesUnitPath] }));
+  const deleteFieldVal = firebaseCompat.firestore.FieldValue.delete();
+
+  const now = pastDate(50000);
+  const startMs = Date.now() - 60 * 86400000;
+  const endMs = Date.now() + 300 * 86400000;
+  const nextBillMs = Date.now() + 5 * 86400000;
+  const dueMs = Date.now() + 10 * 86400000;
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await seedUser(db, { uid: LANDLORD_UID, fullName: "Wanjiku Kamau", email: "landlord@example.com", roles: ["LANDLORD"], now });
+    await seedUser(db, { uid: MANAGER_UID, fullName: "Grace Njeri", email: "manager@example.com", roles: ["PROPERTY_MANAGER"], now });
+    await seedUser(db, { uid: TENANT_UID, fullName: "Brian Ochieng", email: "tenant@example.com", roles: ["TENANT"], now });
+    await seedUser(db, { uid: OTHER_TENANT_UID, fullName: "Other Tenant", email: "other@example.com", roles: ["TENANT"], now });
+
+    await db.collection("organizations").doc("org_rec").set({
+      name: "Riverside Holdings",
+      ownerUid: LANDLORD_UID,
+      country: "Kenya",
+      currency: "KES",
+      defaultDueDay: 5,
+      memberUids: [LANDLORD_UID, MANAGER_UID],
+      suspended: false,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("properties").doc("prop_rec").set({
+      orgId: "org_rec",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      name: "Riverside Court",
+      category: "APARTMENTS",
+      city: "Nairobi",
+      neighborhood: "Westlands",
+      addressLine: "Riverside Dr",
+      description: "Apartments",
+      imageRefs: [],
+      archived: false,
+      hasPublishedUnits: false,
+      totalUnitsCount: 1,
+      occupiedUnitsCount: 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("units").doc("unit_rec").set({
+      propertyId: "prop_rec",
+      propertyName: "Riverside Court",
+      propertyCity: "Nairobi",
+      propertyCategory: "APARTMENTS",
+      orgId: "org_rec",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      unitNumber: "R-10",
+      unitType: "ONE_BEDROOM",
+      rentCents: 3500000,
+      depositCents: 3500000,
+      status: "OCCUPIED",
+      amenities: [],
+      description: "1BR",
+      imageRefs: [],
+      published: false,
+      currentTenantUid: TENANT_UID,
+      currentLeaseId: "lease_rec_1",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.collection("leases").doc("lease_rec_1").set({
+      orgId: "org_rec",
+      propertyId: "prop_rec",
+      propertyName: "Riverside Court",
+      unitId: "unit_rec",
+      unitNumber: "R-10",
+      ownerUid: LANDLORD_UID,
+      managerUids: [MANAGER_UID],
+      authorizedUids: [LANDLORD_UID, MANAGER_UID],
+      tenantUid: TENANT_UID,
+      tenantName: "Brian Ochieng",
+      tenantPhone: "+254712345678",
+      rentCents: 3500000,
+      depositCents: 3500000,
+      startDateEpochMs: startMs,
+      endDateEpochMs: endMs,
+      dueDayOfMonth: 5,
+      gracePeriodDays: 7,
+      lateFeePercent: 5,
+      lateFeeEnabled: true,
+      status: "ACTIVE",
+      creditBalanceCents: 0,
+      termsSummary: "Standard tenancy",
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  const landlordDb = authedDb(LANDLORD_UID, "landlord@example.com");
+  const managerDb = authedDb(MANAGER_UID, "manager@example.com");
+  const tenantDb = authedDb(TENANT_UID, "tenant@example.com");
+  const otherTenantDb = authedDb(OTHER_TENANT_UID, "other@example.com");
+
+  const validSchedulePayload = {
+    orgId: "org_rec",
+    propertyId: "prop_rec",
+    propertyName: "Riverside Court",
+    unitId: "unit_rec",
+    unitNumber: "R-10",
+    leaseId: "lease_rec_1",
+    ownerUid: LANDLORD_UID,
+    managerUids: [MANAGER_UID],
+    authorizedUids: [LANDLORD_UID, MANAGER_UID],
+    tenantUid: TENANT_UID,
+    tenantName: "Brian Ochieng",
+    amountCents: 3500000,
+    recurringExtraCents: 150000,
+    recurringExtraNote: "Water & Garbage",
+    billingDayOfMonth: 5,
+    leadDays: 5,
+    nextBillingEpochMs: nextBillMs,
+    scheduleStatus: "ACTIVE",
+    issueMode: "DRAFT_FOR_REVIEW",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  // 1. Grace period fields are strictly forbidden on recurring_invoices (must remain on Lease only)
+  await assertFails(
+    landlordDb.collection("recurring_invoices").doc("lease_rec_1").set({
+      ...validSchedulePayload,
+      gracePeriodDays: 7,
+    })
+  );
+  await assertFails(
+    landlordDb.collection("recurring_invoices").doc("lease_rec_1").set({
+      ...validSchedulePayload,
+      lateFeeEnabled: true,
+    })
+  );
+
+  // 2. Manager CANNOT create a recurring_invoices schedule
+  await assertFails(
+    managerDb.collection("recurring_invoices").doc("lease_rec_1").set(validSchedulePayload)
+  );
+
+  // 3. Owner CAN create recurring_invoices/{leaseId}
+  await assertSucceeds(
+    landlordDb.collection("recurring_invoices").doc("lease_rec_1").set(validSchedulePayload)
+  );
+
+  // 4. Tenant can read own schedule, cannot modify; unrelated tenant cannot read or list
+  await assertSucceeds(tenantDb.collection("recurring_invoices").doc("lease_rec_1").get());
+  await assertSucceeds(
+    tenantDb.collection("recurring_invoices").where("tenantUid", "==", TENANT_UID).get()
+  );
+  await assertFails(
+    tenantDb.collection("recurring_invoices").doc("lease_rec_1").update({
+      amountCents: 100,
+      updatedAt: pastDate(1000),
+    })
+  );
+  await assertFails(otherTenantDb.collection("recurring_invoices").doc("lease_rec_1").get());
+  await assertFails(otherTenantDb.collection("recurring_invoices").get());
+
+  // 5. Manager CANNOT change pricing (amountCents/recurringExtraCents/billingDayOfMonth) or add gracePeriodDays
+  await assertFails(
+    managerDb.collection("recurring_invoices").doc("lease_rec_1").update({
+      amountCents: 4000000,
+      updatedAt: pastDate(1000),
+    })
+  );
+  await assertFails(
+    managerDb.collection("recurring_invoices").doc("lease_rec_1").update({
+      gracePeriodDays: 10,
+      updatedAt: pastDate(1000),
+    })
+  );
+
+  // 6. Manager CAN update operational schedule state & billing checkpoints
+  await assertSucceeds(
+    managerDb.collection("recurring_invoices").doc("lease_rec_1").update({
+      scheduleStatus: "PAUSED",
+      issueMode: "AUTO_ISSUE",
+      leadDays: 3,
+      lastBilledPeriod: "2026-11",
+      lastInvoiceId: "lease_rec_1_2026-11",
+      lastBilledAtEpochMs: Date.now() - 10000,
+      nextBillingEpochMs: nextBillMs + 30 * 86400000,
+      updatedAt: pastDate(900),
+    })
+  );
+
+  // Landlord & Manager CAN list via authorizedUids
+  await assertSucceeds(
+    landlordDb.collection("recurring_invoices").where("authorizedUids", "array-contains", LANDLORD_UID).get()
+  );
+  await assertFails(landlordDb.collection("recurring_invoices").doc("lease_rec_1").delete());
+
+  // 7. Monthly DRAFT invoice: cannot include issuedAtEpochMs, tenant get() is blocked while DRAFT
+  const baseDraftInvoice = {
+    invoiceNumber: "INV-202611-R10",
+    scheduleId: "lease_rec_1",
+    leaseId: "lease_rec_1",
+    orgId: "org_rec",
+    propertyId: "prop_rec",
+    propertyName: "Riverside Court",
+    unitId: "unit_rec",
+    unitNumber: "R-10",
+    ownerUid: LANDLORD_UID,
+    managerUids: [MANAGER_UID],
+    authorizedUids: [LANDLORD_UID, MANAGER_UID],
+    tenantUid: TENANT_UID,
+    tenantName: "Brian Ochieng",
+    billingPeriod: "2026-11",
+    billingDateEpochMs: nextBillMs,
+    rentCents: 3500000,
+    extraChargesCents: 150000,
+    extraChargesNote: "Water & Garbage",
+    previousBalanceCents: 0,
+    totalDueCents: 3650000,
+    paidCents: 0,
+    outstandingCents: 3650000,
+    dueDateEpochMs: dueMs,
+    gracePeriodEndsEpochMs: dueMs + 7 * 86400000,
+    status: "DRAFT",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await assertFails(
+    managerDb.collection("invoices").doc("lease_rec_1_2026-11").set({
+      ...baseDraftInvoice,
+      issuedAtEpochMs: Date.now() - 5000,
+    })
+  );
+  await assertSucceeds(
+    managerDb.collection("invoices").doc("lease_rec_1_2026-11").set(baseDraftInvoice)
+  );
+
+  // Landlord/Manager can read DRAFT; Tenant get() on DRAFT is DENIED
+  await assertSucceeds(managerDb.collection("invoices").doc("lease_rec_1_2026-11").get());
+  await assertFails(tenantDb.collection("invoices").doc("lease_rec_1_2026-11").get());
+
+  // 8. Promote DRAFT -> ISSUED: tenant get() NOW SUCCEEDS, and reverting ISSUED -> DRAFT is DENIED
+  await assertSucceeds(
+    managerDb.collection("invoices").doc("lease_rec_1_2026-11").update({
+      status: "ISSUED",
+      issuedAtEpochMs: Date.now() - 4000,
+      extraChargesCents: 200000,
+      totalDueCents: 3700000,
+      outstandingCents: 3700000,
+      updatedAt: pastDate(800),
+    })
+  );
+  await assertSucceeds(tenantDb.collection("invoices").doc("lease_rec_1_2026-11").get());
+  await assertFails(
+    landlordDb.collection("invoices").doc("lease_rec_1_2026-11").update({
+      status: "DRAFT",
+      issuedAtEpochMs: deleteFieldVal,
+      updatedAt: pastDate(700),
+    })
+  );
+
+  // 9. Payment settlement stamps paidAtEpochMs; payment reversal clears paidAtEpochMs back to ISSUED
+  await assertSucceeds(
+    managerDb.collection("invoices").doc("lease_rec_1_2026-11").update({
+      paidCents: 3700000,
+      outstandingCents: 0,
+      status: "PAID",
+      paidAtEpochMs: Date.now() - 2000,
+      updatedAt: pastDate(600),
+    })
+  );
+  await assertSucceeds(
+    landlordDb.collection("invoices").doc("lease_rec_1_2026-11").update({
+      paidCents: 0,
+      outstandingCents: 3700000,
+      status: "ISSUED",
+      paidAtEpochMs: deleteFieldVal,
+      updatedAt: pastDate(500),
+    })
+  );
+});
+
+
+
 

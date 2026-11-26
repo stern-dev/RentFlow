@@ -464,38 +464,46 @@ service cloud.firestore {
     }
 
     function isValidLeaseAutomationFields(d) {
-      return (!('renewalMode' in d) || d.renewalMode in ['MANUAL', 'AUTO_RENEW', 'OFFER']) &&
+      return d.get('renewalMode', 'MANUAL') in ['MANUAL', 'AUTO_RENEW', 'OFFER'] &&
              (!('renewalLeadDays' in d) || (d.renewalLeadDays is int && d.renewalLeadDays >= 1 && d.renewalLeadDays <= 180)) &&
              (!('renewalDurationMonths' in d) || (d.renewalDurationMonths is int && d.renewalDurationMonths >= 1 && d.renewalDurationMonths <= 60)) &&
-             (!('escalationType' in d) || d.escalationType in ['NONE', 'PERCENT', 'FIXED_KES']) &&
+             d.get('escalationType', 'NONE') in ['NONE', 'PERCENT', 'FIXED_KES'] &&
              (!('escalationPercent' in d) || ((d.escalationPercent is float || d.escalationPercent is int) && d.escalationPercent >= 0 && d.escalationPercent <= 100)) &&
              (!('escalationFixedCents' in d) || (d.escalationFixedCents is int && d.escalationFixedCents >= 0 && d.escalationFixedCents <= 1000000000)) &&
              (!('gracePeriodDays' in d) || (d.gracePeriodDays is int && d.gracePeriodDays >= 0 && d.gracePeriodDays <= 30)) &&
              (!('lateFeePercent' in d) || ((d.lateFeePercent is float || d.lateFeePercent is int) && d.lateFeePercent >= 0 && d.lateFeePercent <= 50)) &&
-             (!('lateFeeEnabled' in d) || d.lateFeeEnabled is bool) &&
-             (!('renewalOfferStatus' in d) || d.renewalOfferStatus in ['NONE', 'PENDING', 'ACCEPTED', 'DECLINED', 'AUTO_RENEWED']) &&
+             d.get('lateFeeEnabled', false) is bool &&
+             d.get('renewalOfferStatus', 'NONE') in ['NONE', 'PENDING', 'ACCEPTED', 'DECLINED', 'AUTO_RENEWED'] &&
              (!('offeredRentCents' in d) || (d.offeredRentCents is int && d.offeredRentCents > 0 && d.offeredRentCents <= 1000000000)) &&
              (!('offeredEndDateEpochMs' in d) || (d.offeredEndDateEpochMs is int && d.offeredEndDateEpochMs > 0)) &&
-             (!('renewalOfferedAtEpochMs' in d) || (d.renewalOfferedAtEpochMs is int && d.renewalOfferedAtEpochMs >= 0)) &&
-             (!('renewalRespondedAtEpochMs' in d) || (d.renewalRespondedAtEpochMs is int && d.renewalRespondedAtEpochMs >= 0)) &&
+             d.get('renewalOfferedAtEpochMs', 0) is int &&
+             d.get('renewalRespondedAtEpochMs', 0) is int &&
              (!('renewalResponseNote' in d) || (d.renewalResponseNote is string && d.renewalResponseNote.size() <= 500)) &&
-             (!('lastRenewalProcessedForEndMs' in d) || (d.lastRenewalProcessedForEndMs is int && d.lastRenewalProcessedForEndMs >= 0));
+             d.get('lastRenewalProcessedForEndMs', 0) is int &&
+             (!('noticePeriodDays' in d) || (d.noticePeriodDays is int && d.noticePeriodDays >= 1 && d.noticePeriodDays <= 90)) &&
+             d.get('autoBillingEnabled', true) is bool &&
+             (!('billingLeadDays' in d) || (d.billingLeadDays is int && d.billingLeadDays >= 0 && d.billingLeadDays <= 15)) &&
+             d.get('moveOutNoticeStatus', 'NONE') in ['NONE', 'SUBMITTED', 'ACKNOWLEDGED', 'DECLINED', 'WITHDRAWN'] &&
+             (!('requestedMoveOutEpochMs' in d) || (d.requestedMoveOutEpochMs is int && d.requestedMoveOutEpochMs > 0)) &&
+             d.get('moveOutNoticeSubmittedAtMs', 0) is int &&
+             (!('moveOutNoticeReason' in d) || (d.moveOutNoticeReason is string && d.moveOutNoticeReason.size() <= 500)) &&
+             d.get('moveOutNoticeReviewedAtMs', 0) is int &&
+             (!('moveOutNoticeResponseNote' in d) || (d.moveOutNoticeResponseNote is string && d.moveOutNoticeResponseNote.size() <= 500));
     }
 
-    function isValidLease(data) {
-      let d = data;
-      return isBoundedString(d.orgId, 1, 128) &&
-             isBoundedString(d.propertyId, 1, 128) &&
-             isBoundedString(d.propertyName, 1, 120) &&
-             isBoundedString(d.unitId, 1, 128) &&
-             isBoundedString(d.unitNumber, 1, 40) &&
-             isBoundedString(d.ownerUid, 1, 128) &&
-             isStringList(d.managerUids, 0, 15) &&
-             isStringList(d.authorizedUids, 1, 20) &&
+    function isValidLease(d) {
+      return d.orgId is string && d.orgId.size() > 0 &&
+             d.propertyId is string && d.propertyId.size() > 0 &&
+             d.propertyName is string && d.propertyName.size() > 0 &&
+             d.unitId is string && d.unitId.size() > 0 &&
+             d.unitNumber is string && d.unitNumber.size() > 0 &&
+             d.ownerUid is string && d.ownerUid.size() > 0 &&
+             d.managerUids is list && d.managerUids.size() <= 15 &&
+             d.authorizedUids is list && d.authorizedUids.size() >= 1 && d.authorizedUids.size() <= 20 &&
              d.ownerUid in d.authorizedUids &&
-             isBoundedString(d.tenantUid, 1, 128) &&
-             isBoundedString(d.tenantName, 1, 100) &&
-             isBoundedString(d.tenantPhone, 3, 30) &&
+             d.tenantUid is string && d.tenantUid.size() > 0 &&
+             d.tenantName is string && d.tenantName.size() > 0 && d.tenantName.size() <= 100 &&
+             d.tenantPhone is string && d.tenantPhone.size() >= 3 && d.tenantPhone.size() <= 30 &&
              d.rentCents is int && d.rentCents > 0 && d.rentCents <= 1000000000 &&
              d.depositCents is int && d.depositCents >= 0 && d.depositCents <= 1000000000 &&
              d.startDateEpochMs is int && d.startDateEpochMs > 0 &&
@@ -503,49 +511,88 @@ service cloud.firestore {
              d.dueDayOfMonth is int && d.dueDayOfMonth >= 1 && d.dueDayOfMonth <= 28 &&
              d.status in ['ACTIVE', 'EXPIRED', 'TERMINATED', 'RENEWED'] &&
              d.creditBalanceCents is int && d.creditBalanceCents >= 0 && d.creditBalanceCents <= 1000000000 &&
-             isBoundedString(d.termsSummary, 0, 1500) &&
-             isOptionalString(d, 'terminationNotice', 800) &&
+             d.termsSummary is string && d.termsSummary.size() <= 1500 &&
+             (!('terminationNotice' in d) || (d.terminationNotice is string && d.terminationNotice.size() <= 800)) &&
              (!('landlordSignature' in d) || isValidDigitalSignature(d.landlordSignature)) &&
              (!('tenantSignature' in d) || isValidDigitalSignature(d.tenantSignature)) &&
-             isOptionalString(d, 'signedChecklistId', 128) &&
+             (!('signedChecklistId' in d) || (d.signedChecklistId is string && d.signedChecklistId.size() <= 128)) &&
              isValidLeaseAutomationFields(d) &&
-             isValidTimestamp(d.createdAt) &&
-             isValidTimestamp(d.updatedAt);
+             d.createdAt is timestamp && d.createdAt <= request.time &&
+             d.updatedAt is timestamp && d.updatedAt <= request.time;
     }
 
-    function isValidInvoice(data) {
-      let d = data;
-      return isBoundedString(d.invoiceNumber, 3, 50) &&
-             isBoundedString(d.leaseId, 1, 128) &&
-             isBoundedString(d.orgId, 1, 128) &&
+    function isValidInvoiceMutableFields(d) {
+      return d.extraChargesCents is int && d.extraChargesCents >= 0 && d.extraChargesCents <= 1000000000 &&
+             (!('extraChargesNote' in d) || (d.extraChargesNote is string && d.extraChargesNote.size() <= 300)) &&
+             d.totalDueCents is int && d.totalDueCents >= 0 && d.totalDueCents <= 2000000000 &&
+             d.paidCents is int && d.paidCents >= 0 && d.paidCents <= 2000000000 &&
+             d.outstandingCents is int && d.outstandingCents >= 0 && d.outstandingCents <= 2000000000 &&
+             d.status in ['DRAFT', 'ISSUED', 'UNPAID', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED'] &&
+             (!('lastReminderSentEpochMs' in d) || d.lastReminderSentEpochMs is int) &&
+             (!('reminderCount' in d) || (d.reminderCount is int && d.reminderCount >= 0 && d.reminderCount <= 10000)) &&
+             (!('lateFeeCents' in d) || (d.lateFeeCents is int && d.lateFeeCents >= 0 && d.lateFeeCents <= 500000000)) &&
+             (!('lateFeeRatePercent' in d) || ((d.lateFeeRatePercent is float || d.lateFeeRatePercent is int) && d.lateFeeRatePercent >= 0 && d.lateFeeRatePercent <= 50)) &&
+             (!('lateFeeAppliedAtEpochMs' in d) || d.lateFeeAppliedAtEpochMs is int) &&
+             (!('lateFeeWaived' in d) || d.lateFeeWaived is bool) &&
+             (!('lateFeeWaivedReason' in d) || (d.lateFeeWaivedReason is string && d.lateFeeWaivedReason.size() <= 300)) &&
+             (!('lateFeeWaivedAtEpochMs' in d) || d.lateFeeWaivedAtEpochMs is int) &&
+             (!('gracePeriodEndsEpochMs' in d) || (d.gracePeriodEndsEpochMs is int && d.gracePeriodEndsEpochMs > 0)) &&
+             (!('issuedAtEpochMs' in d) || (d.issuedAtEpochMs is int && d.issuedAtEpochMs > 0)) &&
+             (!('paidAtEpochMs' in d) || (d.paidAtEpochMs is int && d.paidAtEpochMs > 0)) &&
+             (d.status != 'DRAFT' || (!('issuedAtEpochMs' in d) && !('paidAtEpochMs' in d))) &&
+             d.updatedAt is timestamp && d.updatedAt <= request.time;
+    }
+
+    function isValidInvoice(d) {
+      return d.invoiceNumber is string && d.invoiceNumber.size() >= 3 && d.invoiceNumber.size() <= 50 &&
+             (!('scheduleId' in d) || (d.scheduleId is string && d.scheduleId.size() >= 1 && d.scheduleId.size() <= 128)) &&
+             d.leaseId is string && d.leaseId.size() >= 1 && d.leaseId.size() <= 128 &&
+             d.orgId is string && d.orgId.size() >= 1 && d.orgId.size() <= 128 &&
+             d.propertyId is string && d.propertyId.size() >= 1 && d.propertyId.size() <= 128 &&
+             d.propertyName is string && d.propertyName.size() >= 1 && d.propertyName.size() <= 120 &&
+             d.unitId is string && d.unitId.size() >= 1 && d.unitId.size() <= 128 &&
+             d.unitNumber is string && d.unitNumber.size() >= 1 && d.unitNumber.size() <= 40 &&
+             d.ownerUid is string && d.ownerUid.size() >= 1 && d.ownerUid.size() <= 128 &&
+             d.managerUids is list && d.managerUids.size() <= 15 &&
+             d.authorizedUids is list && d.authorizedUids.size() >= 1 && d.authorizedUids.size() <= 20 &&
+             d.tenantUid is string && d.tenantUid.size() >= 1 && d.tenantUid.size() <= 128 &&
+             d.tenantName is string && d.tenantName.size() >= 1 && d.tenantName.size() <= 100 &&
+             d.billingPeriod is string && d.billingPeriod.matches('^[0-9]{4}-[0-9]{2}$') &&
+             d.rentCents is int && d.rentCents >= 0 && d.rentCents <= 1000000000 &&
+             d.previousBalanceCents is int && d.previousBalanceCents >= 0 && d.previousBalanceCents <= 1000000000 &&
+             d.dueDateEpochMs is int && d.dueDateEpochMs > 0 &&
+             (!('billingDateEpochMs' in d) || (d.billingDateEpochMs is int && d.billingDateEpochMs > 0)) &&
+             (!('prorated' in d) || d.prorated is bool) &&
+             (!('prorationNote' in d) || (d.prorationNote is string && d.prorationNote.size() <= 200)) &&
+             d.createdAt is timestamp && d.createdAt <= request.time &&
+             isValidInvoiceMutableFields(d);
+    }
+
+    function isValidRecurringInvoice(d) {
+      return isBoundedString(d.orgId, 1, 128) &&
              isBoundedString(d.propertyId, 1, 128) &&
              isBoundedString(d.propertyName, 1, 120) &&
              isBoundedString(d.unitId, 1, 128) &&
              isBoundedString(d.unitNumber, 1, 40) &&
+             isBoundedString(d.leaseId, 1, 128) &&
              isBoundedString(d.ownerUid, 1, 128) &&
              isStringList(d.managerUids, 0, 15) &&
              isStringList(d.authorizedUids, 1, 20) &&
+             d.ownerUid in d.authorizedUids &&
              isBoundedString(d.tenantUid, 1, 128) &&
              isBoundedString(d.tenantName, 1, 100) &&
-             d.billingPeriod is string && d.billingPeriod.matches('^[0-9]{4}-[0-9]{2}$') &&
-             d.rentCents is int && d.rentCents >= 0 && d.rentCents <= 1000000000 &&
-             d.extraChargesCents is int && d.extraChargesCents >= 0 && d.extraChargesCents <= 1000000000 &&
-             isOptionalString(d, 'extraChargesNote', 300) &&
-             d.previousBalanceCents is int && d.previousBalanceCents >= 0 && d.previousBalanceCents <= 1000000000 &&
-             d.totalDueCents is int && d.totalDueCents >= 0 && d.totalDueCents <= 2000000000 &&
-             d.paidCents is int && d.paidCents >= 0 && d.paidCents <= 2000000000 &&
-             d.outstandingCents is int && d.outstandingCents >= 0 && d.outstandingCents <= 2000000000 &&
-             d.dueDateEpochMs is int && d.dueDateEpochMs > 0 &&
-             d.status in ['UNPAID', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED'] &&
-             isOptionalInt(d, 'lastReminderSentEpochMs', 0, 9999999999999) &&
-             isOptionalInt(d, 'reminderCount', 0, 10000) &&
-             (!('lateFeeCents' in d) || (d.lateFeeCents is int && d.lateFeeCents >= 0 && d.lateFeeCents <= 500000000)) &&
-             (!('lateFeeRatePercent' in d) || ((d.lateFeeRatePercent is float || d.lateFeeRatePercent is int) && d.lateFeeRatePercent >= 0 && d.lateFeeRatePercent <= 50)) &&
-             (!('lateFeeAppliedAtEpochMs' in d) || (d.lateFeeAppliedAtEpochMs is int && d.lateFeeAppliedAtEpochMs >= 0)) &&
-             (!('lateFeeWaived' in d) || d.lateFeeWaived is bool) &&
-             (!('lateFeeWaivedReason' in d) || (d.lateFeeWaivedReason is string && d.lateFeeWaivedReason.size() <= 300)) &&
-             (!('lateFeeWaivedAtEpochMs' in d) || (d.lateFeeWaivedAtEpochMs is int && d.lateFeeWaivedAtEpochMs >= 0)) &&
-             (!('gracePeriodEndsEpochMs' in d) || (d.gracePeriodEndsEpochMs is int && d.gracePeriodEndsEpochMs > 0)) &&
+             d.amountCents is int && d.amountCents > 0 && d.amountCents <= 1000000000 &&
+             d.recurringExtraCents is int && d.recurringExtraCents >= 0 && d.recurringExtraCents <= 1000000000 &&
+             isOptionalString(d, 'recurringExtraNote', 200) &&
+             d.billingDayOfMonth is int && d.billingDayOfMonth >= 1 && d.billingDayOfMonth <= 28 &&
+             d.leadDays is int && d.leadDays >= 0 && d.leadDays <= 15 &&
+             d.nextBillingEpochMs is int && d.nextBillingEpochMs > 0 &&
+             (!('lastBilledPeriod' in d) || (d.lastBilledPeriod is string && d.lastBilledPeriod.matches('^[0-9]{4}-[0-9]{2}$'))) &&
+             isOptionalString(d, 'lastInvoiceId', 128) &&
+             (!('lastBilledAtEpochMs' in d) || (d.lastBilledAtEpochMs is int && d.lastBilledAtEpochMs > 0)) &&
+             d.scheduleStatus in ['ACTIVE', 'PAUSED', 'ENDED'] &&
+             d.issueMode in ['AUTO_ISSUE', 'DRAFT_FOR_REVIEW'] &&
+             !d.keys().hasAny(['gracePeriodDays', 'lateFeeEnabled', 'lateFeePercent']) &&
              isValidTimestamp(d.createdAt) &&
              isValidTimestamp(d.updatedAt);
     }
@@ -1251,8 +1298,8 @@ service cloud.firestore {
     }
 
     function isValidMutableLeaseFields(d) {
-      return isStringList(d.managerUids, 0, 15) &&
-             isStringList(d.authorizedUids, 1, 20) &&
+      return d.managerUids is list && d.managerUids.size() <= 15 &&
+             d.authorizedUids is list && d.authorizedUids.size() >= 1 && d.authorizedUids.size() <= 20 &&
              d.ownerUid in d.authorizedUids &&
              d.rentCents is int && d.rentCents > 0 && d.rentCents <= 1000000000 &&
              d.depositCents is int && d.depositCents >= 0 && d.depositCents <= 1000000000 &&
@@ -1261,123 +1308,213 @@ service cloud.firestore {
              d.dueDayOfMonth is int && d.dueDayOfMonth >= 1 && d.dueDayOfMonth <= 28 &&
              d.status in ['ACTIVE', 'EXPIRED', 'TERMINATED', 'RENEWED'] &&
              d.creditBalanceCents is int && d.creditBalanceCents >= 0 && d.creditBalanceCents <= 1000000000 &&
-             isBoundedString(d.termsSummary, 0, 1500) &&
-             isOptionalString(d, 'terminationNotice', 800) &&
-             isOptionalString(d, 'signedChecklistId', 128) &&
+             d.termsSummary is string && d.termsSummary.size() <= 1500 &&
+             (!('terminationNotice' in d) || (d.terminationNotice is string && d.terminationNotice.size() <= 800)) &&
+             (!('signedChecklistId' in d) || (d.signedChecklistId is string && d.signedChecklistId.size() <= 128)) &&
              isValidLeaseAutomationFields(d) &&
-             isValidTimestamp(d.updatedAt);
+             d.updatedAt is timestamp && d.updatedAt <= request.time;
     }
 
-    function canAdminUpdateLease(leaseId) {
-      let d = request.resource.data;
-      let e = resource.data;
-      return isAdmin() &&
-             isValidId(leaseId) &&
-             isValidLease(d) &&
-             d.orgId == e.orgId &&
-             d.propertyId == e.propertyId &&
-             d.unitId == e.unitId &&
-             d.ownerUid == e.ownerUid &&
-             d.tenantUid == e.tenantUid &&
-             d.createdAt == e.createdAt;
+    function unitMatchesLease(unitData, d, uid) {
+      return unitData.orgId == d.orgId &&
+             unitData.propertyId == d.propertyId &&
+             unitData.ownerUid == d.ownerUid &&
+             uid in unitData.authorizedUids;
     }
 
-    function canLandlordOrManagerUpdateLease(leaseId) {
+    function canCreateLease(leaseId) {
       let d = request.resource.data;
-      let e = resource.data;
       let uid = request.auth.uid;
-      let changed = d.diff(e).affectedKeys();
+      let unitPath = /databases/$(database)/documents/units/$(d.unitId);
       let u = loadActiveUser();
-      let o = loadOrg(e.orgId);
+      let o = loadOrg(d.orgId);
+      return isSignedIn() &&
+             isValidId(leaseId) &&
+             !('tenantSignature' in d) &&
+             (
+               isAdmin() ||
+               (
+                 isVerifiedEmail() &&
+                 isActiveUserDoc(u) &&
+                 u.roles.hasAny(['LANDLORD', 'PROPERTY_MANAGER']) &&
+                 uid in d.authorizedUids &&
+                 o != null &&
+                 o.suspended == false &&
+                 (o.ownerUid == uid || uid in o.memberUids)
+               )
+             ) &&
+             d.keys().hasOnly(['orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'tenantPhone', 'rentCents', 'depositCents', 'startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'terminationNotice', 'landlordSignature', 'tenantSignature', 'signedChecklistId', 'renewalMode', 'renewalLeadDays', 'renewalDurationMonths', 'escalationType', 'escalationPercent', 'escalationFixedCents', 'gracePeriodDays', 'lateFeePercent', 'lateFeeEnabled', 'renewalOfferStatus', 'offeredRentCents', 'offeredEndDateEpochMs', 'renewalOfferedAtEpochMs', 'renewalRespondedAtEpochMs', 'renewalResponseNote', 'lastRenewalProcessedForEndMs', 'noticePeriodDays', 'autoBillingEnabled', 'billingLeadDays', 'moveOutNoticeStatus', 'requestedMoveOutEpochMs', 'moveOutNoticeSubmittedAtMs', 'moveOutNoticeReason', 'moveOutNoticeReviewedAtMs', 'moveOutNoticeResponseNote', 'createdAt', 'updatedAt']) &&
+             (!('landlordSignature' in d) || isAdmin() || (d.landlordSignature.signerUid == uid && d.landlordSignature.signerRole in ['LANDLORD', 'PROPERTY_MANAGER', 'ADMIN'] && d.landlordSignature.coversLeaseReport == true)) &&
+             exists(unitPath) &&
+             unitMatchesLease(get(unitPath).data, d, uid) &&
+             isValidLease(d);
+    }
+
+    function canLandlordOrManagerUpdateLeaseBody(d, e, uid, changed, u, o) {
       let sigOk = !changed.hasAny(['landlordSignature']) ||
         (!('tenantSignature' in e) && 'landlordSignature' in d && isValidDigitalSignature(d.landlordSignature) && d.landlordSignature.signerUid == uid && d.landlordSignature.signerRole in ['LANDLORD', 'PROPERTY_MANAGER', 'ADMIN'] && d.landlordSignature.coversLeaseReport == true);
       let notMutatedAfterSign = !('tenantSignature' in e) ||
         (!changed.hasAny(['termsSummary', 'landlordSignature', 'tenantSignature', 'signedChecklistId']));
-      return isVerifiedEmail() &&
-             isValidId(leaseId) &&
-             uid in e.authorizedUids &&
-             sigOk &&
-             notMutatedAfterSign &&
-             isValidMutableLeaseFields(d) &&
-             isActiveUserDoc(u) &&
-             o != null &&
-             o.suspended == false &&
+      return uid in e.authorizedUids &&
+             u.roles.hasAny(['LANDLORD', 'PROPERTY_MANAGER']) &&
              (
                (
                  'LANDLORD' in u.roles &&
                  e.ownerUid == uid &&
                  o.ownerUid == uid &&
-                 changed.hasOnly(['rentCents', 'depositCents', 'startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'terminationNotice', 'managerUids', 'authorizedUids', 'landlordSignature', 'signedChecklistId', 'renewalMode', 'renewalLeadDays', 'renewalDurationMonths', 'escalationType', 'escalationPercent', 'escalationFixedCents', 'gracePeriodDays', 'lateFeePercent', 'lateFeeEnabled', 'renewalOfferStatus', 'offeredRentCents', 'offeredEndDateEpochMs', 'renewalOfferedAtEpochMs', 'renewalRespondedAtEpochMs', 'renewalResponseNote', 'lastRenewalProcessedForEndMs', 'updatedAt'])
+                 changed.hasOnly(['rentCents', 'depositCents', 'startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'terminationNotice', 'managerUids', 'authorizedUids', 'landlordSignature', 'signedChecklistId', 'renewalMode', 'renewalLeadDays', 'renewalDurationMonths', 'escalationType', 'escalationPercent', 'escalationFixedCents', 'gracePeriodDays', 'lateFeePercent', 'lateFeeEnabled', 'renewalOfferStatus', 'offeredRentCents', 'offeredEndDateEpochMs', 'renewalOfferedAtEpochMs', 'renewalRespondedAtEpochMs', 'renewalResponseNote', 'lastRenewalProcessedForEndMs', 'noticePeriodDays', 'autoBillingEnabled', 'billingLeadDays', 'moveOutNoticeStatus', 'requestedMoveOutEpochMs', 'moveOutNoticeSubmittedAtMs', 'moveOutNoticeReason', 'moveOutNoticeReviewedAtMs', 'moveOutNoticeResponseNote', 'updatedAt'])
                ) ||
                (
-                 u.roles.hasAny(['LANDLORD', 'PROPERTY_MANAGER']) &&
                  (o.ownerUid == uid || uid in o.memberUids) &&
                  d.status in ['ACTIVE', 'EXPIRED', 'RENEWED'] &&
-                 changed.hasOnly(['startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'landlordSignature', 'signedChecklistId', 'renewalMode', 'renewalLeadDays', 'renewalDurationMonths', 'renewalOfferStatus', 'offeredRentCents', 'offeredEndDateEpochMs', 'renewalOfferedAtEpochMs', 'lastRenewalProcessedForEndMs', 'updatedAt'])
+                 changed.hasOnly(['startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'landlordSignature', 'signedChecklistId', 'renewalMode', 'renewalLeadDays', 'renewalDurationMonths', 'renewalOfferStatus', 'offeredRentCents', 'offeredEndDateEpochMs', 'renewalOfferedAtEpochMs', 'lastRenewalProcessedForEndMs', 'moveOutNoticeStatus', 'requestedMoveOutEpochMs', 'moveOutNoticeReviewedAtMs', 'moveOutNoticeResponseNote', 'updatedAt'])
+               )
+             ) &&
+             sigOk &&
+             notMutatedAfterSign &&
+             isValidMutableLeaseFields(d);
+    }
+
+    function canTenantUpdateLeaseBody(leaseId, d, e, uid, changed, u) {
+      let prevNotice = e.get('moveOutNoticeStatus', 'NONE');
+      return e.tenantUid == uid &&
+             'TENANT' in u.roles &&
+             (
+               (
+                 !('tenantSignature' in e) &&
+                 'tenantSignature' in d &&
+                 'signedChecklistId' in d &&
+                 isValidId(d.signedChecklistId) &&
+                 changed.hasOnly(['tenantSignature', 'signedChecklistId', 'updatedAt']) &&
+                 isValidDigitalSignature(d.tenantSignature) &&
+                 d.tenantSignature.signerUid == uid &&
+                 d.tenantSignature.signerRole == 'TENANT' &&
+                 d.tenantSignature.coversInspectionReport == true &&
+                 d.tenantSignature.coversLeaseReport == true &&
+                 isChecklistMutuallyAcked(d.signedChecklistId, leaseId, uid)
+               ) ||
+               (
+                 e.status == 'ACTIVE' &&
+                 'renewalOfferStatus' in changed &&
+                 e.get('renewalOfferStatus', 'NONE') == 'PENDING' &&
+                 d.renewalOfferStatus in ['ACCEPTED', 'DECLINED'] &&
+                 d.renewalRespondedAtEpochMs is int && d.renewalRespondedAtEpochMs > 0 &&
+                 (!('renewalResponseNote' in d) || (d.renewalResponseNote is string && d.renewalResponseNote.size() <= 500)) &&
+                 (
+                   (
+                     d.renewalOfferStatus == 'ACCEPTED' &&
+                     'offeredRentCents' in e &&
+                     'offeredEndDateEpochMs' in e &&
+                     d.rentCents == e.offeredRentCents &&
+                     d.endDateEpochMs == e.offeredEndDateEpochMs &&
+                     d.status == 'ACTIVE' &&
+                     changed.hasOnly(['renewalOfferStatus', 'renewalRespondedAtEpochMs', 'renewalResponseNote', 'rentCents', 'endDateEpochMs', 'updatedAt'])
+                   ) ||
+                   (
+                     d.renewalOfferStatus == 'DECLINED' &&
+                     changed.hasOnly(['renewalOfferStatus', 'renewalRespondedAtEpochMs', 'renewalResponseNote', 'updatedAt'])
+                   )
+                 )
+               ) ||
+               (
+                 e.status == 'ACTIVE' &&
+                 'moveOutNoticeStatus' in changed &&
+                 (
+                   (
+                     prevNotice in ['NONE', 'DECLINED', 'WITHDRAWN'] &&
+                     d.moveOutNoticeStatus == 'SUBMITTED' &&
+                     d.requestedMoveOutEpochMs is int && d.requestedMoveOutEpochMs > 0 &&
+                     d.moveOutNoticeSubmittedAtMs is int && d.moveOutNoticeSubmittedAtMs > 0 &&
+                     (!('moveOutNoticeReason' in d) || (d.moveOutNoticeReason is string && d.moveOutNoticeReason.size() <= 500)) &&
+                     !('moveOutNoticeReviewedAtMs' in d) &&
+                     !('moveOutNoticeResponseNote' in d) &&
+                     changed.hasOnly(['moveOutNoticeStatus', 'requestedMoveOutEpochMs', 'moveOutNoticeSubmittedAtMs', 'moveOutNoticeReason', 'moveOutNoticeReviewedAtMs', 'moveOutNoticeResponseNote', 'updatedAt'])
+                   ) ||
+                   (
+                     prevNotice == 'SUBMITTED' &&
+                     d.moveOutNoticeStatus == 'WITHDRAWN' &&
+                     changed.hasOnly(['moveOutNoticeStatus', 'updatedAt'])
+                   )
+                 )
                )
              );
     }
 
-    function canTenantCounterSignLease(leaseId) {
-      let d = request.resource.data;
-      let e = resource.data;
-      let uid = request.auth.uid;
-      let u = loadActiveUser();
-      let o = loadOrg(e.orgId);
-      return isVerifiedEmail() &&
-             isValidId(leaseId) &&
-             e.tenantUid == uid &&
-             !('tenantSignature' in e) &&
-             'tenantSignature' in d &&
-             'signedChecklistId' in d &&
-             isValidId(d.signedChecklistId) &&
-             d.diff(e).affectedKeys().hasOnly(['tenantSignature', 'signedChecklistId', 'updatedAt']) &&
-             isValidTimestamp(d.updatedAt) &&
-             isValidDigitalSignature(d.tenantSignature) &&
-             d.tenantSignature.signerUid == uid &&
-             d.tenantSignature.signerRole == 'TENANT' &&
-             d.tenantSignature.coversInspectionReport == true &&
-             d.tenantSignature.coversLeaseReport == true &&
-             isActiveUserDoc(u) &&
-             'TENANT' in u.roles &&
-             o != null &&
-             o.suspended == false &&
-             isChecklistMutuallyAcked(d.signedChecklistId, leaseId, uid);
-    }
-
-    function canTenantRespondRenewalOffer(leaseId) {
+    function canUpdateLease(leaseId) {
       let d = request.resource.data;
       let e = resource.data;
       let uid = request.auth.uid;
       let changed = d.diff(e).affectedKeys();
       let u = loadActiveUser();
       let o = loadOrg(e.orgId);
-      return isVerifiedEmail() &&
+      return isSignedIn() &&
              isValidId(leaseId) &&
-             e.tenantUid == uid &&
-             e.status == 'ACTIVE' &&
-             e.get('renewalOfferStatus', 'NONE') == 'PENDING' &&
-             d.renewalOfferStatus in ['ACCEPTED', 'DECLINED'] &&
-             d.renewalRespondedAtEpochMs is int && d.renewalRespondedAtEpochMs > 0 &&
-             (!('renewalResponseNote' in d) || (d.renewalResponseNote is string && d.renewalResponseNote.size() <= 500)) &&
-             d.updatedAt is timestamp && d.updatedAt <= request.time &&
-             isActiveUserDoc(u) &&
-             'TENANT' in u.roles &&
-             o != null &&
-             o.suspended == false &&
              (
                (
-                 d.renewalOfferStatus == 'ACCEPTED' &&
-                 'offeredRentCents' in e &&
-                 'offeredEndDateEpochMs' in e &&
-                 d.rentCents == e.offeredRentCents &&
-                 d.endDateEpochMs == e.offeredEndDateEpochMs &&
-                 d.status == 'ACTIVE' &&
-                 changed.hasOnly(['renewalOfferStatus', 'renewalRespondedAtEpochMs', 'renewalResponseNote', 'rentCents', 'endDateEpochMs', 'updatedAt'])
+                 isAdmin() &&
+                 isValidLease(d) &&
+                 d.orgId == e.orgId &&
+                 d.propertyId == e.propertyId &&
+                 d.unitId == e.unitId &&
+                 d.ownerUid == e.ownerUid &&
+                 d.tenantUid == e.tenantUid &&
+                 d.createdAt == e.createdAt
                ) ||
                (
-                 d.renewalOfferStatus == 'DECLINED' &&
-                 changed.hasOnly(['renewalOfferStatus', 'renewalRespondedAtEpochMs', 'renewalResponseNote', 'updatedAt'])
+                 isVerifiedEmail() &&
+                 d.updatedAt is timestamp && d.updatedAt <= request.time &&
+                 isActiveUserDoc(u) &&
+                 o != null &&
+                 o.suspended == false &&
+                 (
+                   canLandlordOrManagerUpdateLeaseBody(d, e, uid, changed, u, o) ||
+                   canTenantUpdateLeaseBody(leaseId, d, e, uid, changed, u)
+                 )
+               )
+             );
+    }
+
+    function verifyInvoiceLeaseLink(d, uid, l) {
+      return l.orgId == d.orgId &&
+             l.propertyId == d.propertyId &&
+             l.unitId == d.unitId &&
+             l.ownerUid == d.ownerUid &&
+             l.tenantUid == d.tenantUid &&
+             uid in l.authorizedUids;
+    }
+
+    function verifyInvoiceStaffAccess(uid, authorizedUids, ownerUid, requireOwnerForWaive, u, o) {
+      return uid in authorizedUids &&
+             u.suspended == false &&
+             u.roles.hasAny(['LANDLORD', 'PROPERTY_MANAGER']) &&
+             o.suspended == false &&
+             (o.ownerUid == uid || uid in o.memberUids) &&
+             (!requireOwnerForWaive || ('LANDLORD' in u.roles && ownerUid == uid && o.ownerUid == uid));
+    }
+
+    function canCreateInvoice(invoiceId) {
+      let d = request.resource.data;
+      let uid = request.auth.uid;
+      return isSignedIn() &&
+             isValidId(invoiceId) &&
+             isValidInvoice(d) &&
+             d.keys().hasOnly(['invoiceNumber', 'scheduleId', 'leaseId', 'orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'billingPeriod', 'billingDateEpochMs', 'rentCents', 'extraChargesCents', 'extraChargesNote', 'previousBalanceCents', 'totalDueCents', 'paidCents', 'outstandingCents', 'dueDateEpochMs', 'issuedAtEpochMs', 'paidAtEpochMs', 'status', 'lastReminderSentEpochMs', 'reminderCount', 'lateFeeCents', 'lateFeeRatePercent', 'lateFeeAppliedAtEpochMs', 'lateFeeWaived', 'lateFeeWaivedReason', 'lateFeeWaivedAtEpochMs', 'gracePeriodEndsEpochMs', 'prorated', 'prorationNote', 'createdAt', 'updatedAt']) &&
+             exists(/databases/$(database)/documents/leases/$(d.leaseId)) &&
+             verifyInvoiceLeaseLink(d, uid, get(/databases/$(database)/documents/leases/$(d.leaseId)).data) &&
+             (
+               isAdmin() ||
+               (
+                 isVerifiedEmail() &&
+                 exists(/databases/$(database)/documents/users/$(uid)) &&
+                 exists(/databases/$(database)/documents/organizations/$(d.orgId)) &&
+                 verifyInvoiceStaffAccess(
+                   uid,
+                   d.authorizedUids,
+                   d.ownerUid,
+                   false,
+                   get(/databases/$(database)/documents/users/$(uid)).data,
+                   get(/databases/$(database)/documents/organizations/$(d.orgId)).data
+                 )
                )
              );
     }
@@ -1386,32 +1523,105 @@ service cloud.firestore {
       let d = request.resource.data;
       let e = resource.data;
       let uid = request.auth.uid;
+      return isSignedIn() &&
+             isValidId(invoiceId) &&
+             d.invoiceNumber == e.invoiceNumber &&
+             d.leaseId == e.leaseId &&
+             d.orgId == e.orgId &&
+             d.propertyId == e.propertyId &&
+             d.unitId == e.unitId &&
+             d.ownerUid == e.ownerUid &&
+             d.tenantUid == e.tenantUid &&
+             d.createdAt == e.createdAt &&
+             (e.status == 'DRAFT' || d.status != 'DRAFT') &&
+             (
+               (isAdmin() && isValidInvoice(d)) ||
+               (
+                 isVerifiedEmail() &&
+                 e.status != 'CANCELLED' &&
+                 d.diff(e).affectedKeys().hasOnly(['paidCents', 'outstandingCents', 'status', 'extraChargesCents', 'extraChargesNote', 'totalDueCents', 'lastReminderSentEpochMs', 'reminderCount', 'lateFeeCents', 'lateFeeRatePercent', 'lateFeeAppliedAtEpochMs', 'lateFeeWaived', 'lateFeeWaivedReason', 'lateFeeWaivedAtEpochMs', 'gracePeriodEndsEpochMs', 'issuedAtEpochMs', 'paidAtEpochMs', 'updatedAt']) &&
+                 exists(/databases/$(database)/documents/users/$(uid)) &&
+                 exists(/databases/$(database)/documents/organizations/$(e.orgId)) &&
+                 verifyInvoiceStaffAccess(
+                   uid,
+                   e.authorizedUids,
+                   e.ownerUid,
+                   d.diff(e).affectedKeys().hasAny(['lateFeeWaived', 'lateFeeWaivedReason', 'lateFeeWaivedAtEpochMs']),
+                   get(/databases/$(database)/documents/users/$(uid)).data,
+                   get(/databases/$(database)/documents/organizations/$(e.orgId)).data
+                 ) &&
+                 isValidInvoiceMutableFields(d)
+               )
+             );
+    }
+
+    function canCreateRecurringInvoice(scheduleId) {
+      let d = request.resource.data;
+      let uid = request.auth.uid;
+      let lPath = /databases/$(database)/documents/leases/$(d.leaseId);
+      let l = exists(lPath) ? get(lPath).data : null;
+      let u = loadActiveUser();
+      let o = loadOrg(d.orgId);
+      return isSignedIn() &&
+             isValidId(scheduleId) &&
+             isValidRecurringInvoice(d) &&
+             scheduleId == d.leaseId &&
+             d.keys().hasAll(['orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'leaseId', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'amountCents', 'recurringExtraCents', 'billingDayOfMonth', 'leadDays', 'nextBillingEpochMs', 'scheduleStatus', 'issueMode', 'createdAt', 'updatedAt']) &&
+             d.keys().hasOnly(['orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'leaseId', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'amountCents', 'recurringExtraCents', 'recurringExtraNote', 'billingDayOfMonth', 'leadDays', 'nextBillingEpochMs', 'lastBilledPeriod', 'lastInvoiceId', 'lastBilledAtEpochMs', 'scheduleStatus', 'issueMode', 'createdAt', 'updatedAt']) &&
+             l != null &&
+             l.orgId == d.orgId &&
+             l.propertyId == d.propertyId &&
+             l.unitId == d.unitId &&
+             l.ownerUid == d.ownerUid &&
+             l.tenantUid == d.tenantUid &&
+             (
+               isAdmin() ||
+               (
+                 isVerifiedEmail() &&
+                 isActiveUserDoc(u) &&
+                 'LANDLORD' in u.roles &&
+                 d.ownerUid == uid &&
+                 uid in d.authorizedUids &&
+                 o != null &&
+                 o.suspended == false &&
+                 o.ownerUid == uid
+               )
+             );
+    }
+
+    function canUpdateRecurringInvoice(scheduleId) {
+      let d = request.resource.data;
+      let e = resource.data;
+      let uid = request.auth.uid;
       let u = loadActiveUser();
       let o = loadOrg(e.orgId);
       let changed = d.diff(e).affectedKeys();
-      let baseImmutable = d.invoiceNumber == e.invoiceNumber && d.leaseId == e.leaseId && d.orgId == e.orgId && d.propertyId == e.propertyId && d.unitId == e.unitId && d.ownerUid == e.ownerUid && d.tenantUid == e.tenantUid && d.createdAt == e.createdAt;
-      let waiveAuthOk = !changed.hasAny(['lateFeeWaived', 'lateFeeWaivedReason', 'lateFeeWaivedAtEpochMs']) ||
-        ('LANDLORD' in u.roles && e.ownerUid == uid && o.ownerUid == uid);
+      let baseImmutable = d.orgId == e.orgId && d.propertyId == e.propertyId && d.unitId == e.unitId && d.leaseId == e.leaseId && d.ownerUid == e.ownerUid && d.tenantUid == e.tenantUid && d.createdAt == e.createdAt;
       return isSignedIn() &&
-             isValidId(invoiceId) &&
-             isValidInvoice(d) &&
+             isValidId(scheduleId) &&
+             isValidRecurringInvoice(d) &&
              baseImmutable &&
              (
                isAdmin() ||
                (
                  isVerifiedEmail() &&
                  isActiveUserDoc(u) &&
-                 u.roles.hasAny(['LANDLORD', 'PROPERTY_MANAGER']) &&
                  uid in e.authorizedUids &&
                  o != null &&
                  o.suspended == false &&
-                 (o.ownerUid == uid || uid in o.memberUids) &&
-                 e.status != 'CANCELLED' &&
-                 d.managerUids == e.managerUids &&
-                 d.authorizedUids == e.authorizedUids &&
-                 d.billingPeriod == e.billingPeriod &&
-                 waiveAuthOk &&
-                 changed.hasOnly(['paidCents', 'outstandingCents', 'status', 'extraChargesCents', 'extraChargesNote', 'totalDueCents', 'lastReminderSentEpochMs', 'reminderCount', 'lateFeeCents', 'lateFeeRatePercent', 'lateFeeAppliedAtEpochMs', 'lateFeeWaived', 'lateFeeWaivedReason', 'lateFeeWaivedAtEpochMs', 'gracePeriodEndsEpochMs', 'updatedAt'])
+                 (
+                   (
+                     'LANDLORD' in u.roles &&
+                     e.ownerUid == uid &&
+                     o.ownerUid == uid &&
+                     changed.hasOnly(['amountCents', 'recurringExtraCents', 'recurringExtraNote', 'billingDayOfMonth', 'leadDays', 'nextBillingEpochMs', 'lastBilledPeriod', 'lastInvoiceId', 'lastBilledAtEpochMs', 'scheduleStatus', 'issueMode', 'updatedAt'])
+                   ) ||
+                   (
+                     'PROPERTY_MANAGER' in u.roles &&
+                     uid in o.memberUids &&
+                     changed.hasOnly(['leadDays', 'nextBillingEpochMs', 'lastBilledPeriod', 'lastInvoiceId', 'lastBilledAtEpochMs', 'scheduleStatus', 'issueMode', 'updatedAt'])
+                   )
+                 )
                )
              );
     }
@@ -2079,22 +2289,8 @@ service cloud.firestore {
         (isVerifiedEmail() && (resource.data.tenantUid == request.auth.uid || request.auth.uid in resource.data.authorizedUids)) ||
         isAdmin()
       );
-      allow create: if isValidId(leaseId) &&
-                       isValidLease(request.resource.data) &&
-                       !('tenantSignature' in request.resource.data) &&
-                       (!('landlordSignature' in request.resource.data) || isAdmin() || (request.resource.data.landlordSignature.signerUid == request.auth.uid && request.resource.data.landlordSignature.signerRole in ['LANDLORD', 'PROPERTY_MANAGER', 'ADMIN'] && request.resource.data.landlordSignature.coversLeaseReport == true)) &&
-                       request.resource.data.keys().hasAll(['orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'tenantPhone', 'rentCents', 'depositCents', 'startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'createdAt', 'updatedAt']) &&
-                       request.resource.data.keys().hasOnly(['orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'tenantPhone', 'rentCents', 'depositCents', 'startDateEpochMs', 'endDateEpochMs', 'dueDayOfMonth', 'status', 'creditBalanceCents', 'termsSummary', 'terminationNotice', 'landlordSignature', 'tenantSignature', 'signedChecklistId', 'renewalMode', 'renewalLeadDays', 'renewalDurationMonths', 'escalationType', 'escalationPercent', 'escalationFixedCents', 'gracePeriodDays', 'lateFeePercent', 'lateFeeEnabled', 'renewalOfferStatus', 'offeredRentCents', 'offeredEndDateEpochMs', 'renewalOfferedAtEpochMs', 'renewalRespondedAtEpochMs', 'renewalResponseNote', 'lastRenewalProcessedForEndMs', 'createdAt', 'updatedAt']) &&
-                       (isAdmin() || (hasAnyVerifiedRole(['LANDLORD', 'PROPERTY_MANAGER']) && request.auth.uid in request.resource.data.authorizedUids && isActiveOrgMember(request.resource.data.orgId))) &&
-                       exists(/databases/$(database)/documents/units/$(request.resource.data.unitId)) &&
-                       get(/databases/$(database)/documents/units/$(request.resource.data.unitId)).data.orgId == request.resource.data.orgId &&
-                       get(/databases/$(database)/documents/units/$(request.resource.data.unitId)).data.propertyId == request.resource.data.propertyId &&
-                       get(/databases/$(database)/documents/units/$(request.resource.data.unitId)).data.ownerUid == request.resource.data.ownerUid &&
-                       request.auth.uid in get(/databases/$(database)/documents/units/$(request.resource.data.unitId)).data.authorizedUids;
-      allow update: if isSignedIn() && canAdminUpdateLease(leaseId);
-      allow update: if isSignedIn() && canLandlordOrManagerUpdateLease(leaseId);
-      allow update: if isSignedIn() && canTenantCounterSignLease(leaseId);
-      allow update: if isSignedIn() && canTenantRespondRenewalOffer(leaseId);
+      allow create: if canCreateLease(leaseId);
+      allow update: if canUpdateLease(leaseId);
       allow delete: if isAdmin() && isValidId(leaseId);
     }
 
@@ -2151,8 +2347,8 @@ service cloud.firestore {
       );
     }
 
-    match /invoices/{invoiceId} {
-      allow get: if isSignedIn() && isValidId(invoiceId) && (
+    match /recurring_invoices/{scheduleId} {
+      allow get: if isSignedIn() && isValidId(scheduleId) && (
         canReadTenantOrOrgRecord(resource.data, resource.data.tenantUid) ||
         isAdmin()
       );
@@ -2160,18 +2356,23 @@ service cloud.firestore {
         (isVerifiedEmail() && (resource.data.tenantUid == request.auth.uid || request.auth.uid in resource.data.authorizedUids)) ||
         isAdmin()
       );
-      allow create: if isValidId(invoiceId) &&
-                       isValidInvoice(request.resource.data) &&
-                       request.resource.data.keys().hasAll(['invoiceNumber', 'leaseId', 'orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'billingPeriod', 'rentCents', 'extraChargesCents', 'previousBalanceCents', 'totalDueCents', 'paidCents', 'outstandingCents', 'dueDateEpochMs', 'status', 'createdAt', 'updatedAt']) &&
-                       request.resource.data.keys().hasOnly(['invoiceNumber', 'leaseId', 'orgId', 'propertyId', 'propertyName', 'unitId', 'unitNumber', 'ownerUid', 'managerUids', 'authorizedUids', 'tenantUid', 'tenantName', 'billingPeriod', 'rentCents', 'extraChargesCents', 'extraChargesNote', 'previousBalanceCents', 'totalDueCents', 'paidCents', 'outstandingCents', 'dueDateEpochMs', 'status', 'lastReminderSentEpochMs', 'reminderCount', 'lateFeeCents', 'lateFeeRatePercent', 'lateFeeAppliedAtEpochMs', 'lateFeeWaived', 'lateFeeWaivedReason', 'lateFeeWaivedAtEpochMs', 'gracePeriodEndsEpochMs', 'createdAt', 'updatedAt']) &&
-                       (isAdmin() || (hasAnyVerifiedRole(['LANDLORD', 'PROPERTY_MANAGER']) && request.auth.uid in request.resource.data.authorizedUids && isActiveOrgMember(request.resource.data.orgId))) &&
-                       exists(/databases/$(database)/documents/leases/$(request.resource.data.leaseId)) &&
-                       get(/databases/$(database)/documents/leases/$(request.resource.data.leaseId)).data.orgId == request.resource.data.orgId &&
-                       get(/databases/$(database)/documents/leases/$(request.resource.data.leaseId)).data.propertyId == request.resource.data.propertyId &&
-                       get(/databases/$(database)/documents/leases/$(request.resource.data.leaseId)).data.unitId == request.resource.data.unitId &&
-                       get(/databases/$(database)/documents/leases/$(request.resource.data.leaseId)).data.ownerUid == request.resource.data.ownerUid &&
-                       get(/databases/$(database)/documents/leases/$(request.resource.data.leaseId)).data.tenantUid == request.resource.data.tenantUid &&
-                       request.auth.uid in get(/databases/$(database)/documents/leases/$(request.resource.data.leaseId)).data.authorizedUids;
+      allow create: if canCreateRecurringInvoice(scheduleId);
+      allow update: if canUpdateRecurringInvoice(scheduleId);
+      allow delete: if isAdmin() && isValidId(scheduleId);
+    }
+
+    match /invoices/{invoiceId} {
+      allow get: if isSignedIn() && isValidId(invoiceId) && (
+        (resource.data.status == 'DRAFT'
+          ? canReadOrgScopedRecord(resource.data)
+          : canReadTenantOrOrgRecord(resource.data, resource.data.tenantUid)) ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        (isVerifiedEmail() && (resource.data.tenantUid == request.auth.uid || request.auth.uid in resource.data.authorizedUids)) ||
+        isAdmin()
+      );
+      allow create: if canCreateInvoice(invoiceId);
       allow update: if canUpdateInvoice(invoiceId);
       allow delete: if isAdmin() && isValidId(invoiceId);
     }

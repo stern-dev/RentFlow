@@ -122,7 +122,7 @@ object FinancialEngine {
             .filter { it.statusEnum() == PaymentStatus.VERIFIED }
             .sumOf { it.amountCents }
         val outstanding = invoices
-            .filter { it.statusEnum() != InvoiceStatus.CANCELLED }
+            .filter { val st = it.statusEnum(); st != InvoiceStatus.CANCELLED && st != InvoiceStatus.DRAFT }
             .sumOf { it.outstandingCents }
         val totalExpenses = expenses.sumOf { it.amountCents }
         val netIncome = totalCollected - totalExpenses
@@ -135,7 +135,7 @@ object FinancialEngine {
         val overdueInvoices = invoices.filter {
             val st = it.statusEnum()
             (st == InvoiceStatus.OVERDUE) ||
-                ((st == InvoiceStatus.UNPAID || st == InvoiceStatus.PARTIALLY_PAID) && it.dueDateEpochMs < nowMs && it.outstandingCents > 0L)
+                ((st == InvoiceStatus.ISSUED || st == InvoiceStatus.UNPAID || st == InvoiceStatus.PARTIALLY_PAID) && it.dueDateEpochMs < nowMs && it.outstandingCents > 0L)
         }
         val pendingMaintenance = maintenanceRequests.count {
             val st = it.statusEnum()
@@ -170,7 +170,11 @@ object FinancialEngine {
     ): TenantAccountSummary {
         if (activeLease == null) return TenantAccountSummary()
         val leaseInvoices = invoices
-            .filter { it.leaseId == activeLease.id && it.statusEnum() != InvoiceStatus.CANCELLED }
+            .filter {
+                it.leaseId == activeLease.id &&
+                    it.statusEnum() != InvoiceStatus.CANCELLED &&
+                    it.statusEnum() != InvoiceStatus.DRAFT
+            }
             .sortedBy { it.dueDateEpochMs }
         val totalOutstanding = leaseInvoices.sumOf { it.outstandingCents }
         val currentPeriod = CurrencyUtils.currentBillingPeriod()
@@ -214,7 +218,10 @@ object FinancialEngine {
         require(paymentAmountCents > 0L) { "Payment amount must be positive" }
         var available = paymentAmountCents + existingCreditCents.coerceAtLeast(0L)
         val sortedOpen = openInvoices
-            .filter { it.statusEnum() != InvoiceStatus.CANCELLED && it.outstandingCents > 0L }
+            .filter {
+                val st = it.statusEnum()
+                st != InvoiceStatus.CANCELLED && st != InvoiceStatus.DRAFT && it.outstandingCents > 0L
+            }
             .sortedBy { it.dueDateEpochMs }
 
         val updates = mutableListOf<InvoiceAllocationUpdate>()
@@ -312,7 +319,9 @@ object FinancialEngine {
         val currentPeriodKey = periodKeys.lastOrNull().orEmpty()
 
         val activeInvoices = invoices.filter {
-            it.statusEnum() != InvoiceStatus.CANCELLED &&
+            val st = it.statusEnum()
+            st != InvoiceStatus.CANCELLED &&
+                st != InvoiceStatus.DRAFT &&
                 (activeLeaseId == null || it.leaseId == activeLeaseId)
         }
         val verifiedPayments = payments.filter {
@@ -505,6 +514,7 @@ object FinancialEngine {
             .filter {
                 it.leaseId == leaseId &&
                     it.statusEnum() != InvoiceStatus.CANCELLED &&
+                    it.statusEnum() != InvoiceStatus.DRAFT &&
                     it.statusEnum() != InvoiceStatus.PAID
             }
             .sumOf { it.outstandingCents.coerceAtLeast(0L) }

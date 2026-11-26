@@ -1,10 +1,12 @@
 package com.example.domain.security
 
 import com.example.domain.model.Expense
+import com.example.domain.model.Invoice
 import com.example.domain.model.Lease
 import com.example.domain.model.Organization
 import com.example.domain.model.Payment
 import com.example.domain.model.Property
+import com.example.domain.model.RecurringInvoiceSchedule
 import com.example.domain.model.RentalUnit
 import com.example.domain.model.UserProfile
 import com.example.domain.model.UserRole
@@ -96,4 +98,44 @@ object PermissionPolicy {
 
     fun canWaiveLateFee(uid: String, activeRole: UserRole, ownerUid: String): Boolean =
         activeRole == UserRole.ADMIN || (activeRole == UserRole.LANDLORD && ownerUid == uid)
+
+    fun canEditLeaseNoticeAndBillingSettings(uid: String, activeRole: UserRole, lease: Lease): Boolean =
+        activeRole == UserRole.ADMIN || (activeRole == UserRole.LANDLORD && lease.ownerUid == uid)
+
+    fun canReviewMoveOutNotice(uid: String, activeRole: UserRole, lease: Lease): Boolean =
+        activeRole == UserRole.ADMIN ||
+            (activeRole in listOf(UserRole.LANDLORD, UserRole.PROPERTY_MANAGER) && uid in lease.authorizedUids)
+
+    fun canRunAutoBillingSweep(uid: String, activeRole: UserRole, lease: Lease): Boolean =
+        activeRole == UserRole.ADMIN ||
+            (activeRole in listOf(UserRole.LANDLORD, UserRole.PROPERTY_MANAGER) && uid in lease.authorizedUids)
+
+    fun canSubmitMoveOutNotice(uid: String, activeRole: UserRole, lease: Lease): Boolean =
+        activeRole == UserRole.TENANT &&
+            lease.tenantUid == uid &&
+            lease.status == com.example.domain.model.LeaseStatus.ACTIVE.name
+
+    fun canEditRecurringSchedulePricing(uid: String, activeRole: UserRole, lease: Lease): Boolean =
+        activeRole == UserRole.ADMIN || (activeRole == UserRole.LANDLORD && lease.ownerUid == uid)
+
+    fun canEditRecurringSchedulePricing(
+        uid: String,
+        activeRole: UserRole,
+        schedule: RecurringInvoiceSchedule
+    ): Boolean = activeRole == UserRole.ADMIN || (activeRole == UserRole.LANDLORD && schedule.ownerUid == uid)
+
+    fun canManageRecurringScheduleStatus(uid: String, activeRole: UserRole, lease: Lease): Boolean =
+        activeRole == UserRole.ADMIN ||
+            (activeRole in listOf(UserRole.LANDLORD, UserRole.PROPERTY_MANAGER) && uid in lease.authorizedUids)
+
+    fun canManageRecurringScheduleStatus(
+        uid: String,
+        activeRole: UserRole,
+        schedule: RecurringInvoiceSchedule
+    ): Boolean = activeRole == UserRole.ADMIN ||
+        (activeRole in listOf(UserRole.LANDLORD, UserRole.PROPERTY_MANAGER) && uid in schedule.authorizedUids)
+
+    fun canIssueOrCancelDraftInvoice(uid: String, activeRole: UserRole, invoice: Invoice): Boolean =
+        activeRole == UserRole.ADMIN ||
+            (activeRole in listOf(UserRole.LANDLORD, UserRole.PROPERTY_MANAGER) && uid in invoice.authorizedUids)
 }
