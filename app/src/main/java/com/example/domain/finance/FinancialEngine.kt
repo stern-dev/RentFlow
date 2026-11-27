@@ -78,6 +78,40 @@ data class TenantPaymentTrendsSummary(
     val hasHistoricalActivity: Boolean = false
 )
 
+enum class PaymentHistoryStatus(val label: String) {
+    PAID("Paid"),
+    LATE("Late"),
+    PARTIAL("Partial")
+}
+
+data class PaymentHistoryEntry(
+    val invoice: Invoice,
+    val status: PaymentHistoryStatus,
+    val historyYear: Int,
+    val effectiveActivityEpochMs: Long,
+    val daysLate: Int = 0
+)
+
+data class AnnualRentPaidSummary(
+    val year: Int,
+    val totalPaidCents: Long,
+    val totalBilledCents: Long,
+    val totalOutstandingCents: Long,
+    val invoiceCount: Int,
+    val paidOnTimeCount: Int,
+    val lateCount: Int,
+    val partialCount: Int
+)
+
+data class TenantPaymentHistorySummary(
+    val entries: List<PaymentHistoryEntry> = emptyList(),
+    val annualSummaries: List<AnnualRentPaidSummary> = emptyList(),
+    val overallTotalPaidCents: Long = 0L,
+    val overallPaidCount: Int = 0,
+    val overallLateCount: Int = 0,
+    val overallPartialCount: Int = 0
+)
+
 data class InvoiceAllocationUpdate(
     val invoiceId: String,
     val invoiceNumber: String,
@@ -518,5 +552,111 @@ object FinancialEngine {
                     it.statusEnum() != InvoiceStatus.PAID
             }
             .sumOf { it.outstandingCents.coerceAtLeast(0L) }
+    }
+
+    /**
+     * Aggregates settled and partially paid Firestore invoices into a chronological
+     * payment history ledger with Paid, Late, and Partial badges plus per-year KES totals.
+     */
+    fun computeTenantPaymentHistory(
+        invoices: List<Invoice>,
+        nowMs: Long = System.currentTimeMillis()
+    ): TenantPaymentHistorySummary {
+        val nairobiTz = TimeZone.getTimeZone("Africa/Nairobi")
+        val dayMs = 86_400_000L
+
+        fun yearFromEpoch(epochMs: Long): Int =
+            Calendar.getInstance(nairobiTz, Locale.US).apply {
+                timeInMillis = epochMs
+            }.get(Calendar.YEAR)
+
+        val eligible = invoices.filter { inv ->
+            val st = inv.statusEnum()
+            st != InvoiceStatus.DRAFT &&
+                st != InvoiceStatus.CANCELLED &&
+                (st == InvoiceStatus.PAID || st == InvoiceStatus.PARTIALLY_PAID || inv.paidCents > 0L)
+        }
+
+        if (eligible.isEmpty()) {
+            return TenantPaymentHistorySummary()
+        }
+
+        val entries = eligible.map { inv ->
+            val st = inv.statusEnum()
+            val isPartial = inv.outstandingCents > 0L || st == InvoiceStatus.PARTIALLY_PAID
+            val paidAt = inv.paidAtEpochMs?.takeIf { it > 0L }
+            val dueAt = inv.dueDateEpochMs.takeIf { it > 0L }
+            val settledAfterDue = !isPartial && paidAt != null && dueAt != null && paidAt > dueAt
+            val hasLateFee = inv.lateFeeCents > 0L
+
+            val historyStatus = when {
+                isPartial -> PaymentHistoryStatus.PARTIAL
+                settledAfterDue || hasLateFee -> PaymentHistoryStatus.LATE
+                else -> PaymentHistoryStatus.PAID
+            }
+
+            val daysLate = when {
+                isPartial && dueAt != null && nowMs > dueAt ->
+                    ((nowMs - dueAt) / dayMs).toInt().coerceAtLeast(1)
+                settledAfterDue ->
+                    (((paidAt ?: 0L) - (dueAt ?: 0L)) / dayMs).toInt().coerceAtLeast(1)
+                else -> 0
+            }
+
+            val resolvedYear = when {
+                paidAt != null -> yearFromEpoch(paidAt)
+                inv.billingPeriod.trim().length >= 4 -> {
+                    inv.billingPeriod.trim().substring(0, 4).toIntOrNull()
+                        ?.takeIf { it in 2000..2100 }
+                        ?: yearFromEpoch(dueAt ?: inv.issuedAtEpochMs?.takeIf { it > 0L } ?: nowMs)
+                }
+                dueAt != null -> yearFromEpoch(dueAt)
+                inv.issuedAtEpochMs != null && inv.issuedAtEpochMs > 0L -> yearFromEpoch(inv.issuedAtEpochMs)
+                else -> yearFromEpoch(nowMs)
+            }
+
+            val effectiveActivity = paidAt
+                ?: dueAt
+                ?: inv.issuedAtEpochMs?.takeIf { it > 0L }
+                ?: nowMs
+
+            PaymentHistoryEntry(
+                invoice = inv,
+                status = historyStatus,
+                historyYear = resolvedYear,
+                effectiveActivityEpochMs = effectiveActivity,
+                daysLate = daysLate
+            )
+        }.sortedWith(
+            compareByDescending<PaymentHistoryEntry> { it.effectiveActivityEpochMs }
+                .thenByDescending { it.invoice.billingPeriod }
+                .thenByDescending { it.invoice.invoiceNumber }
+        )
+
+        val annualSummaries = entries
+            .groupBy { it.historyYear }
+            .entries
+            .sortedByDescending { it.key }
+            .map { (year, yearEntries) ->
+                AnnualRentPaidSummary(
+                    year = year,
+                    totalPaidCents = yearEntries.sumOf { it.invoice.paidCents.coerceAtLeast(0L) },
+                    totalBilledCents = yearEntries.sumOf { it.invoice.totalDueCents.coerceAtLeast(0L) },
+                    totalOutstandingCents = yearEntries.sumOf { it.invoice.outstandingCents.coerceAtLeast(0L) },
+                    invoiceCount = yearEntries.size,
+                    paidOnTimeCount = yearEntries.count { it.status == PaymentHistoryStatus.PAID },
+                    lateCount = yearEntries.count { it.status == PaymentHistoryStatus.LATE },
+                    partialCount = yearEntries.count { it.status == PaymentHistoryStatus.PARTIAL }
+                )
+            }
+
+        return TenantPaymentHistorySummary(
+            entries = entries,
+            annualSummaries = annualSummaries,
+            overallTotalPaidCents = entries.sumOf { it.invoice.paidCents.coerceAtLeast(0L) },
+            overallPaidCount = entries.count { it.status == PaymentHistoryStatus.PAID },
+            overallLateCount = entries.count { it.status == PaymentHistoryStatus.LATE },
+            overallPartialCount = entries.count { it.status == PaymentHistoryStatus.PARTIAL }
+        )
     }
 }

@@ -75,3 +75,14 @@ val OnEmeraldContainer = OnCobaltContainer
 val SoftNeutralBg = MistBlueBg
 val SoftSurfaceVariant = SlateBlueContainer
 val SlateBorder = CoolSlateBorder
+
+// Safaricom-inspired M-Pesa Emerald Accent Tokens (Light & Dark adaptive)
+val MpesaEmerald = Color(0xFF0B8A42)
+val MpesaEmeraldLight = Color(0xFF34D37D)
+val MpesaEmeraldContainerLight = Color(0xFFE6F6EC)
+val MpesaEmeraldContainerDark = Color(0xFF0E2B1C)
+val MpesaEmeraldSurfaceLight = Color(0xFFF3FBF6)
+val MpesaEmeraldSurfaceDark = Color(0xFF10241A)
+val MpesaEmeraldBorderLight = Color(0xFFA7E3BE)
+val MpesaEmeraldBorderDark = Color(0xFF1F5939)
+

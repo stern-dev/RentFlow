@@ -43,7 +43,8 @@ import java.util.UUID
 
 class FinanceRepository(
     private val db: FirebaseFirestore,
-    private val auth: FirebaseAuth = Firebase.auth
+    private val auth: FirebaseAuth = Firebase.auth,
+    private val paymentReceiptRepo: PaymentReceiptRepository = PaymentReceiptRepository(db, auth)
 ) {
     constructor(context: Context) : this(
         FirebaseFirestore.getInstance(
@@ -54,6 +55,39 @@ class FinanceRepository(
     private fun requireUserId(): String =
         auth.currentUser?.uid
             ?: throw IllegalStateException("User must be signed in with Google before accessing financial records.")
+
+    private suspend fun triggerReceiptGenerationForPaidInvoice(
+        invoice: Invoice,
+        payment: Payment? = null,
+        receiptNumberOverride: String? = null,
+        actorName: String = "RentFlow Management",
+        nowMs: Long = System.currentTimeMillis()
+    ) {
+        if (invoice.statusEnum() != InvoiceStatus.PAID) return
+        try {
+            paymentReceiptRepo.generateAndStoreReceiptForPaidInvoice(
+                invoice = invoice,
+                payment = payment,
+                receiptNumberOverride = receiptNumberOverride,
+                actorName = actorName,
+                nowMs = nowMs
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Already-committed financial transaction remains durable; backfill/manual trigger can retry.
+        }
+    }
+
+    private suspend fun triggerVoidReceiptIfExists(invoiceId: String, reason: String) {
+        try {
+            paymentReceiptRepo.voidReceiptIfExists(invoiceId = invoiceId, reason = reason)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Non-blocking after reversal commit
+        }
+    }
 
     fun observeInvoicesForLandlord(userId: String): Flow<List<Invoice>> {
         val cleanUid = userId.trim()
@@ -73,6 +107,17 @@ class FinanceRepository(
         if (cleanUid.isBlank()) return flowOf(emptyList())
         return db.collection("invoices")
             .whereEqualTo("tenantUid", cleanUid)
+            .whereIn(
+                "status",
+                listOf(
+                    InvoiceStatus.ISSUED.name,
+                    InvoiceStatus.UNPAID.name,
+                    InvoiceStatus.PARTIALLY_PAID.name,
+                    InvoiceStatus.PAID.name,
+                    InvoiceStatus.OVERDUE.name,
+                    InvoiceStatus.CANCELLED.name
+                )
+            )
             .snapshots()
             .map { snap ->
                 snap.toObjects(Invoice::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
@@ -383,6 +428,13 @@ class FinanceRepository(
                             read = false
                         ).toCreateMap()
                     ).await()
+                    if (status == InvoiceStatus.PAID) {
+                        triggerReceiptGenerationForPaidInvoice(
+                            invoice = invoice.copy(id = deterministicId),
+                            actorName = actorName,
+                            nowMs = nowMs
+                        )
+                    }
                 }
 
                 createdCount++
@@ -416,6 +468,11 @@ class FinanceRepository(
         val totalBilledCents: Long,
         val draftCount: Int = 0,
         val issuedCount: Int = 0
+    )
+
+    private data class SweepTxOutcome(
+        val invoice: Invoice,
+        val isDraft: Boolean
     )
 
     suspend fun runAutoBillingSweep(
@@ -537,17 +594,17 @@ class FinanceRepository(
                             )
                         )
                     }
-                    Triple(totalDue, outstanding, isDraft)
+                    SweepTxOutcome(invoice.copy(id = deterministicId), isDraft)
                 }.await() ?: continue
 
                 generatedCount++
                 if (candidate.prorated) proratedCount++
-                totalBilledCents += sweepResult.first
-                if (sweepResult.third) {
+                totalBilledCents += sweepResult.invoice.totalDueCents
+                if (sweepResult.isDraft) {
                     draftCount++
                 } else {
                     issuedCount++
-                    val outstandingAfterCredit = sweepResult.second
+                    val outstandingAfterCredit = sweepResult.invoice.outstandingCents
                     val prorationPrefix = if (candidate.prorated) "Prorated " else ""
                     db.collection("notifications").document().set(
                         AppNotification(
@@ -561,6 +618,13 @@ class FinanceRepository(
                             read = false
                         ).toCreateMap()
                     ).await()
+                    if (sweepResult.invoice.statusEnum() == InvoiceStatus.PAID) {
+                        triggerReceiptGenerationForPaidInvoice(
+                            invoice = sweepResult.invoice,
+                            actorName = actorName,
+                            nowMs = nowMs
+                        )
+                    }
                 }
             }
 
@@ -694,6 +758,23 @@ class FinanceRepository(
                     details = "Issued draft ${invoice.invoiceNumber} (${CurrencyUtils.formatKes(result.totalDueCents, true)}) -> ${result.newStatus.label}"
                 ).toCreateMap()
             ).await()
+            if (result.newStatus == InvoiceStatus.PAID) {
+                val paidStamp = result.paidAtEpochMs ?: nowMs
+                triggerReceiptGenerationForPaidInvoice(
+                    invoice = invoice.copy(
+                        extraChargesCents = extraChargesCents,
+                        extraChargesNote = cleanNote,
+                        totalDueCents = result.totalDueCents,
+                        paidCents = result.newPaidCents,
+                        outstandingCents = result.newOutstandingCents,
+                        status = InvoiceStatus.PAID.name,
+                        issuedAtEpochMs = result.issuedAtEpochMs,
+                        paidAtEpochMs = paidStamp
+                    ),
+                    actorName = actorName,
+                    nowMs = paidStamp
+                )
+            }
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
@@ -834,7 +915,7 @@ class FinanceRepository(
             )
             val receiptNum = "RCP-${UUID.randomUUID().toString().take(8).uppercase()}"
 
-            db.runTransaction { tx ->
+            val paidAtNow = db.runTransaction { tx ->
                 val paymentRef = db.collection("payments").document(payment.id)
                 val leaseRef = db.collection("leases").document(lease.id)
                 val freshPay = tx.get(paymentRef)
@@ -842,7 +923,7 @@ class FinanceRepository(
                     "Payment already processed"
                 }
 
-                val paidAtNow = System.currentTimeMillis()
+                val paidStamp = System.currentTimeMillis()
                 for (upd in plan.updates) {
                     val invRef = db.collection("invoices").document(upd.invoiceId)
                     val invUpdates = mutableMapOf<String, Any>(
@@ -852,7 +933,7 @@ class FinanceRepository(
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
                     if (upd.newStatus == InvoiceStatus.PAID) {
-                        invUpdates["paidAtEpochMs"] = paidAtNow
+                        invUpdates["paidAtEpochMs"] = paidStamp
                     }
                     tx.update(invRef, invUpdates)
                 }
@@ -880,6 +961,7 @@ class FinanceRepository(
                     payUpdates["verificationNotes"] = verificationNotes.trim().take(400)
                 }
                 tx.update(paymentRef, payUpdates)
+                paidStamp
             }.await()
 
             db.collection("notifications").document().set(
@@ -906,6 +988,28 @@ class FinanceRepository(
                     details = "Verified ${payment.referenceCode} (${CurrencyUtils.formatKes(payment.amountCents, true)}) -> $receiptNum"
                 ).toCreateMap()
             ).await()
+
+            val settledPayment = payment.copy(
+                receiptNumber = receiptNum,
+                status = PaymentStatus.VERIFIED.name
+            )
+            for (upd in plan.updates) {
+                if (upd.newStatus == InvoiceStatus.PAID) {
+                    val baseInvoice = leaseInvoices.firstOrNull { it.id == upd.invoiceId } ?: continue
+                    triggerReceiptGenerationForPaidInvoice(
+                        invoice = baseInvoice.copy(
+                            paidCents = upd.newPaidCents,
+                            outstandingCents = 0L,
+                            status = InvoiceStatus.PAID.name,
+                            paidAtEpochMs = paidAtNow
+                        ),
+                        payment = settledPayment,
+                        receiptNumberOverride = receiptNum,
+                        actorName = actorName,
+                        nowMs = paidAtNow
+                    )
+                }
+            }
 
             Result.success(receiptNum)
         } catch (e: CancellationException) {
@@ -1041,6 +1145,12 @@ class FinanceRepository(
                     )
                 )
             }.await()
+
+            for ((inv, _, newOut) in invoiceRollbacks) {
+                if (newOut > 0L) {
+                    triggerVoidReceiptIfExists(inv.id, reason)
+                }
+            }
 
             db.collection("notifications").document().set(
                 AppNotification(
@@ -1323,7 +1433,7 @@ class FinanceRepository(
             val invRef = db.collection("invoices").document(invoice.id)
             val leaseRef = db.collection("leases").document(invoice.leaseId)
 
-            val waivedAmount = db.runTransaction { tx ->
+            val waiver = db.runTransaction { tx ->
                 val snap = tx.get(invRef)
                 val freshWaived = snap.getBoolean("lateFeeWaived") == true
                 val freshFee = snap.getLong("lateFeeCents") ?: 0L
@@ -1334,7 +1444,7 @@ class FinanceRepository(
                 val freshPaid = snap.getLong("paidCents") ?: invoice.paidCents
                 val freshDueMs = snap.getLong("dueDateEpochMs") ?: invoice.dueDateEpochMs
 
-                val waiver = LeaseAutomationEngine.computeLateFeeWaiver(
+                val computedWaiver = LeaseAutomationEngine.computeLateFeeWaiver(
                     invoice = invoice.copy(
                         lateFeeCents = freshFee,
                         totalDueCents = freshTotal,
@@ -1344,10 +1454,10 @@ class FinanceRepository(
                     nowMs = nowMs
                 )
 
-                if (waiver.creditRefundCents > 0L) {
+                if (computedWaiver.creditRefundCents > 0L) {
                     val leaseSnap = tx.get(leaseRef)
                     val currentCredit = leaseSnap.getLong("creditBalanceCents") ?: 0L
-                    val updatedCredit = (currentCredit + waiver.creditRefundCents).coerceAtMost(1_000_000_000L)
+                    val updatedCredit = (currentCredit + computedWaiver.creditRefundCents).coerceAtMost(1_000_000_000L)
                     tx.update(
                         leaseRef,
                         mapOf(
@@ -1357,23 +1467,25 @@ class FinanceRepository(
                     )
                 }
 
-                tx.update(
-                    invRef,
-                    mapOf(
-                        "lateFeeCents" to 0L,
-                        "lateFeeWaived" to true,
-                        "lateFeeWaivedReason" to cleanReason,
-                        "lateFeeWaivedAtEpochMs" to nowMs,
-                        "totalDueCents" to waiver.newTotalDueCents,
-                        "paidCents" to waiver.newPaidCents,
-                        "outstandingCents" to waiver.newOutstandingCents,
-                        "status" to waiver.newStatus.name,
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
+                val invUpdates = mutableMapOf<String, Any>(
+                    "lateFeeCents" to 0L,
+                    "lateFeeWaived" to true,
+                    "lateFeeWaivedReason" to cleanReason,
+                    "lateFeeWaivedAtEpochMs" to nowMs,
+                    "totalDueCents" to computedWaiver.newTotalDueCents,
+                    "paidCents" to computedWaiver.newPaidCents,
+                    "outstandingCents" to computedWaiver.newOutstandingCents,
+                    "status" to computedWaiver.newStatus.name,
+                    "updatedAt" to FieldValue.serverTimestamp()
                 )
-                waiver.waivedFeeCents
+                if (computedWaiver.newStatus == InvoiceStatus.PAID) {
+                    invUpdates["paidAtEpochMs"] = invoice.paidAtEpochMs ?: nowMs
+                }
+                tx.update(invRef, invUpdates)
+                computedWaiver
             }.await()
 
+            val waivedAmount = waiver.waivedFeeCents
             db.collection("notifications").document().set(
                 AppNotification(
                     recipientUid = invoice.tenantUid,
@@ -1398,6 +1510,25 @@ class FinanceRepository(
                     details = "Waived ${CurrencyUtils.formatKes(waivedAmount, true)} late fee on ${invoice.invoiceNumber}: $cleanReason"
                 ).toCreateMap()
             ).await()
+
+            if (waiver.newStatus == InvoiceStatus.PAID) {
+                val paidStamp = invoice.paidAtEpochMs ?: nowMs
+                triggerReceiptGenerationForPaidInvoice(
+                    invoice = invoice.copy(
+                        lateFeeCents = 0L,
+                        lateFeeWaived = true,
+                        lateFeeWaivedReason = cleanReason,
+                        lateFeeWaivedAtEpochMs = nowMs,
+                        totalDueCents = waiver.newTotalDueCents,
+                        paidCents = waiver.newPaidCents,
+                        outstandingCents = 0L,
+                        status = InvoiceStatus.PAID.name,
+                        paidAtEpochMs = paidStamp
+                    ),
+                    actorName = actorName,
+                    nowMs = paidStamp
+                )
+            }
 
             Result.success(Unit)
         } catch (e: CancellationException) {

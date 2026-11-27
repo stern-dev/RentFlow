@@ -969,7 +969,8 @@ private fun StartConversationDialog(
 fun PushNotificationPermissionCard(
     modifier: Modifier = Modifier,
     maintenanceAlertsEnabled: Boolean = true,
-    rentAlertsEnabled: Boolean = true
+    rentAlertsEnabled: Boolean = true,
+    rentReminderScheduleSummary: String? = null
 ) {
     val context = LocalContext.current
     var hasPermission by remember { mutableStateOf(NotificationHelper.hasNotificationPermission(context)) }
@@ -1032,6 +1033,18 @@ fun PushNotificationPermissionCard(
                         !anyAlertsEnabled -> PillTone.NEUTRAL
                         else -> PillTone.SUCCESS
                     }
+                )
+            }
+            if (!rentReminderScheduleSummary.isNullOrBlank()) {
+                Text(
+                    text = rentReminderScheduleSummary,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (hasPermission && rentAlertsEnabled) {
+                        MaterialTheme.colorScheme.secondary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.testTag("rent_reminder_schedule_summary")
                 )
             }
             if (!hasPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -1138,7 +1151,8 @@ fun ProfileSettingsScreen(
     mpesaListenerEnabled: Boolean = false,
     onToggleMpesaAutoCapture: ((Boolean) -> Unit)? = null,
     onOpenMpesaListenerSettings: () -> Unit = {},
-    onOpenMpesaReconcile: (() -> Unit)? = null
+    onOpenMpesaReconcile: (() -> Unit)? = null,
+    rentReminderScheduleSummary: String? = null
 ) {
     val context = LocalContext.current
     val busy by authViewModel.busy.collectAsStateWithLifecycle()
@@ -1383,7 +1397,8 @@ fun ProfileSettingsScreen(
         item {
             PushNotificationPermissionCard(
                 maintenanceAlertsEnabled = notifyMaint,
-                rentAlertsEnabled = notifyRent
+                rentAlertsEnabled = notifyRent,
+                rentReminderScheduleSummary = rentReminderScheduleSummary
             )
         }
 
@@ -1403,8 +1418,19 @@ fun ProfileSettingsScreen(
                     OutlinedTextField(value = emergencyPhone, onValueChange = { emergencyPhone = it }, label = { Text("Emergency Contact Phone") }, singleLine = true, modifier = Modifier.fillMaxWidth())
 
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                        Text("Rent Due & Payment Alerts", style = MaterialTheme.typography.bodyMedium)
-                        Switch(checked = notifyRent, onCheckedChange = { notifyRent = it })
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text("Rent Due & Payment Alerts", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Automated alerts 3 days before rent is due, on due day, and when overdue",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = notifyRent,
+                            onCheckedChange = { notifyRent = it },
+                            modifier = Modifier.testTag("switch_notify_rent_due")
+                        )
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {

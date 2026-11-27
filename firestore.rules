@@ -2349,11 +2349,11 @@ service cloud.firestore {
 
     match /recurring_invoices/{scheduleId} {
       allow get: if isSignedIn() && isValidId(scheduleId) && (
-        canReadTenantOrOrgRecord(resource.data, resource.data.tenantUid) ||
+        canReadOrgScopedRecord(resource.data) ||
         isAdmin()
       );
       allow list: if isSignedIn() && (
-        (isVerifiedEmail() && (resource.data.tenantUid == request.auth.uid || request.auth.uid in resource.data.authorizedUids)) ||
+        (isVerifiedEmail() && request.auth.uid in resource.data.authorizedUids) ||
         isAdmin()
       );
       allow create: if canCreateRecurringInvoice(scheduleId);
@@ -2369,7 +2369,11 @@ service cloud.firestore {
         isAdmin()
       );
       allow list: if isSignedIn() && (
-        (isVerifiedEmail() && (resource.data.tenantUid == request.auth.uid || request.auth.uid in resource.data.authorizedUids)) ||
+        (isVerifiedEmail() && (
+          (resource.data.tenantUid == request.auth.uid &&
+           resource.data.status in ['ISSUED', 'UNPAID', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED']) ||
+          request.auth.uid in resource.data.authorizedUids
+        )) ||
         isAdmin()
       );
       allow create: if canCreateInvoice(invoiceId);

@@ -99,6 +99,11 @@ enum class InvoiceStatus(val label: String) {
     CANCELLED("Cancelled")
 }
 
+enum class PaymentReceiptStatus(val label: String) {
+    ISSUED("Issued"),
+    VOIDED("Voided")
+}
+
 enum class RecurringScheduleStatus(val label: String) {
     ACTIVE("Active"),
     PAUSED("Paused"),
@@ -846,6 +851,88 @@ data class Invoice(
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     ).filterValues { it != null } as Map<String, Any>
+}
+
+@Keep
+@IgnoreExtraProperties
+data class PaymentReceiptPdf(
+    @DocumentId val id: String = "",
+    val receiptNumber: String = "",
+    val invoiceId: String = "",
+    val invoiceNumber: String = "",
+    val leaseId: String = "",
+    val orgId: String = "",
+    val propertyId: String = "",
+    val propertyName: String = "",
+    val unitId: String = "",
+    val unitNumber: String = "",
+    val ownerUid: String = "",
+    val managerUids: List<String> = emptyList(),
+    val authorizedUids: List<String> = emptyList(),
+    val tenantUid: String = "",
+    val tenantName: String = "",
+    val billingPeriod: String = "",
+    val paymentId: String? = null,
+    val paymentReferenceCode: String? = null,
+    val paymentMethod: String? = null,
+    val totalPaidCents: Long = 0L,
+    val totalDueCents: Long = 0L,
+    val paidAtEpochMs: Long = 0L,
+    val generatedAtEpochMs: Long = 0L,
+    val generatedByUid: String = "",
+    val generatedByName: String = "",
+    val fileName: String = "",
+    val mimeType: String = "application/pdf",
+    val fileSizeBytes: Long = 0L,
+    val pdfDataUri: String = "",
+    val status: String = PaymentReceiptStatus.ISSUED.name,
+    val voidReason: String? = null,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    fun statusEnum(): PaymentReceiptStatus = safeEnum(status, PaymentReceiptStatus.ISSUED)
+
+    @Suppress("UNCHECKED_CAST")
+    fun toCreateMap(): Map<String, Any> = mapOf(
+        "receiptNumber" to receiptNumber.trim().take(50),
+        "invoiceId" to invoiceId.trim().take(128),
+        "invoiceNumber" to invoiceNumber.trim().take(50),
+        "leaseId" to leaseId.trim().take(128),
+        "orgId" to orgId.trim().take(128),
+        "propertyId" to propertyId.trim().take(128),
+        "propertyName" to propertyName.trim().take(120),
+        "unitId" to unitId.trim().take(128),
+        "unitNumber" to unitNumber.trim().take(40),
+        "ownerUid" to ownerUid.trim().take(128),
+        "managerUids" to managerUids.distinct().take(15),
+        "authorizedUids" to (authorizedUids + ownerUid).map { it.trim() }.filter { it.isNotBlank() }.distinct().take(20),
+        "tenantUid" to tenantUid.trim().take(128),
+        "tenantName" to tenantName.trim().take(100),
+        "billingPeriod" to billingPeriod.trim(),
+        "paymentId" to paymentId?.trim()?.take(128)?.takeIf { it.isNotBlank() },
+        "paymentReferenceCode" to paymentReferenceCode?.trim()?.uppercase()?.take(60)?.takeIf { it.isNotBlank() },
+        "paymentMethod" to paymentMethod?.trim()?.take(40)?.takeIf { it.isNotBlank() },
+        "totalPaidCents" to totalPaidCents.coerceAtLeast(0L),
+        "totalDueCents" to totalDueCents.coerceAtLeast(0L),
+        "paidAtEpochMs" to paidAtEpochMs.coerceAtLeast(1L),
+        "generatedAtEpochMs" to generatedAtEpochMs.coerceAtLeast(1L),
+        "generatedByUid" to generatedByUid.trim().take(128),
+        "generatedByName" to generatedByName.trim().ifBlank { "RentFlow Management" }.take(100),
+        "fileName" to fileName.trim().take(140),
+        "mimeType" to "application/pdf",
+        "fileSizeBytes" to fileSizeBytes.coerceAtLeast(1L),
+        "pdfDataUri" to pdfDataUri.trim(),
+        "status" to statusEnum().name,
+        "voidReason" to voidReason?.trim()?.take(300)?.takeIf { it.isNotBlank() },
+        "createdAt" to FieldValue.serverTimestamp(),
+        "updatedAt" to FieldValue.serverTimestamp()
+    ).filterValues { it != null } as Map<String, Any>
+
+    companion object {
+        const val PDF_DATA_URI_PREFIX = "data:application/pdf;base64,"
+        const val MAX_PDF_DATA_URI_CHARS = 400_000
+        const val MAX_PDF_FILE_BYTES = 290_000L
+    }
 }
 
 /**

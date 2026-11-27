@@ -291,4 +291,124 @@ class FinancialEngineTest {
         val novPoint = trends.points.last()
         assertEquals(com.example.domain.finance.TenantMonthTrendStatus.DUE, novPoint.status)
     }
+
+    @Test
+    fun `computeTenantPaymentHistory classifies Paid Late Partial and aggregates annual KES totals`() {
+        val nairobiTz = java.util.TimeZone.getTimeZone("Africa/Nairobi")
+        fun dateMs(year: Int, month: Int, day: Int): Long =
+            java.util.Calendar.getInstance(nairobiTz).apply {
+                set(year, month, day, 12, 0, 0)
+                set(java.util.Calendar.MILLISECOND, 0)
+            }.timeInMillis
+
+        val invoices = listOf(
+            // Paid on time in 2026
+            Invoice(
+                id = "inv_2026_03",
+                invoiceNumber = "INV-2026-03",
+                billingPeriod = "2026-03",
+                totalDueCents = 2_800_000L,
+                paidCents = 2_800_000L,
+                outstandingCents = 0L,
+                dueDateEpochMs = dateMs(2026, java.util.Calendar.MARCH, 5),
+                paidAtEpochMs = dateMs(2026, java.util.Calendar.MARCH, 3),
+                status = InvoiceStatus.PAID.name
+            ),
+            // Paid late (settled 4 days after due date) in 2026
+            Invoice(
+                id = "inv_2026_02",
+                invoiceNumber = "INV-2026-02",
+                billingPeriod = "2026-02",
+                totalDueCents = 2_950_000L,
+                paidCents = 2_950_000L,
+                outstandingCents = 0L,
+                lateFeeCents = 150_000L,
+                dueDateEpochMs = dateMs(2026, java.util.Calendar.FEBRUARY, 5),
+                paidAtEpochMs = dateMs(2026, java.util.Calendar.FEBRUARY, 9),
+                status = InvoiceStatus.PAID.name
+            ),
+            // Partially paid in 2026
+            Invoice(
+                id = "inv_2026_04",
+                invoiceNumber = "INV-2026-04",
+                billingPeriod = "2026-04",
+                totalDueCents = 2_800_000L,
+                paidCents = 1_400_000L,
+                outstandingCents = 1_400_000L,
+                dueDateEpochMs = dateMs(2026, java.util.Calendar.APRIL, 5),
+                paidAtEpochMs = null,
+                status = InvoiceStatus.PARTIALLY_PAID.name
+            ),
+            // Paid on time in 2025
+            Invoice(
+                id = "inv_2025_12",
+                invoiceNumber = "INV-2025-12",
+                billingPeriod = "2025-12",
+                totalDueCents = 2_500_000L,
+                paidCents = 2_500_000L,
+                outstandingCents = 0L,
+                dueDateEpochMs = dateMs(2025, java.util.Calendar.DECEMBER, 5),
+                paidAtEpochMs = dateMs(2025, java.util.Calendar.DECEMBER, 4),
+                status = InvoiceStatus.PAID.name
+            ),
+            // Unpaid (0 paid), Draft, and Cancelled must be excluded
+            Invoice(
+                id = "inv_unpaid",
+                invoiceNumber = "INV-2026-05",
+                billingPeriod = "2026-05",
+                totalDueCents = 2_800_000L,
+                paidCents = 0L,
+                outstandingCents = 2_800_000L,
+                status = InvoiceStatus.UNPAID.name
+            ),
+            Invoice(
+                id = "inv_draft",
+                invoiceNumber = "INV-DRAFT",
+                billingPeriod = "2026-06",
+                totalDueCents = 2_800_000L,
+                paidCents = 2_800_000L,
+                status = InvoiceStatus.DRAFT.name
+            ),
+            Invoice(
+                id = "inv_cancelled",
+                invoiceNumber = "INV-CANCEL",
+                billingPeriod = "2026-01",
+                totalDueCents = 2_800_000L,
+                paidCents = 2_800_000L,
+                status = InvoiceStatus.CANCELLED.name
+            )
+        )
+
+        val history = FinancialEngine.computeTenantPaymentHistory(
+            invoices = invoices,
+            nowMs = dateMs(2026, java.util.Calendar.APRIL, 10)
+        )
+
+        assertEquals(4, history.entries.size)
+        assertEquals(9_650_000L, history.overallTotalPaidCents)
+        assertEquals(2, history.overallPaidCount)
+        assertEquals(1, history.overallLateCount)
+        assertEquals(1, history.overallPartialCount)
+
+        val byId = history.entries.associateBy { it.invoice.id }
+        assertEquals(com.example.domain.finance.PaymentHistoryStatus.PAID, byId["inv_2026_03"]!!.status)
+        assertEquals(com.example.domain.finance.PaymentHistoryStatus.LATE, byId["inv_2026_02"]!!.status)
+        assertEquals(4, byId["inv_2026_02"]!!.daysLate)
+        assertEquals(com.example.domain.finance.PaymentHistoryStatus.PARTIAL, byId["inv_2026_04"]!!.status)
+        assertEquals(com.example.domain.finance.PaymentHistoryStatus.PAID, byId["inv_2025_12"]!!.status)
+
+        assertEquals(2, history.annualSummaries.size)
+        val summary2026 = history.annualSummaries[0]
+        assertEquals(2026, summary2026.year)
+        assertEquals(7_150_000L, summary2026.totalPaidCents)
+        assertEquals(3, summary2026.invoiceCount)
+        assertEquals(1, summary2026.paidOnTimeCount)
+        assertEquals(1, summary2026.lateCount)
+        assertEquals(1, summary2026.partialCount)
+
+        val summary2025 = history.annualSummaries[1]
+        assertEquals(2025, summary2025.year)
+        assertEquals(2_500_000L, summary2025.totalPaidCents)
+        assertEquals(1, summary2025.invoiceCount)
+    }
 }

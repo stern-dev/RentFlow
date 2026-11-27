@@ -10,9 +10,11 @@ import com.example.data.repository.FinanceRepository
 import com.example.data.repository.HandoverRepository
 import com.example.data.repository.MoveInChecklistRepository
 import com.example.data.repository.OperationsRepository
+import com.example.data.repository.PaymentReceiptRepository
 import com.example.data.repository.PropertyRepository
 import com.example.domain.finance.FinancialEngine
 import com.example.domain.finance.TenantAccountSummary
+import com.example.domain.finance.TenantPaymentHistorySummary
 import com.example.domain.finance.TenantPaymentTrendsSummary
 import com.example.domain.location.BuildingLocationResolver
 import com.example.domain.location.ResolvedBuildingLocation
@@ -32,6 +34,8 @@ import com.example.domain.model.MoveInConditionChecklist
 import com.example.domain.model.Payment
 import com.example.domain.model.PaymentChannelType
 import com.example.domain.model.PaymentMethod
+import com.example.domain.model.PaymentReceiptPdf
+import com.example.domain.model.PaymentReceiptStatus
 import com.example.domain.model.PaymentVerificationSource
 import com.example.domain.model.RentalUnit
 import com.example.domain.model.ScanFilterMode
@@ -58,7 +62,8 @@ class TenantViewModel(
     private val handoverRepo: HandoverRepository? = null,
     private val conditionChecklistRepo: MoveInChecklistRepository? = null,
     private val documentRepo: DocumentScannerRepository? = null,
-    private val aiRepo: AiAssistantRepository = AiAssistantRepository()
+    private val aiRepo: AiAssistantRepository = AiAssistantRepository(),
+    private val paymentReceiptRepo: PaymentReceiptRepository? = null
 ) : ViewModel() {
 
     val leases: StateFlow<UiState<List<Lease>>> = propertyRepo.observeMyLeases(currentUserId)
@@ -73,6 +78,19 @@ class TenantViewModel(
     val payments: StateFlow<UiState<List<Payment>>> = financeRepo.observeMyPayments(currentUserId)
         .asUiState("TenantVM", "Failed to load payments")
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
+
+    val paymentReceipts: StateFlow<UiState<List<PaymentReceiptPdf>>> =
+        (paymentReceiptRepo?.observeMyReceipts(currentUserId) ?: flowOf(emptyList()))
+            .asUiState("TenantVM", "Failed to load payment receipts")
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
+
+    val paymentReceiptsByInvoiceId: StateFlow<Map<String, PaymentReceiptPdf>> = paymentReceipts
+        .map { state ->
+            val list = (state as? UiState.Success)?.data ?: emptyList()
+            list.filter { it.statusEnum() == PaymentReceiptStatus.ISSUED }
+                .associateBy { it.invoiceId }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyMap())
 
     val maintenanceRequests: StateFlow<UiState<List<MaintenanceRequest>>> = opsRepo.observeMaintenanceForTenant(currentUserId)
         .asUiState("TenantVM", "Failed to load maintenance requests")
@@ -153,6 +171,18 @@ class TenantViewModel(
         val pays = (payState as? UiState.Success)?.data ?: emptyList()
         FinancialEngine.computeTenantPaymentTrends(invs, pays)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), TenantPaymentTrendsSummary())
+
+    val paymentHistory: StateFlow<UiState<TenantPaymentHistorySummary>> = invoices
+        .map { invState ->
+            when (invState) {
+                is UiState.Loading -> UiState.Loading
+                is UiState.Error -> UiState.Error(invState.message)
+                is UiState.Success -> UiState.Success(
+                    FinancialEngine.computeTenantPaymentHistory(invState.data)
+                )
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()

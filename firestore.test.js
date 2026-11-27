@@ -4,6 +4,7 @@ const {
   assertSucceeds,
 } = require("@firebase/rules-unit-testing");
 const { test, before, after, beforeEach } = require("node:test");
+const assert = require("node:assert/strict");
 const fs = require("node:fs");
 
 let testEnv;
@@ -4543,9 +4544,13 @@ test("RecurringInvoiceSchedule RBAC, lease-only grace period invariant, and DRAF
     landlordDb.collection("recurring_invoices").doc("lease_rec_1").set(validSchedulePayload)
   );
 
-  // 4. Tenant can read own schedule, cannot modify; unrelated tenant cannot read or list
-  await assertSucceeds(tenantDb.collection("recurring_invoices").doc("lease_rec_1").get());
+  // 4. Assigned manager can read; tenants and unrelated users CANNOT get or list recurring_invoices
+  await assertSucceeds(managerDb.collection("recurring_invoices").doc("lease_rec_1").get());
   await assertSucceeds(
+    managerDb.collection("recurring_invoices").where("authorizedUids", "array-contains", MANAGER_UID).get()
+  );
+  await assertFails(tenantDb.collection("recurring_invoices").doc("lease_rec_1").get());
+  await assertFails(
     tenantDb.collection("recurring_invoices").where("tenantUid", "==", TENANT_UID).get()
   );
   await assertFails(
@@ -4632,11 +4637,25 @@ test("RecurringInvoiceSchedule RBAC, lease-only grace period invariant, and DRAF
     managerDb.collection("invoices").doc("lease_rec_1_2026-11").set(baseDraftInvoice)
   );
 
-  // Landlord/Manager can read DRAFT; Tenant get() on DRAFT is DENIED
+  // Landlord/Manager can read DRAFT (get + list); Tenant get() AND unfiltered list() on DRAFT are DENIED
   await assertSucceeds(managerDb.collection("invoices").doc("lease_rec_1_2026-11").get());
+  await assertSucceeds(
+    managerDb.collection("invoices").where("authorizedUids", "array-contains", MANAGER_UID).get()
+  );
   await assertFails(tenantDb.collection("invoices").doc("lease_rec_1_2026-11").get());
+  await assertFails(
+    tenantDb.collection("invoices").where("tenantUid", "==", TENANT_UID).get()
+  );
+  const nonDraftListBeforeIssue = await assertSucceeds(
+    tenantDb
+      .collection("invoices")
+      .where("tenantUid", "==", TENANT_UID)
+      .where("status", "in", ["ISSUED", "UNPAID", "PARTIALLY_PAID", "PAID", "OVERDUE", "CANCELLED"])
+      .get()
+  );
+  assert.equal(nonDraftListBeforeIssue.docs.length, 0);
 
-  // 8. Promote DRAFT -> ISSUED: tenant get() NOW SUCCEEDS, and reverting ISSUED -> DRAFT is DENIED
+  // 8. Promote DRAFT -> ISSUED: tenant get() and status-filtered list() NOW SUCCEED, and reverting ISSUED -> DRAFT is DENIED
   await assertSucceeds(
     managerDb.collection("invoices").doc("lease_rec_1_2026-11").update({
       status: "ISSUED",
@@ -4648,6 +4667,15 @@ test("RecurringInvoiceSchedule RBAC, lease-only grace period invariant, and DRAF
     })
   );
   await assertSucceeds(tenantDb.collection("invoices").doc("lease_rec_1_2026-11").get());
+  const nonDraftListAfterIssue = await assertSucceeds(
+    tenantDb
+      .collection("invoices")
+      .where("tenantUid", "==", TENANT_UID)
+      .where("status", "in", ["ISSUED", "UNPAID", "PARTIALLY_PAID", "PAID", "OVERDUE", "CANCELLED"])
+      .get()
+  );
+  assert.equal(nonDraftListAfterIssue.docs.length, 1);
+  assert.equal(nonDraftListAfterIssue.docs[0].id, "lease_rec_1_2026-11");
   await assertFails(
     landlordDb.collection("invoices").doc("lease_rec_1_2026-11").update({
       status: "DRAFT",

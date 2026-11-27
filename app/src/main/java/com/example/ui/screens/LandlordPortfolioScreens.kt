@@ -90,6 +90,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.data.ai.AiTaskState
 import com.example.domain.finance.CurrencyUtils
+import com.example.domain.finance.PaymentFormattingUtils
 import com.example.domain.finance.ReportExporter
 import com.example.domain.location.BuildingLocationResolver
 import com.example.domain.model.ApplicationStatus
@@ -143,6 +144,7 @@ import com.example.ui.components.LoadingStateBox
 import com.example.ui.components.MoveInChecklistPdfViewerDialog
 import com.example.ui.components.MoveInConditionChecklistFullScreenDialog
 import com.example.ui.components.MoveOutNoticeReviewDialog
+import com.example.ui.components.PaymentInstructionCard
 import com.example.ui.components.PendingScanPayload
 import com.example.ui.components.PillTone
 import com.example.ui.components.SectionHeader
@@ -1145,9 +1147,15 @@ private fun PropertiesTab(
                                     }
                                     if (!prop.mpesaPaybill.isNullOrBlank() || !prop.mpesaTill.isNullOrBlank()) {
                                         val mpesaText = listOfNotNull(
-                                            prop.mpesaPaybill?.let { "M-Pesa Paybill: $it" },
-                                            prop.mpesaTill?.let { "Till: $it" },
-                                            prop.mpesaAccountPrefix?.let { "Prefix: $it" }
+                                            prop.mpesaPaybill?.takeIf { it.isNotBlank() }?.let {
+                                                "M-Pesa Paybill: ${PaymentFormattingUtils.formatPaybillNumber(it)}"
+                                            },
+                                            prop.mpesaTill?.takeIf { it.isNotBlank() }?.let {
+                                                "Till: ${PaymentFormattingUtils.formatTillNumber(it)}"
+                                            },
+                                            prop.mpesaAccountPrefix?.takeIf { it.isNotBlank() }?.let {
+                                                "Prefix: ${PaymentFormattingUtils.sanitizeAccountToken(it)}"
+                                            }
                                         ).joinToString(" • ")
                                         Text(
                                             text = mpesaText,
@@ -2638,6 +2646,23 @@ internal fun PropertyEditorDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("property_mpesa_prefix_input")
                 )
+                val hasValidPreviewShortcode = PaymentFormattingUtils.isValidMpesaShortcode(mpesaPaybill) ||
+                    PaymentFormattingUtils.isValidMpesaShortcode(mpesaTill)
+                if (hasValidPreviewShortcode) {
+                    PaymentInstructionCard(
+                        paybill = mpesaPaybill,
+                        till = mpesaTill,
+                        accountReference = PaymentFormattingUtils.formatAccountReference(
+                            prefix = mpesaAccountPrefix,
+                            unitNumber = "A101"
+                        ),
+                        amountCents = null,
+                        recipientName = name.trim().ifBlank { "Your Property" },
+                        title = "Tenant Payment Preview",
+                        isPreview = true,
+                        modifier = Modifier.testTag("landlord_mpesa_preview_card")
+                    )
+                }
                 OutlinedTextField(
                     value = desc,
                     onValueChange = { desc = it; fieldErrors = fieldErrors - "description" },

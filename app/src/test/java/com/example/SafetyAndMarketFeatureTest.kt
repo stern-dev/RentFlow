@@ -397,8 +397,9 @@ class SafetyAndMarketFeatureTest {
             }
         }
 
-        composeTestRule.onNodeWithTag("mpesa_instructions_card").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Paybill: 522522 • Account: KP-A101").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("mpesa_instructions_card").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText("522 522").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText("KP-A101").performScrollTo().assertIsDisplayed()
 
         composeTestRule.onNodeWithTag("mpesa_sms_paste_input").performScrollTo()
             .performTextInput("UBK7X92M10 Confirmed. Ksh28,500.00 sent to Kilimani Palms on 20/11/26.")

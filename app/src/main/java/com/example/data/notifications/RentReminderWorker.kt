@@ -13,6 +13,7 @@ import com.example.domain.finance.CurrencyUtils
 import com.example.domain.finance.RentReminderEngine
 import com.example.domain.finance.RentReminderUrgency
 import com.example.domain.model.Invoice
+import com.example.domain.model.InvoiceStatus
 import com.example.domain.model.UserProfile
 import com.example.domain.model.UserRole
 import com.google.firebase.FirebaseApp
@@ -43,10 +44,29 @@ class RentReminderWorker(
             if (role == UserRole.TENANT) {
                 val invSnap = db.collection("invoices")
                     .whereEqualTo("tenantUid", currentUser.uid)
+                    .whereIn(
+                        "status",
+                        listOf(
+                            InvoiceStatus.ISSUED.name,
+                            InvoiceStatus.UNPAID.name,
+                            InvoiceStatus.PARTIALLY_PAID.name,
+                            InvoiceStatus.OVERDUE.name
+                        )
+                    )
                     .get()
                     .await()
-                val invoices = invSnap.documents.mapNotNull { it.toObject(Invoice::class.java) }
+                val invoices = invSnap.documents.mapNotNull { doc ->
+                    doc.toObject(Invoice::class.java)?.copy(id = doc.id)
+                }
                 val candidates = RentReminderEngine.evaluateInvoices(invoices)
+                    .filter { candidate ->
+                        RentReminderDeliveryLedger.shouldSend(
+                            context = applicationContext,
+                            invoiceId = candidate.invoice.id,
+                            urgency = candidate.urgency,
+                            dueDateEpochMs = candidate.invoice.dueDateEpochMs
+                        )
+                    }
                 if (candidates.isNotEmpty()) {
                     val primary = candidates.first()
                     val title = if (candidates.size == 1) {
@@ -60,20 +80,33 @@ class RentReminderWorker(
                         val totalOutstanding = candidates.sumOf { it.invoice.outstandingCents }
                         "Total outstanding: ${CurrencyUtils.formatKes(totalOutstanding)}. ${primary.body}"
                     }
-                    NotificationHelper.showRentReminderNotification(
+                    val delivered = NotificationHelper.showRentReminderNotification(
                         context = applicationContext,
                         title = title,
                         body = body,
                         targetRoute = NotificationHelper.ROUTE_TENANT_PAY,
-                        dedupKey = "worker_tenant_${currentUser.uid}_${primary.invoice.id}"
+                        targetTab = NotificationHelper.TAB_TENANT_INVOICES,
+                        invoiceId = primary.invoice.id,
+                        unitId = primary.invoice.unitId.takeIf { it.isNotBlank() },
+                        dedupKey = "rent_reminder_${primary.invoice.id}_${primary.urgency.name}"
                     )
+                    if (delivered) {
+                        RentReminderDeliveryLedger.markSent(
+                            context = applicationContext,
+                            invoiceId = primary.invoice.id,
+                            urgency = primary.urgency,
+                            dueDateEpochMs = primary.invoice.dueDateEpochMs
+                        )
+                    }
                 }
             } else if (role == UserRole.LANDLORD || role == UserRole.PROPERTY_MANAGER) {
                 val invSnap = db.collection("invoices")
                     .whereArrayContains("authorizedUids", currentUser.uid)
                     .get()
                     .await()
-                val invoices = invSnap.documents.mapNotNull { it.toObject(Invoice::class.java) }
+                val invoices = invSnap.documents.mapNotNull { doc ->
+                    doc.toObject(Invoice::class.java)?.copy(id = doc.id)
+                }
                 val candidates = RentReminderEngine.evaluateInvoices(invoices)
                     .filter { it.urgency == RentReminderUrgency.OVERDUE || it.urgency == RentReminderUrgency.DUE_TODAY }
                 if (candidates.isNotEmpty()) {
@@ -108,6 +141,10 @@ class RentReminderWorker(
                 ExistingPeriodicWorkPolicy.KEEP,
                 request
             )
+        }
+
+        fun cancelDaily(context: Context) {
+            WorkManager.getInstance(context).cancelUniqueWork(UNIQUE_WORK_NAME)
         }
     }
 }

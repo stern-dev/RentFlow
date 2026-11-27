@@ -64,4 +64,9 @@
     <string name="move_out_notice_title">Move-Out Notice</string>
     <string name="move_out_notice_submit_button">Give Move-Out Notice</string>
     <string name="move_out_notice_review_title">Review Move-Out Notice</string>
+    <string name="payment_receipt_viewer_title">Official Payment Receipt</string>
+    <string name="payment_receipt_open_pdf">Open PDF App</string>
+    <string name="payment_receipt_view_pdf">PDF Receipt</string>
+    <string name="payment_receipt_generate_pdf">Generate PDF Receipt</string>
+    <string name="payment_receipt_stored_badge">Stored in Firestore</string>
 </resources>

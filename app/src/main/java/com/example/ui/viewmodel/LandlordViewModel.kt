@@ -12,6 +12,7 @@ import com.example.data.repository.FinanceRepository
 import com.example.data.repository.HandoverRepository
 import com.example.data.repository.MoveInChecklistRepository
 import com.example.data.repository.OperationsRepository
+import com.example.data.repository.PaymentReceiptRepository
 import com.example.data.repository.PropertyRepository
 import com.example.domain.model.ChecklistItem
 import com.example.domain.model.ChecklistOverviewBucket
@@ -40,12 +41,16 @@ import com.example.domain.model.EscalationType
 import com.example.domain.model.Expense
 import com.example.domain.model.ExpenseCategory
 import com.example.domain.model.Invoice
+import com.example.domain.model.InvoiceStatus
 import com.example.domain.model.Lease
 import com.example.domain.model.MaintenanceRequest
 import com.example.domain.model.MaintenanceStatus
 import com.example.domain.model.Payment
 import com.example.domain.model.PaymentChannelType
 import com.example.domain.model.PaymentMethod
+import com.example.domain.model.PaymentReceiptPdf
+import com.example.domain.model.PaymentReceiptStatus
+import com.example.domain.model.PaymentStatus
 import com.example.domain.model.Property
 import com.example.domain.model.PropertyCategory
 import com.example.domain.model.RecurringInvoiceSchedule
@@ -66,6 +71,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -97,7 +103,8 @@ class LandlordViewModel(
     private val aiRepo: AiAssistantRepository = AiAssistantRepository(),
     private val handoverRepo: HandoverRepository? = null,
     private val conditionChecklistRepo: MoveInChecklistRepository? = null,
-    private val documentRepo: DocumentScannerRepository? = null
+    private val documentRepo: DocumentScannerRepository? = null,
+    private val paymentReceiptRepo: PaymentReceiptRepository? = null
 ) : ViewModel() {
 
     private val _activeOrgId = MutableStateFlow<String?>(null)
@@ -193,6 +200,19 @@ class LandlordViewModel(
     val payments: StateFlow<UiState<List<Payment>>> = financeRepo.observePaymentsForLandlord(currentUserId)
         .asUiState("LandlordVM", "Failed to load payments")
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
+
+    val paymentReceipts: StateFlow<UiState<List<PaymentReceiptPdf>>> =
+        (paymentReceiptRepo?.observeReceiptsForLandlord(currentUserId) ?: flowOf(emptyList()))
+            .asUiState("LandlordVM", "Failed to load PDF payment receipts")
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
+
+    val paymentReceiptsByInvoiceId: StateFlow<Map<String, PaymentReceiptPdf>> = paymentReceipts
+        .map { state ->
+            val list = (state as? UiState.Success)?.data ?: emptyList()
+            list.filter { it.statusEnum() == PaymentReceiptStatus.ISSUED }
+                .associateBy { it.invoiceId }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyMap())
 
     val expenses: StateFlow<UiState<List<Expense>>> = financeRepo.observeExpensesForLandlord(currentUserId)
         .asUiState("LandlordVM", "Failed to load expenses")
@@ -1222,6 +1242,89 @@ class LandlordViewModel(
                     _feedback.value = it.localizedMessage ?: "Failed to waive late fee"
                 }
             )
+        }
+    }
+
+    private val attemptedReceiptBackfillIds = mutableSetOf<String>()
+
+    fun backfillMissingPaidReceipts(actorName: String) {
+        val repo = paymentReceiptRepo ?: return
+        val invList = (invoices.value as? UiState.Success)?.data ?: return
+        val payList = (payments.value as? UiState.Success)?.data ?: emptyList()
+        val receiptsState = paymentReceipts.value
+        if (receiptsState !is UiState.Success) return
+        val issuedByInvoice = receiptsState.data
+            .filter { it.statusEnum() == PaymentReceiptStatus.ISSUED }
+            .associateBy { it.invoiceId }
+        val missingPaid = invList.filter { inv ->
+            inv.statusEnum() == InvoiceStatus.PAID &&
+                inv.id.isNotBlank() &&
+                inv.id !in issuedByInvoice &&
+                inv.id !in attemptedReceiptBackfillIds &&
+                currentUserId in inv.authorizedUids
+        }
+        if (missingPaid.isEmpty()) return
+        missingPaid.forEach { attemptedReceiptBackfillIds.add(it.id) }
+        viewModelScope.launch {
+            for (inv in missingPaid.take(10)) {
+                val matchedPayment = findPaymentForInvoice(inv, payList)
+                repo.generateAndStoreReceiptForPaidInvoice(
+                    invoice = inv,
+                    payment = matchedPayment,
+                    receiptNumberOverride = matchedPayment?.receiptNumber,
+                    actorName = actorName,
+                    nowMs = inv.paidAtEpochMs ?: System.currentTimeMillis()
+                )
+            }
+        }
+    }
+
+    fun ensurePdfReceiptForPaidInvoice(
+        invoice: Invoice,
+        actorName: String,
+        onReady: (PaymentReceiptPdf) -> Unit = {}
+    ) {
+        val repo = paymentReceiptRepo ?: run {
+            _feedback.value = "PDF receipt service unavailable"
+            return
+        }
+        val existing = paymentReceiptsByInvoiceId.value[invoice.id]
+        if (existing != null) {
+            onReady(existing)
+            return
+        }
+        val payList = (payments.value as? UiState.Success)?.data ?: emptyList()
+        val matchedPayment = findPaymentForInvoice(invoice, payList)
+        viewModelScope.launch {
+            _busy.value = true
+            val res = repo.generateAndStoreReceiptForPaidInvoice(
+                invoice = invoice,
+                payment = matchedPayment,
+                receiptNumberOverride = matchedPayment?.receiptNumber,
+                actorName = actorName,
+                nowMs = invoice.paidAtEpochMs ?: System.currentTimeMillis()
+            )
+            _busy.value = false
+            res.fold(
+                onSuccess = { receipt ->
+                    _feedback.value = "PDF receipt ${receipt.receiptNumber} saved to Firestore"
+                    onReady(receipt)
+                },
+                onFailure = {
+                    _feedback.value = it.localizedMessage ?: "Failed to generate PDF receipt"
+                }
+            )
+        }
+    }
+
+    private fun findPaymentForInvoice(invoice: Invoice, payList: List<Payment>): Payment? {
+        return payList.firstOrNull { pay ->
+            pay.statusEnum() == PaymentStatus.VERIFIED &&
+                (pay.invoiceId == invoice.id ||
+                    (pay.leaseId == invoice.leaseId &&
+                        pay.allocationsSummary?.contains(invoice.invoiceNumber, ignoreCase = true) == true))
+        } ?: payList.firstOrNull { pay ->
+            pay.statusEnum() == PaymentStatus.VERIFIED && pay.leaseId == invoice.leaseId
         }
     }
 

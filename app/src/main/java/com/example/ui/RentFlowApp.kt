@@ -87,6 +87,8 @@ import androidx.compose.material3.Surface
 import com.example.data.notifications.FcmTokenRepository
 import com.example.data.notifications.NotificationHelper
 import com.example.data.notifications.PushDeepLink
+import com.example.data.notifications.RentReminderScheduler
+import com.example.data.notifications.RentReminderWorker
 import com.example.data.repository.DocumentScannerRepository
 import com.example.data.repository.FinanceRepository
 import com.example.data.repository.HandoverRepository
@@ -95,14 +97,17 @@ import com.example.data.repository.MpesaCapturePreferencesRepository
 import com.example.data.repository.MpesaReceiptRepository
 import com.example.data.repository.OperationsRepository
 import com.example.data.repository.PaymentMethodRepository
+import com.example.data.repository.PaymentReceiptRepository
 import com.example.data.repository.PropertyRepository
 import com.example.data.repository.SecurityPreferences
 import com.example.data.repository.ThemeMode
 import com.example.data.repository.UserOrgRepository
 import com.example.data.repository.UserRepository
 import com.example.data.security.BiometricAvailability
+import com.example.domain.finance.CurrencyUtils
 import com.example.domain.finance.MpesaReceiptMatcher
 import com.example.domain.finance.MpesaSmsParser
+import com.example.domain.finance.RentReminderEngine
 import com.example.domain.model.InviteStatus
 import com.example.domain.model.MpesaCaptureSource
 import com.example.domain.model.MpesaReceipt
@@ -272,6 +277,7 @@ fun RentFlowApp(
                 onToggleBiometricLock = onToggleBiometricLock,
                 onSessionTimeoutChange = onSessionTimeoutChange,
                 onSignOut = {
+                    RentReminderScheduler.cancelAllTenantScheduledReminders(context.applicationContext)
                     onClearAppLockOnSignOut()
                     sessionAuthViewModel.signOut(context)
                 }
@@ -311,6 +317,7 @@ private fun AuthenticatedRentFlowShell(
     val mpesaReceiptRepo = remember(context) { MpesaReceiptRepository(context) }
     val mpesaPrefsRepo = remember(context) { MpesaCapturePreferencesRepository(context) }
     val documentRepo = remember(context) { DocumentScannerRepository(context) }
+    val paymentReceiptRepo = remember(context) { PaymentReceiptRepository(context) }
 
     val authViewModel: AuthViewModel = viewModel(
         key = "auth_$uid",
@@ -382,6 +389,7 @@ private fun AuthenticatedRentFlowShell(
                         mpesaReceiptRepo = mpesaReceiptRepo,
                         mpesaPrefsRepo = mpesaPrefsRepo,
                         documentRepo = documentRepo,
+                        paymentReceiptRepo = paymentReceiptRepo,
                         currentTheme = currentTheme,
                         onThemeChange = onThemeChange,
                         pendingPushDeepLink = pendingPushDeepLink,
@@ -425,6 +433,7 @@ private fun RoleRoutedWorkspace(
     mpesaReceiptRepo: MpesaReceiptRepository,
     mpesaPrefsRepo: MpesaCapturePreferencesRepository,
     documentRepo: DocumentScannerRepository,
+    paymentReceiptRepo: PaymentReceiptRepository,
     currentTheme: ThemeMode,
     onThemeChange: (ThemeMode) -> Unit,
     pendingPushDeepLink: PushDeepLink?,
@@ -456,7 +465,8 @@ private fun RoleRoutedWorkspace(
                     uid,
                     handoverRepo = handoverRepo,
                     conditionChecklistRepo = conditionChecklistRepo,
-                    documentRepo = documentRepo
+                    documentRepo = documentRepo,
+                    paymentReceiptRepo = paymentReceiptRepo
                 ) as T
         }
     )
@@ -486,7 +496,8 @@ private fun RoleRoutedWorkspace(
                     uid,
                     handoverRepo = handoverRepo,
                     conditionChecklistRepo = conditionChecklistRepo,
-                    documentRepo = documentRepo
+                    documentRepo = documentRepo,
+                    paymentReceiptRepo = paymentReceiptRepo
                 ) as T
         }
     )
@@ -587,6 +598,50 @@ private fun RoleRoutedWorkspace(
 
     LaunchedEffect(uid, profile.notifyMaintenance, profile.notifyRentDue, profile.activeRole) {
         fcmTokenRepo.syncCurrentToken(profile)
+    }
+
+    val tenantInvoicesState by tenantVm.invoices.collectAsStateWithLifecycle()
+    val tenantInvoicesList = (tenantInvoicesState as? UiState.Success)?.data ?: emptyList()
+    val tenantSchedulePlans = remember(activeRole, profile.notifyRentDue, tenantInvoicesList) {
+        if (activeRole == UserRole.TENANT && profile.notifyRentDue) {
+            RentReminderEngine.buildSchedulePlans(tenantInvoicesList)
+        } else {
+            emptyList()
+        }
+    }
+    val nextTenantReminderSummary = remember(tenantSchedulePlans, profile.notifyRentDue, activeRole) {
+        if (activeRole != UserRole.TENANT) {
+            null
+        } else if (!profile.notifyRentDue) {
+            "Paused • Enable Rent Due Alerts to receive 3-day, due-day, and overdue reminders"
+        } else {
+            val nextPlan = RentReminderEngine.nextScheduledReminder(tenantSchedulePlans)
+            if (nextPlan != null) {
+                "Next ${nextPlan.stage.label.lowercase()} alert on ${CurrencyUtils.formatDate(nextPlan.triggerAtEpochMs)} (Unit ${nextPlan.unitNumber})"
+            } else {
+                "Armed • Automatically schedules alerts 3 days before rent is due, on due day, and if overdue"
+            }
+        }
+    }
+
+    LaunchedEffect(uid, activeRole, profile.notifyRentDue, tenantInvoicesState) {
+        if (activeRole == UserRole.TENANT && profile.notifyRentDue) {
+            if (tenantInvoicesState is UiState.Success) {
+                RentReminderScheduler.syncTenantSchedule(
+                    context = context.applicationContext,
+                    userId = uid,
+                    notifyRentDue = true,
+                    invoices = tenantInvoicesList
+                )
+            } else {
+                RentReminderWorker.scheduleDaily(context.applicationContext)
+            }
+        } else {
+            RentReminderScheduler.cancelAllTenantScheduledReminders(context.applicationContext)
+            if (!profile.notifyRentDue) {
+                RentReminderWorker.cancelDaily(context.applicationContext)
+            }
+        }
     }
 
     LaunchedEffect(pendingPushDeepLink, activeRole) {
@@ -1322,6 +1377,14 @@ private fun RoleRoutedWorkspace(
                                     viewModel = tenantVm,
                                     currentUser = profile,
                                     onNavigatePayRent = { currentRoute = "tenant_pay" },
+                                    onNavigatePayInvoice = { invoiceId ->
+                                        activeTenantPayDeepLink = PushDeepLink(
+                                            targetRoute = NotificationHelper.ROUTE_TENANT_PAY,
+                                            targetTab = NotificationHelper.TAB_TENANT_INVOICES,
+                                            invoiceId = invoiceId
+                                        )
+                                        currentRoute = "tenant_pay"
+                                    },
                                     onNavigateMaintenance = { currentRoute = "tenant_repairs" },
                                     onNavigateDiscovery = { currentRoute = "discover" },
                                     deepLinkTarget = activeTenantHomeDeepLink,
@@ -1376,7 +1439,8 @@ private fun RoleRoutedWorkspace(
                                             onToggleMpesaAutoCapture = { mpesaReconcileVm.setAutoCaptureEnabled(it) },
                                             onOpenMpesaListenerSettings = {
                                                 MpesaCapturePreferencesRepository.openNotificationListenerSettings(context)
-                                            }
+                                            },
+                                            rentReminderScheduleSummary = nextTenantReminderSummary
                                         )
                                     } else {
                                         ConversationsScreen(opsViewModel = opsVm, currentUser = profile, knownLeases = knownLeases)

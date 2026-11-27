@@ -463,13 +463,18 @@ object NotificationHelper {
         title: String,
         body: String,
         targetRoute: String = ROUTE_TENANT_PAY,
+        targetTab: Int? = if (targetRoute == ROUTE_TENANT_PAY) TAB_TENANT_INVOICES else null,
+        invoiceId: String? = null,
+        unitId: String? = null,
         dedupKey: String? = null
     ): Boolean = showBillingPushNotification(
         context = context,
         title = title,
         body = body,
         targetRoute = targetRoute,
-        targetTab = if (targetRoute == ROUTE_TENANT_PAY) TAB_TENANT_INVOICES else null,
+        targetTab = targetTab,
+        invoiceId = invoiceId,
+        unitId = unitId,
         dedupKey = dedupKey
     )
 
