@@ -108,7 +108,8 @@ fun DocumentVaultDialog(
     onScanNewDocument: () -> Unit,
     onToggleTenantVisibility: (ScannedDocument, Boolean) -> Unit,
     onDeleteDocument: (ScannedDocument) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    preferPreviewSheet: Boolean = false
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var selectedType by remember { mutableStateOf<DocumentType?>(null) }
@@ -251,20 +252,32 @@ fun DocumentVaultDialog(
     }
 
     if (activeDoc != null) {
-        ScannedDocumentViewerDialog(
-            document = activeDoc,
-            canDelete = canDeleteDoc(activeDoc),
-            canToggleTenantVisibility = canToggleTenantVisibility,
-            isBusy = isBusy,
-            onToggleTenantVisibility = { visible ->
-                onToggleTenantVisibility(activeDoc, visible)
-            },
-            onDelete = {
-                onDeleteDocument(activeDoc)
-                activeDocId = null
-            },
-            onDismiss = { activeDocId = null }
-        )
+        if (preferPreviewSheet) {
+            TenantDocumentPreviewSheet(
+                document = TenantPreviewDocument.VaultDoc(activeDoc),
+                canDeleteVaultDoc = canDeleteDoc(activeDoc),
+                onDeleteVaultDocument = { doc ->
+                    onDeleteDocument(doc)
+                    activeDocId = null
+                },
+                onDismiss = { activeDocId = null }
+            )
+        } else {
+            ScannedDocumentViewerDialog(
+                document = activeDoc,
+                canDelete = canDeleteDoc(activeDoc),
+                canToggleTenantVisibility = canToggleTenantVisibility,
+                isBusy = isBusy,
+                onToggleTenantVisibility = { visible ->
+                    onToggleTenantVisibility(activeDoc, visible)
+                },
+                onDelete = {
+                    onDeleteDocument(activeDoc)
+                    activeDocId = null
+                },
+                onDismiss = { activeDocId = null }
+            )
+        }
     }
 }
 

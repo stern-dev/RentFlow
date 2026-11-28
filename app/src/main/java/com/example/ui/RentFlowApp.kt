@@ -66,6 +66,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -107,6 +108,7 @@ import com.example.data.security.BiometricAvailability
 import com.example.domain.finance.CurrencyUtils
 import com.example.domain.finance.MpesaReceiptMatcher
 import com.example.domain.finance.MpesaSmsParser
+import com.example.domain.finance.ParsedRentQrNotice
 import com.example.domain.finance.RentReminderEngine
 import com.example.domain.model.InviteStatus
 import com.example.domain.model.MpesaCaptureSource
@@ -120,6 +122,8 @@ import com.example.domain.security.PermissionPolicy
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.ErrorBannerCard
 import com.example.ui.components.LoadingStateBox
+import com.example.ui.components.QrCodeScannerModal
+import kotlinx.coroutines.launch
 import com.example.ui.screens.AdminPortalScreen
 import com.example.ui.screens.AuthScreen
 import com.example.ui.screens.ConversationsScreen
@@ -567,7 +571,9 @@ private fun RoleRoutedWorkspace(
     var showNotificationsOverlay by remember { mutableStateOf(false) }
     var showPaymentMethodsOverlay by remember { mutableStateOf(false) }
     var showMpesaReconcileOverlay by remember { mutableStateOf(false) }
+    var showTenantQrScanner by remember { mutableStateOf(false) }
     var prefilledTenantReceipt by remember { mutableStateOf<MpesaReceipt?>(null) }
+    var prefilledTenantQrNotice by remember { mutableStateOf<ParsedRentQrNotice?>(null) }
     var activeTenantPayDeepLink by remember { mutableStateOf<PushDeepLink?>(null) }
     var activeTenantHomeDeepLink by remember { mutableStateOf<PushDeepLink?>(null) }
     var activePortfolioDeepLink by remember { mutableStateOf<PushDeepLink?>(null) }
@@ -817,6 +823,7 @@ private fun RoleRoutedWorkspace(
 
     val unreadCount by opsVm.unreadNotificationCount.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    val appScope = rememberCoroutineScope()
 
     val authFb by authViewModel.feedback.collectAsStateWithLifecycle()
     val discFb by discoveryVm.feedback.collectAsStateWithLifecycle()
@@ -1388,7 +1395,8 @@ private fun RoleRoutedWorkspace(
                                     onNavigateMaintenance = { currentRoute = "tenant_repairs" },
                                     onNavigateDiscovery = { currentRoute = "discover" },
                                     deepLinkTarget = activeTenantHomeDeepLink,
-                                    onConsumeDeepLinkTarget = { activeTenantHomeDeepLink = null }
+                                    onConsumeDeepLinkTarget = { activeTenantHomeDeepLink = null },
+                                    onOpenQrScanner = { showTenantQrScanner = true }
                                 )
                                 "tenant_pay" -> TenantPaymentsScreen(
                                     viewModel = tenantVm,
@@ -1405,7 +1413,10 @@ private fun RoleRoutedWorkspace(
                                     },
                                     onDismissDetectedReceipt = { receipt ->
                                         mpesaReconcileVm.dismissReceipt(receipt)
-                                    }
+                                    },
+                                    onOpenQrScanner = { showTenantQrScanner = true },
+                                    initialQrNotice = prefilledTenantQrNotice,
+                                    onConsumeQrNotice = { prefilledTenantQrNotice = null }
                                 )
                                 "tenant_repairs" -> TenantMaintenanceScreen(viewModel = tenantVm, currentUser = profile)
                                 "discover" -> PropertyDiscoveryScreen(viewModel = discoveryVm, currentUser = profile, isPublicMode = false)
@@ -1538,6 +1549,29 @@ private fun RoleRoutedWorkspace(
                 }) { Text("Create") }
             },
             dismissButton = { TextButton(onClick = { showCreateOrgDialog = false }) { Text("Cancel") } }
+        )
+    }
+
+    if (showTenantQrScanner && activeRole == UserRole.TENANT) {
+        QrCodeScannerModal(
+            onDismiss = { showTenantQrScanner = false },
+            onQrParsed = { parsedNotice ->
+                showTenantQrScanner = false
+                showNotificationsOverlay = false
+                showPaymentMethodsOverlay = false
+                showMpesaReconcileOverlay = false
+                prefilledTenantReceipt = null
+                prefilledTenantQrNotice = parsedNotice
+                currentRoute = "tenant_pay"
+                if (tenantActiveLease == null && knownLeases.isEmpty()) {
+                    appScope.launch {
+                        val accSuffix = parsedNotice.accountReference?.let { " • Acc: $it" }.orEmpty()
+                        snackbarHostState.showSnackbar(
+                            "Scanned ${parsedNotice.channel.displayName} ${parsedNotice.formattedShortcode}$accSuffix. Link an active lease to submit rent payments."
+                        )
+                    }
+                }
+            }
         )
     }
 }

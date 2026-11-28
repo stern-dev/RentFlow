@@ -11,6 +11,7 @@ import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import android.util.Base64
 import androidx.core.content.FileProvider
+import com.example.domain.model.Announcement
 import com.example.domain.model.DigitalSignature
 import com.example.domain.model.Expense
 import com.example.domain.model.Invoice
@@ -214,20 +215,104 @@ object ReportExporter {
         )
     }
 
+    fun generateSignedLeaseAgreementPdfFile(
+        context: Context,
+        lease: Lease,
+        landlordFallbackSignature: DigitalSignature? = null,
+        tenantFallbackSignature: DigitalSignature? = null
+    ): File = generatePdfDocumentFile(
+        context = context,
+        fileName = "lease_${lease.unitNumber}.pdf",
+        title = "RentFlow Tenancy Agreement",
+        subtitle = "${lease.propertyName} • Unit ${lease.unitNumber}",
+        lines = buildSignedLeaseAgreementLines(lease, landlordFallbackSignature, tenantFallbackSignature),
+        signatureBlocks = buildSignedLeaseSignatureBlocks(lease, landlordFallbackSignature, tenantFallbackSignature)
+    )
+
+    internal fun buildPropertyNoticeLines(announcement: Announcement): List<String> {
+        val postedEpoch = announcement.createdAt?.toDate()?.time
+            ?: announcement.updatedAt?.toDate()?.time
+            ?: System.currentTimeMillis()
+        return buildList {
+            add("[H]PROPERTY NOTICE DETAILS")
+            add("Property: ${announcement.propertyName.ifBlank { "RentFlow Residence" }}")
+            add("Issued By: ${announcement.authorName.ifBlank { "Property Management" }}")
+            add("Posted On: ${CurrencyUtils.formatDateTime(postedEpoch)}")
+            add("---")
+            add("[H]${announcement.title.ifBlank { "Property Announcement" }}")
+            val bodyParagraphs = announcement.body.trim()
+                .ifBlank { "No additional notice details provided." }
+                .split('\n')
+            addAll(bodyParagraphs)
+        }
+    }
+
+    fun generatePropertyNoticePdfFile(
+        context: Context,
+        announcement: Announcement
+    ): File {
+        val postedEpoch = announcement.createdAt?.toDate()?.time
+            ?: announcement.updatedAt?.toDate()?.time
+            ?: System.currentTimeMillis()
+        val safeProp = announcement.propertyName
+            .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+            .ifBlank { "property" }
+        val safeId = announcement.id
+            .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+            .take(16)
+            .ifBlank { "notice" }
+        return generatePdfDocumentFile(
+            context = context,
+            fileName = "notice_${safeProp}_${safeId}.pdf",
+            title = "RentFlow Property Notice",
+            subtitle = "${announcement.propertyName.ifBlank { "Property Management" }} • ${CurrencyUtils.formatDate(postedEpoch)}",
+            lines = buildPropertyNoticeLines(announcement)
+        )
+    }
+
+    internal fun buildPaymentConfirmationLines(pay: Payment): List<String> = listOf(
+        "[H]PAYMENT CONFIRMATION",
+        "Tenant: ${pay.tenantName}",
+        "Property & Unit: ${pay.propertyName} • Unit ${pay.unitNumber}",
+        "Amount Paid: ${CurrencyUtils.formatKes(pay.amountCents, true)}",
+        "Method: ${pay.methodEnum().label}${if (pay.simulatedCheckout) " (Simulated Checkout)" else ""}",
+        "Transaction Reference: ${pay.referenceCode}",
+        "Status: ${pay.statusEnum().label}",
+        "---",
+        "[H]INVOICE ALLOCATION",
+        pay.allocationsSummary ?: "Credited to lease ledger",
+        "Verification Notes: ${pay.verificationNotes ?: "Verified"}"
+    )
+
+    fun generatePaymentConfirmationPdfFile(
+        context: Context,
+        pay: Payment
+    ): File {
+        val safeRef = (pay.receiptNumber ?: pay.referenceCode)
+            .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+            .ifBlank { pay.id.take(12) }
+        return generatePdfDocumentFile(
+            context = context,
+            fileName = "receipt_${safeRef}.pdf",
+            title = "RentFlow Payment Receipt",
+            subtitle = "Receipt #${pay.receiptNumber ?: pay.id.take(8)} • ${CurrencyUtils.formatDateTime(pay.paymentDateEpochMs)}",
+            lines = buildPaymentConfirmationLines(pay)
+        )
+    }
+
     fun exportSignedLeaseAgreementPdf(
         context: Context,
         lease: Lease,
         landlordFallbackSignature: DigitalSignature? = null,
         tenantFallbackSignature: DigitalSignature? = null
     ) {
-        exportPdfDocument(
+        val file = generateSignedLeaseAgreementPdfFile(
             context = context,
-            fileName = "lease_${lease.unitNumber}.pdf",
-            title = "RentFlow Tenancy Agreement",
-            subtitle = "${lease.propertyName} • Unit ${lease.unitNumber}",
-            lines = buildSignedLeaseAgreementLines(lease, landlordFallbackSignature, tenantFallbackSignature),
-            signatureBlocks = buildSignedLeaseSignatureBlocks(lease, landlordFallbackSignature, tenantFallbackSignature)
+            lease = lease,
+            landlordFallbackSignature = landlordFallbackSignature,
+            tenantFallbackSignature = tenantFallbackSignature
         )
+        shareFile(context, file, "application/pdf", "Share PDF Document")
     }
 
     fun exportPdfDocument(
@@ -238,6 +323,71 @@ object ReportExporter {
         lines: List<String>,
         signatureBlocks: List<PdfSignatureBlock> = emptyList()
     ) {
+        val file = generatePdfDocumentFile(
+            context = context,
+            fileName = fileName,
+            title = title,
+            subtitle = subtitle,
+            lines = lines,
+            signatureBlocks = signatureBlocks
+        )
+        shareFile(context, file, "application/pdf", "Share PDF Document")
+    }
+
+    internal fun wrapPdfLines(lines: List<String>, maxCharsPerLine: Int = 82): List<String> {
+        val result = mutableListOf<String>()
+        for (raw in lines) {
+            if (raw.startsWith("---") || raw.startsWith("[H]")) {
+                result.add(raw)
+                continue
+            }
+            val trimmed = raw.trimEnd()
+            if (trimmed.isEmpty()) {
+                result.add("")
+                continue
+            }
+            if (trimmed.length <= maxCharsPerLine) {
+                result.add(trimmed)
+                continue
+            }
+            val words = trimmed.split(Regex("\\s+"))
+            var current = StringBuilder()
+            for (word in words) {
+                if (word.length > maxCharsPerLine) {
+                    if (current.isNotEmpty()) {
+                        result.add(current.toString())
+                        current = StringBuilder()
+                    }
+                    var idx = 0
+                    while (idx < word.length) {
+                        val end = (idx + maxCharsPerLine).coerceAtMost(word.length)
+                        result.add(word.substring(idx, end))
+                        idx = end
+                    }
+                } else if (current.isEmpty()) {
+                    current.append(word)
+                } else if (current.length + 1 + word.length <= maxCharsPerLine) {
+                    current.append(' ').append(word)
+                } else {
+                    result.add(current.toString())
+                    current = StringBuilder(word)
+                }
+            }
+            if (current.isNotEmpty()) {
+                result.add(current.toString())
+            }
+        }
+        return result
+    }
+
+    fun generatePdfDocumentFile(
+        context: Context,
+        fileName: String,
+        title: String,
+        subtitle: String,
+        lines: List<String>,
+        signatureBlocks: List<PdfSignatureBlock> = emptyList()
+    ): File {
         val doc = PdfDocument()
         val pageWidth = 595
         val pageHeight = 842
@@ -254,22 +404,26 @@ object ReportExporter {
             color = Color.WHITE
             textSize = 18f
             isFakeBoldText = true
+            isAntiAlias = true
         }
         val subPaint = Paint().apply {
             color = Color.rgb(204, 251, 241)
             textSize = 11f
+            isAntiAlias = true
         }
         val bodyPaint = Paint().apply {
             color = Color.rgb(15, 23, 42)
             textSize = 11f
+            isAntiAlias = true
         }
 
         canvas.drawRect(0f, 0f, pageWidth.toFloat(), 88f, headerPaint)
-        canvas.drawText(title, margin, 38f, titlePaint)
-        canvas.drawText(subtitle, margin, 62f, subPaint)
+        canvas.drawText(title.take(60), margin, 38f, titlePaint)
+        canvas.drawText(subtitle.take(80), margin, 62f, subPaint)
 
         var y = 116f
-        for (line in lines) {
+        val wrappedLines = wrapPdfLines(lines)
+        for (line in wrappedLines) {
             if (y > pageHeight - 48f) {
                 doc.finishPage(page)
                 pageNum++
@@ -281,10 +435,12 @@ object ReportExporter {
                 val dividerPaint = Paint().apply { color = Color.LTGRAY; strokeWidth = 1f }
                 canvas.drawLine(margin, y - 4f, pageWidth - margin, y - 4f, dividerPaint)
                 y += 12f
+            } else if (line.isBlank()) {
+                y += 10f
             } else {
                 bodyPaint.isFakeBoldText = line.startsWith("[H]")
                 val text = line.removePrefix("[H]")
-                canvas.drawText(text.take(90), margin, y, bodyPaint)
+                canvas.drawText(text, margin, y, bodyPaint)
                 y += 18f
             }
         }
@@ -405,10 +561,11 @@ object ReportExporter {
 
         doc.finishPage(page)
 
-        val file = File(ensureExportDir(context), fileName)
+        val safeFileName = PdfDownloadHelper.normalizePdfFileName(fileName)
+        val file = File(ensureExportDir(context), safeFileName)
         FileOutputStream(file).use { out -> doc.writeTo(out) }
         doc.close()
-        shareFile(context, file, "application/pdf", "Share PDF Document")
+        return file
     }
 
     internal fun decodeSignatureDataUri(dataUri: String): android.graphics.Bitmap? {

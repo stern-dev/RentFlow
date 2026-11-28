@@ -144,6 +144,20 @@ class TenantViewModel(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), null)
 
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val linkedUnits: StateFlow<Map<String, RentalUnit>> = linkedLeases
+        .flatMapLatest { leasesList ->
+            val unitIds = leasesList.map { it.unitId }.filter { it.isNotBlank() }.distinct()
+            if (unitIds.isEmpty()) {
+                flowOf(emptyMap())
+            } else {
+                combine(unitIds.map { unitId -> propertyRepo.observeUnit(unitId) }) { units ->
+                    units.filterNotNull().associateBy { it.id }
+                }
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyMap())
+
     val activeBuildingLocation: StateFlow<ResolvedBuildingLocation?> = combine(activeLease, activeUnit) { lease, unit ->
         when {
             unit != null -> BuildingLocationResolver.resolve(unit)

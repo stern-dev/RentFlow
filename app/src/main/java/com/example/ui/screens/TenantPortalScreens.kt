@@ -42,9 +42,11 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sms
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -83,15 +85,21 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.R
 import com.example.data.location.DirectionsLauncher
 import com.example.data.notifications.PushDeepLink
 import com.example.domain.finance.CurrencyUtils
 import com.example.domain.finance.LeaseAutomationEngine
+import com.example.domain.finance.MpesaInstructionChannel
 import com.example.domain.finance.MpesaSmsParser
+import com.example.domain.finance.ParsedRentQrNotice
 import com.example.domain.finance.PaymentFormattingUtils
+import com.example.domain.finance.RentQrCodeParser
 import com.example.domain.finance.RentReminderEngine
 import com.example.domain.finance.RentReminderUrgency
 import com.example.domain.finance.ReportExporter
@@ -112,6 +120,7 @@ import com.example.domain.model.MpesaReceipt
 import com.example.domain.model.Payment
 import com.example.domain.model.PaymentChannelType
 import com.example.domain.model.PaymentMethod
+import com.example.domain.model.PaymentReceiptPdf
 import com.example.domain.model.PaymentStatus
 import com.example.domain.model.PaymentVerificationSource
 import com.example.domain.model.RenewalOfferStatus
@@ -139,9 +148,11 @@ import com.example.ui.components.RentPaymentTrendsCard
 import com.example.ui.components.SectionHeader
 import com.example.ui.components.StatusPill
 import com.example.ui.components.TenantDepositSettlementReviewDialog
+import com.example.ui.components.TenantDocumentPreviewSheet
 import com.example.ui.components.TenantMoveInChecklistReviewDialog
 import com.example.ui.components.TenantMoveOutNoticeCard
 import com.example.ui.components.TenantMoveOutNoticeDialog
+import com.example.ui.components.TenantPreviewDocument
 import com.example.ui.components.TenantRenewalOfferCard
 import com.example.ui.components.TenantRenewalOfferReviewDialog
 import com.example.ui.components.exportDepositSettlementPdf
@@ -156,11 +167,20 @@ import com.example.ui.theme.DarkTextSecondary
 import com.example.ui.theme.LocalIsDarkTheme
 import com.example.ui.theme.MidnightInk
 import com.example.ui.theme.MidnightSlate
+import com.example.ui.theme.MpesaEmerald
+import com.example.ui.theme.MpesaEmeraldBorderDark
+import com.example.ui.theme.MpesaEmeraldBorderLight
+import com.example.ui.theme.MpesaEmeraldContainerDark
+import com.example.ui.theme.MpesaEmeraldContainerLight
+import com.example.ui.theme.MpesaEmeraldLight
 import com.example.ui.theme.MutedCobalt
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusInfo
 import com.example.ui.theme.StatusInfoBg
 import com.example.ui.theme.StatusSuccess
+import com.example.ui.theme.StatusSuccessBg
+import com.example.ui.theme.StatusSuccessBgDark
+import com.example.ui.theme.StatusSuccessLight
 import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.StatusWarningBg
 import com.example.ui.theme.StatusWarningBgDark
@@ -180,7 +200,8 @@ fun TenantDashboardScreen(
     onNavigateDiscovery: () -> Unit,
     deepLinkTarget: PushDeepLink? = null,
     onConsumeDeepLinkTarget: () -> Unit = {},
-    onNavigatePayInvoice: (String) -> Unit = { onNavigatePayRent() }
+    onNavigatePayInvoice: (String) -> Unit = { onNavigatePayRent() },
+    onOpenQrScanner: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val activeLease by viewModel.activeLease.collectAsStateWithLifecycle()
@@ -197,12 +218,14 @@ fun TenantDashboardScreen(
     val conditionChecklistsState by viewModel.conditionChecklists.collectAsStateWithLifecycle()
     val settlementsState by viewModel.depositSettlements.collectAsStateWithLifecycle()
     val scannedDocsState by viewModel.scannedDocuments.collectAsStateWithLifecycle()
+    val paymentReceiptsState by viewModel.paymentReceipts.collectAsStateWithLifecycle()
     val scanOcrState by viewModel.scanOcrState.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
 
     val tenantLeases = (leasesState as? UiState.Success)?.data ?: emptyList()
     val invoices = (invoicesState as? UiState.Success)?.data ?: emptyList()
     val payments = (paymentsState as? UiState.Success)?.data ?: emptyList()
+    val paymentReceipts = (paymentReceiptsState as? UiState.Success)?.data ?: emptyList()
     val tickets = (maintenanceState as? UiState.Success)?.data ?: emptyList()
     val announcements = (announcementsState as? UiState.Success)?.data ?: emptyList()
     val checklists = (checklistsState as? UiState.Success)?.data ?: emptyList()
@@ -221,6 +244,7 @@ fun TenantDashboardScreen(
     var showMoveOutNoticeDialog by remember { mutableStateOf(false) }
     var showTenantVault by remember { mutableStateOf(false) }
     var showTenantScanner by remember { mutableStateOf(false) }
+    var previewDocument by remember { mutableStateOf<TenantPreviewDocument?>(null) }
 
     LaunchedEffect(
         deepLinkTarget,
@@ -455,30 +479,51 @@ fun TenantDashboardScreen(
         }
 
         item {
+            val isDark = LocalIsDarkTheme.current
+            val qrAccent = if (isDark) MpesaEmeraldLight else MpesaEmerald
+            val qrContainer = if (isDark) MpesaEmeraldContainerDark else MpesaEmeraldContainerLight
+            val qrBorder = if (isDark) MpesaEmeraldBorderDark else MpesaEmeraldBorderLight
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 Button(
                     onClick = onNavigatePayRent,
                     enabled = activeLease != null,
                     shape = RoundedCornerShape(999.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.secondary,
                         contentColor = MaterialTheme.colorScheme.onSecondary
                     ),
                     modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("tenant_quick_pay_button")
                 ) {
-                    Icon(Icons.Filled.Payments, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Pay Rent")
+                    Icon(Icons.Filled.Payments, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Pay Rent", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                OutlinedButton(
+                    onClick = onOpenQrScanner,
+                    shape = RoundedCornerShape(999.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = qrContainer,
+                        contentColor = qrAccent
+                    ),
+                    border = BorderStroke(1.dp, qrBorder),
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("tenant_quick_scan_qr_button")
+                ) {
+                    Icon(Icons.Filled.QrCodeScanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Scan QR", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 OutlinedButton(
                     onClick = onNavigateMaintenance,
                     enabled = activeLease != null,
                     shape = RoundedCornerShape(999.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
                     modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("tenant_quick_ticket_button")
                 ) {
-                    Icon(Icons.Filled.Build, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Repairs")
+                    Icon(Icons.Filled.Build, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Repairs", maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -545,18 +590,20 @@ fun TenantDashboardScreen(
                         }
                         OutlinedButton(
                             onClick = {
-                                ReportExporter.exportSignedLeaseAgreementPdf(
-                                    context = context,
+                                previewDocument = TenantPreviewDocument.TenancyLease(
                                     lease = lease,
                                     landlordFallbackSignature = activeConditionChecklist?.landlordSignature,
                                     tenantFallbackSignature = activeConditionChecklist?.tenantSignature
                                 )
                             },
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("tenant_preview_lease_button")
                         ) {
                             Icon(Icons.Filled.Description, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Download Tenancy Agreement (PDF)")
+                            Text("Preview & Download Tenancy Agreement (PDF)")
                         }
                     }
                 }
@@ -710,18 +757,42 @@ fun TenantDashboardScreen(
                     shape = MaterialTheme.shapes.medium,
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     border = BorderStroke(1.dp, StatusInfo.copy(alpha = 0.35f)),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { previewDocument = TenantPreviewDocument.PropertyNotice(ann) }
+                        .testTag("tenant_announcement_card_${ann.id}")
                 ) {
                     Row(modifier = Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Icon(Icons.Filled.Campaign, contentDescription = null, tint = StatusInfo)
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.weight(1f)) {
                             Text(ann.title, style = MaterialTheme.typography.titleSmall)
-                            Text(ann.body, style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                text = ann.body,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis
+                            )
                             Text(
                                 "${ann.propertyName} • ${ann.authorName}",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Visibility,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = stringResource(R.string.doc_preview_tap_to_preview),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.secondary
+                                )
+                            }
                         }
                     }
                 }
@@ -732,7 +803,7 @@ fun TenantDashboardScreen(
             item { SectionHeader("Recent Rent Payments", "View All", onNavigatePayRent) }
             items(payments.take(3), key = { it.id }) { pay ->
                 TenantPaymentCard(pay = pay, onDownloadReceipt = {
-                    exportPaymentReceiptPdf(context, pay)
+                    previewDocument = resolvePaymentReceiptPreview(pay, paymentReceipts, invoices)
                 })
             }
         }
@@ -837,7 +908,8 @@ fun TenantDashboardScreen(
             onScanNewDocument = { showTenantScanner = true },
             onToggleTenantVisibility = { _, _ -> },
             onDeleteDocument = { doc -> viewModel.deleteScannedDocument(doc.id) },
-            onDismiss = { showTenantVault = false }
+            onDismiss = { showTenantVault = false },
+            preferPreviewSheet = true
         )
     }
 
@@ -911,6 +983,13 @@ fun TenantDashboardScreen(
             }
         )
     }
+
+    previewDocument?.let { doc ->
+        TenantDocumentPreviewSheet(
+            document = doc,
+            onDismiss = { previewDocument = null }
+        )
+    }
 }
 
 private enum class TenantInvoiceFilter(val label: String) {
@@ -940,14 +1019,21 @@ fun TenantPaymentsScreen(
     deepLinkTarget: PushDeepLink? = null,
     onConsumeDeepLinkTarget: () -> Unit = {},
     onReceiptSubmittedForPayment: (receipt: MpesaReceipt, paymentId: String, leaseId: String) -> Unit = { _, _, _ -> },
-    onDismissDetectedReceipt: (MpesaReceipt) -> Unit = {}
+    onDismissDetectedReceipt: (MpesaReceipt) -> Unit = {},
+    onOpenQrScanner: () -> Unit = {},
+    initialQrNotice: ParsedRentQrNotice? = null,
+    onConsumeQrNotice: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val activeLease by viewModel.activeLease.collectAsStateWithLifecycle()
     val activeUnit by viewModel.activeUnit.collectAsStateWithLifecycle()
+    val linkedLeases by viewModel.linkedLeases.collectAsStateWithLifecycle()
+    val linkedUnits by viewModel.linkedUnits.collectAsStateWithLifecycle()
     val invoicesState by viewModel.invoices.collectAsStateWithLifecycle()
     val paymentsState by viewModel.payments.collectAsStateWithLifecycle()
     val paymentHistoryState by viewModel.paymentHistory.collectAsStateWithLifecycle()
+    val paymentReceiptsState by viewModel.paymentReceipts.collectAsStateWithLifecycle()
+    val paymentReceiptsByInvoiceId by viewModel.paymentReceiptsByInvoiceId.collectAsStateWithLifecycle()
     val scanOcrState by viewModel.scanOcrState.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
 
@@ -958,6 +1044,7 @@ fun TenantPaymentsScreen(
 
     val invoices = (invoicesState as? UiState.Success)?.data ?: emptyList()
     val payments = (paymentsState as? UiState.Success)?.data ?: emptyList()
+    val paymentReceipts = (paymentReceiptsState as? UiState.Success)?.data ?: emptyList()
     val historyCount = (paymentHistoryState as? UiState.Success)?.data?.entries?.size ?: 0
 
     var selectedTab by remember { mutableIntStateOf(0) }
@@ -967,17 +1054,58 @@ fun TenantPaymentsScreen(
     var highlightedInvoiceId by remember { mutableStateOf<String?>(null) }
     var highlightedPaymentId by remember { mutableStateOf<String?>(null) }
     var paymentTargetInvoice by remember { mutableStateOf<Invoice?>(null) }
+    var paymentTargetLease by remember { mutableStateOf<Lease?>(null) }
+    var paymentTargetUnit by remember { mutableStateOf<RentalUnit?>(null) }
     var activePrefilledReceipt by remember { mutableStateOf<MpesaReceipt?>(null) }
+    var activeQrNotice by remember { mutableStateOf<ParsedRentQrNotice?>(null) }
+    var activeQrExactLeaseMatch by remember { mutableStateOf(true) }
     var showPayDialog by remember { mutableStateOf(false) }
+    var previewDocument by remember { mutableStateOf<TenantPreviewDocument?>(null) }
     val listState = rememberLazyListState()
 
     LaunchedEffect(initialPrefilledReceipt) {
         if (initialPrefilledReceipt != null) {
             activePrefilledReceipt = initialPrefilledReceipt
+            activeQrNotice = null
+            paymentTargetLease = activeLease
+            paymentTargetUnit = activeUnit
             paymentTargetInvoice = invoices.firstOrNull { it.outstandingCents > 0L }
             showPayDialog = true
             onConsumePrefilledReceipt()
         }
+    }
+
+    LaunchedEffect(initialQrNotice, linkedLeases, linkedUnits, activeLease, activeUnit, invoices) {
+        val qrNotice = initialQrNotice ?: return@LaunchedEffect
+        val candidateLeases = linkedLeases.ifEmpty { listOfNotNull(activeLease) }
+        val candidateUnits = if (activeUnit != null) {
+            linkedUnits + (activeUnit!!.id to activeUnit!!)
+        } else {
+            linkedUnits
+        }
+        val matched = RentQrCodeParser.matchLeaseAndInvoice(
+            notice = qrNotice,
+            leases = candidateLeases,
+            unitsById = candidateUnits,
+            invoices = invoices
+        )
+        selectedTab = 0
+        invoiceFilter = TenantInvoiceFilter.ALL
+        activePrefilledReceipt = null
+        activeQrNotice = qrNotice
+        activeQrExactLeaseMatch = matched.isExactLeaseMatch
+        paymentTargetLease = matched.matchedLease ?: activeLease
+        paymentTargetUnit = matched.matchedUnit ?: activeUnit
+        paymentTargetInvoice = matched.targetInvoice ?: invoices.firstOrNull { it.outstandingCents > 0L }
+        matched.targetInvoice?.let { inv ->
+            highlightedInvoiceId = inv.id
+            highlightedPaymentId = null
+            expandedInvoiceIds = expandedInvoiceIds + inv.id
+        }
+        if ((matched.matchedLease ?: activeLease) != null) {
+            showPayDialog = true
+        }
+        onConsumeQrNotice()
     }
 
     LaunchedEffect(deepLinkTarget) {
@@ -1057,6 +1185,18 @@ fun TenantPaymentsScreen(
         if (selectedTab == 2) {
             PaymentHistoryList(
                 historyState = paymentHistoryState,
+                paymentReceiptsByInvoiceId = paymentReceiptsByInvoiceId,
+                onPreviewReceipt = { entry, receipt ->
+                    val matchedPayment = payments.firstOrNull {
+                        it.invoiceId == entry.invoice.id ||
+                            (receipt?.paymentId != null && it.id == receipt.paymentId)
+                    }
+                    previewDocument = TenantPreviewDocument.PaymentReceipt(
+                        receipt = receipt,
+                        payment = matchedPayment,
+                        invoice = entry.invoice
+                    )
+                },
                 modifier = Modifier.fillMaxSize()
             )
         } else {
@@ -1075,6 +1215,9 @@ fun TenantPaymentsScreen(
                             extraCount = (detectedMpesaReceipts.size - 1).coerceAtLeast(0),
                             onUseReceipt = {
                                 activePrefilledReceipt = topDetected
+                                activeQrNotice = null
+                                paymentTargetLease = activeLease
+                                paymentTargetUnit = activeUnit
                                 paymentTargetInvoice = invoices.firstOrNull { it.outstandingCents > 0L }
                                 showPayDialog = true
                             },
@@ -1083,34 +1226,57 @@ fun TenantPaymentsScreen(
                     }
                 }
                 item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        Button(
-                            onClick = {
-                                activePrefilledReceipt = null
-                                paymentTargetInvoice = invoices.firstOrNull { it.outstandingCents > 0L }
-                                showPayDialog = true
-                            },
-                            shape = RoundedCornerShape(999.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.secondary,
-                                contentColor = MaterialTheme.colorScheme.onSecondary
-                            ),
-                            modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("submit_rent_payment_button")
-                        ) {
-                            Icon(Icons.Filled.Payments, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Pay Rent / M-Pesa")
+                    val isDark = LocalIsDarkTheme.current
+                    val qrAccent = if (isDark) MpesaEmeraldLight else MpesaEmerald
+                    val qrContainer = if (isDark) MpesaEmeraldContainerDark else MpesaEmeraldContainerLight
+                    val qrBorder = if (isDark) MpesaEmeraldBorderDark else MpesaEmeraldBorderLight
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            Button(
+                                onClick = {
+                                    activePrefilledReceipt = null
+                                    activeQrNotice = null
+                                    paymentTargetLease = activeLease
+                                    paymentTargetUnit = activeUnit
+                                    paymentTargetInvoice = invoices.firstOrNull { it.outstandingCents > 0L }
+                                    showPayDialog = true
+                                },
+                                shape = RoundedCornerShape(999.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.secondary,
+                                    contentColor = MaterialTheme.colorScheme.onSecondary
+                                ),
+                                modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("submit_rent_payment_button")
+                            ) {
+                                Icon(Icons.Filled.Payments, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Pay Rent / M-Pesa", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            OutlinedButton(
+                                onClick = onOpenQrScanner,
+                                shape = RoundedCornerShape(999.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = qrContainer,
+                                    contentColor = qrAccent
+                                ),
+                                border = BorderStroke(1.dp, qrBorder),
+                                modifier = Modifier.heightIn(min = 48.dp).testTag("tenant_payments_scan_qr_button")
+                            ) {
+                                Icon(Icons.Filled.QrCodeScanner, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Scan QR", maxLines = 1)
+                            }
                         }
                         OutlinedButton(
                             onClick = {
                                 ReportExporter.exportTenantStatementCsv(context, lease, invoices, payments)
                             },
                             shape = RoundedCornerShape(999.dp),
-                            modifier = Modifier.heightIn(min = 48.dp).testTag("tenant_export_csv_button")
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("tenant_export_csv_button")
                         ) {
                             Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Statement")
+                            Spacer(Modifier.width(6.dp))
+                            Text("Export Statement (CSV)")
                         }
                     }
                 }
@@ -1178,6 +1344,21 @@ fun TenantPaymentsScreen(
                             recipientName = lease.propertyName,
                             modifier = Modifier.testTag("tenant_pay_tab_mpesa_card")
                         )
+                    }
+                }
+            } ?: run {
+                item {
+                    OutlinedButton(
+                        onClick = onOpenQrScanner,
+                        shape = RoundedCornerShape(999.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .testTag("tenant_payments_scan_qr_button")
+                    ) {
+                        Icon(Icons.Filled.QrCodeScanner, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Scan Rent Collection QR Notice")
                     }
                 }
             }
@@ -1405,6 +1586,9 @@ fun TenantPaymentsScreen(
                                                     Button(
                                                         onClick = {
                                                             activePrefilledReceipt = null
+                                                            activeQrNotice = null
+                                                            paymentTargetLease = activeLease
+                                                            paymentTargetUnit = activeUnit
                                                             paymentTargetInvoice = inv
                                                             showPayDialog = true
                                                         },
@@ -1434,6 +1618,9 @@ fun TenantPaymentsScreen(
                                                     OutlinedButton(
                                                         onClick = {
                                                             activePrefilledReceipt = null
+                                                            activeQrNotice = null
+                                                            paymentTargetLease = activeLease
+                                                            paymentTargetUnit = activeUnit
                                                             paymentTargetInvoice = inv
                                                             showPayDialog = true
                                                         },
@@ -1512,7 +1699,7 @@ fun TenantPaymentsScreen(
                                         pay = pay,
                                         highlighted = pay.id == highlightedPaymentId,
                                         onDownloadReceipt = {
-                                            exportPaymentReceiptPdf(context, pay)
+                                            previewDocument = resolvePaymentReceiptPreview(pay, paymentReceipts, invoices)
                                         }
                                     )
                                 }
@@ -1525,18 +1712,23 @@ fun TenantPaymentsScreen(
         }
     }
 
-    if (showPayDialog && activeLease != null) {
-        val currentLease = activeLease!!
+    val resolvedDialogLease = paymentTargetLease ?: activeLease
+    val resolvedDialogUnit = paymentTargetUnit ?: activeUnit
+    if (showPayDialog && resolvedDialogLease != null) {
+        val currentLease = resolvedDialogLease
         val usedReceipt = activePrefilledReceipt
+        val usedQrNotice = activeQrNotice
         TenantPaymentSubmissionDialog(
             lease = currentLease,
-            unit = activeUnit,
+            unit = resolvedDialogUnit,
             targetInvoice = paymentTargetInvoice,
             defaultPhone = currentUser.phoneNumber ?: currentLease.tenantPhone,
             isBusy = busy,
             savedMethods = savedMethods,
             selectedSavedMethod = selectedSavedMethod,
             initialPrefilledReceipt = usedReceipt,
+            initialQrNotice = usedQrNotice,
+            isExactQrLeaseMatch = activeQrExactLeaseMatch,
             scanOcrState = scanOcrState,
             onExtractWithAi = { bmp, hint -> viewModel.extractDocumentWithAi(bmp, hint) },
             onClearOcr = { viewModel.clearDocumentOcr() },
@@ -1547,6 +1739,7 @@ fun TenantPaymentsScreen(
             },
             onDismiss = {
                 activePrefilledReceipt = null
+                activeQrNotice = null
                 showPayDialog = false
             },
             onSubmit = { invoiceId, refCode, amountCents, method, simulated, paymentMethodId, channelType, shortcode, pendingScan ->
@@ -1566,7 +1759,7 @@ fun TenantPaymentsScreen(
                         if (usedReceipt != null) {
                             onReceiptSubmittedForPayment(usedReceipt, paymentId, currentLease.id)
                         }
-                        val unitForScan = activeUnit
+                        val unitForScan = resolvedDialogUnit
                         if (pendingScan != null && unitForScan != null) {
                             viewModel.uploadScannedDocument(
                                 unit = unitForScan,
@@ -1588,9 +1781,17 @@ fun TenantPaymentsScreen(
                     }
                 ) {
                     activePrefilledReceipt = null
+                    activeQrNotice = null
                     showPayDialog = false
                 }
             }
+        )
+    }
+
+    previewDocument?.let { doc ->
+        TenantDocumentPreviewSheet(
+            document = doc,
+            onDismiss = { previewDocument = null }
         )
     }
 }
@@ -1779,36 +1980,45 @@ private fun TenantPaymentCard(
             if (pay.statusEnum() == PaymentStatus.VERIFIED) {
                 OutlinedButton(
                     onClick = onDownloadReceipt,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp)
+                    shape = RoundedCornerShape(999.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("tenant_payment_receipt_button_${pay.id}")
                 ) {
                     Icon(Icons.Filled.Receipt, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Download Official Receipt (PDF)")
+                    Text("Preview & Download Receipt (PDF)")
                 }
             }
         }
     }
 }
 
-private fun exportPaymentReceiptPdf(context: android.content.Context, pay: Payment) {
-    ReportExporter.exportPdfDocument(
-        context = context,
-        fileName = "receipt_${pay.receiptNumber ?: pay.referenceCode}.pdf",
-        title = "RentFlow Payment Receipt",
-        subtitle = "Receipt #${pay.receiptNumber ?: pay.id.take(8)} • ${CurrencyUtils.formatDateTime(pay.paymentDateEpochMs)}",
-        lines = listOf(
-            "[H]PAYMENT CONFIRMATION",
-            "Tenant: ${pay.tenantName}",
-            "Property & Unit: ${pay.propertyName} • Unit ${pay.unitNumber}",
-            "Amount Paid: ${CurrencyUtils.formatKes(pay.amountCents, true)}",
-            "Method: ${pay.methodEnum().label}${if (pay.simulatedCheckout) " (Simulated Checkout)" else ""}",
-            "Transaction Reference: ${pay.referenceCode}",
-            "Status: ${pay.statusEnum().label}",
-            "---",
-            "[H]INVOICE ALLOCATION",
-            pay.allocationsSummary ?: "Credited to lease ledger",
-            "Verification Notes: ${pay.verificationNotes ?: "Verified"}"
-        )
+private fun resolvePaymentReceiptPreview(
+    pay: Payment,
+    receipts: List<PaymentReceiptPdf>,
+    invoices: List<Invoice>
+): TenantPreviewDocument.PaymentReceipt {
+    val matchedReceipt = receipts.firstOrNull { it.paymentId == pay.id }
+        ?: receipts.firstOrNull {
+            !pay.receiptNumber.isNullOrBlank() &&
+                it.receiptNumber.equals(pay.receiptNumber, ignoreCase = true)
+        }
+        ?: receipts.firstOrNull {
+            !it.paymentReferenceCode.isNullOrBlank() &&
+                it.paymentReferenceCode.equals(pay.referenceCode, ignoreCase = true)
+        }
+        ?: receipts.firstOrNull {
+            !pay.invoiceId.isNullOrBlank() && it.invoiceId == pay.invoiceId
+        }
+    val matchedInvoice = matchedReceipt?.let { rec ->
+        invoices.firstOrNull { it.id == rec.invoiceId }
+    } ?: invoices.firstOrNull { it.id == pay.invoiceId }
+    return TenantPreviewDocument.PaymentReceipt(
+        receipt = matchedReceipt,
+        payment = pay,
+        invoice = matchedInvoice
     )
 }
 
@@ -1823,6 +2033,8 @@ fun TenantPaymentSubmissionDialog(
     savedMethods: List<SavedPaymentMethod> = emptyList(),
     selectedSavedMethod: SavedPaymentMethod? = null,
     initialPrefilledReceipt: MpesaReceipt? = null,
+    initialQrNotice: ParsedRentQrNotice? = null,
+    isExactQrLeaseMatch: Boolean = true,
     scanOcrState: ScanOcrUiState = ScanOcrUiState.Idle,
     onExtractWithAi: (Bitmap, DocumentType?) -> Unit = { _, _ -> },
     onClearOcr: () -> Unit = {},
@@ -1841,11 +2053,15 @@ fun TenantPaymentSubmissionDialog(
         pendingScan: PendingScanPayload?
     ) -> Unit
 ) {
-    val initialMode = if (initialPrefilledReceipt == null && selectedSavedMethod?.channelTypeEnum() == PaymentChannelType.MPESA_STK) 1 else 0
-    var mode by remember(selectedSavedMethod?.id, initialPrefilledReceipt?.id) { mutableIntStateOf(initialMode) } // 0 = Manual Reference, 1 = Simulated M-Pesa STK
-    var method by remember(selectedSavedMethod?.id, initialPrefilledReceipt?.id) {
+    val qrKey = initialQrNotice?.rawPayload
+    val initialMode = if (initialQrNotice == null &&
+        initialPrefilledReceipt == null &&
+        selectedSavedMethod?.channelTypeEnum() == PaymentChannelType.MPESA_STK
+    ) 1 else 0
+    var mode by remember(selectedSavedMethod?.id, initialPrefilledReceipt?.id, qrKey) { mutableIntStateOf(initialMode) } // 0 = Manual Reference, 1 = Simulated M-Pesa STK
+    var method by remember(selectedSavedMethod?.id, initialPrefilledReceipt?.id, qrKey) {
         mutableStateOf(
-            if (initialPrefilledReceipt != null) {
+            if (initialQrNotice != null || initialPrefilledReceipt != null) {
                 PaymentMethod.MPESA
             } else {
                 selectedSavedMethod?.channelTypeEnum()?.baseMethod ?: PaymentMethod.MPESA
@@ -1853,17 +2069,17 @@ fun TenantPaymentSubmissionDialog(
         )
     }
     var methodExpanded by remember { mutableStateOf(false) }
-    var smsPasteText by remember(initialPrefilledReceipt?.id) {
+    var smsPasteText by remember(initialPrefilledReceipt?.id, qrKey) {
         mutableStateOf(initialPrefilledReceipt?.rawSnippet ?: "")
     }
-    var smsParsedStatus by remember(initialPrefilledReceipt?.id) {
+    var smsParsedStatus by remember(initialPrefilledReceipt?.id, qrKey) {
         mutableStateOf(
             initialPrefilledReceipt?.let {
                 "Auto-filled ${it.transactionCode} • ${CurrencyUtils.formatKes(it.amountCents, true)}"
             }
         )
     }
-    var refCode by remember(initialPrefilledReceipt?.id) {
+    var refCode by remember(initialPrefilledReceipt?.id, qrKey) {
         mutableStateOf(initialPrefilledReceipt?.transactionCode ?: "")
     }
     var mpesaPhone by remember(selectedSavedMethod?.id, defaultPhone) {
@@ -1877,32 +2093,35 @@ fun TenantPaymentSubmissionDialog(
             }
         )
     }
-    val defaultAmount = initialPrefilledReceipt?.amountCents
+    val defaultAmount = initialQrNotice?.amountCents?.takeIf { it > 0L }
+        ?: initialPrefilledReceipt?.amountCents
         ?: targetInvoice?.outstandingCents?.takeIf { it > 0L }
         ?: lease.rentCents
-    var amountText by remember(initialPrefilledReceipt?.id, defaultAmount) {
+    var amountText by remember(initialPrefilledReceipt?.id, qrKey, defaultAmount) {
         mutableStateOf(CurrencyUtils.centsToInputString(defaultAmount))
     }
     var pendingScan by remember { mutableStateOf<PendingScanPayload?>(null) }
     var showScanner by remember { mutableStateOf(false) }
     var err by remember { mutableStateOf<String?>(null) }
 
-    val displayPaybill = if (selectedSavedMethod?.channelTypeEnum() == PaymentChannelType.MPESA_PAYBILL) {
-        selectedSavedMethod.paybillNumber
-    } else {
-        unit?.mpesaPaybill
+    val displayPaybill = when {
+        initialQrNotice?.channel == MpesaInstructionChannel.PAYBILL -> initialQrNotice.shortcode
+        initialQrNotice?.channel == MpesaInstructionChannel.TILL -> null
+        selectedSavedMethod?.channelTypeEnum() == PaymentChannelType.MPESA_PAYBILL -> selectedSavedMethod.paybillNumber
+        else -> unit?.mpesaPaybill
     }
-    val displayTill = if (selectedSavedMethod?.channelTypeEnum() == PaymentChannelType.MPESA_TILL) {
-        selectedSavedMethod.tillNumber
-    } else {
-        unit?.mpesaTill
+    val displayTill = when {
+        initialQrNotice?.channel == MpesaInstructionChannel.TILL -> initialQrNotice.shortcode
+        initialQrNotice?.channel == MpesaInstructionChannel.PAYBILL -> null
+        selectedSavedMethod?.channelTypeEnum() == PaymentChannelType.MPESA_TILL -> selectedSavedMethod.tillNumber
+        else -> unit?.mpesaTill
     }
-    val displayAccountRef = if (selectedSavedMethod?.channelTypeEnum() == PaymentChannelType.MPESA_PAYBILL &&
-        !selectedSavedMethod.accountReference.isNullOrBlank()
-    ) {
-        selectedSavedMethod.accountReference
-    } else {
-        MpesaSmsParser.buildMpesaAccountReference(
+    val displayAccountRef = when {
+        initialQrNotice?.channel == MpesaInstructionChannel.PAYBILL && !initialQrNotice.accountReference.isNullOrBlank() ->
+            initialQrNotice.accountReference
+        selectedSavedMethod?.channelTypeEnum() == PaymentChannelType.MPESA_PAYBILL && !selectedSavedMethod.accountReference.isNullOrBlank() ->
+            selectedSavedMethod.accountReference
+        else -> MpesaSmsParser.buildMpesaAccountReference(
             prefix = unit?.mpesaAccountPrefix,
             unitNumber = lease.unitNumber
         )
@@ -1916,6 +2135,68 @@ fun TenantPaymentSubmissionDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.verticalScroll(rememberScrollState())
             ) {
+                if (initialQrNotice != null) {
+                    val isDark = LocalIsDarkTheme.current
+                    val qrSuccessFg = if (isDark) StatusSuccessLight else StatusSuccess
+                    val qrSuccessBg = if (isDark) StatusSuccessBgDark else StatusSuccessBg
+                    val warnFg = if (isDark) StatusWarningLight else StatusWarning
+                    Surface(
+                        color = qrSuccessBg,
+                        shape = MaterialTheme.shapes.small,
+                        border = BorderStroke(1.dp, qrSuccessFg.copy(alpha = 0.4f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("scanned_qr_prefill_card")
+                    ) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.padding(10.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.QrCodeScanner,
+                                    contentDescription = null,
+                                    tint = qrSuccessFg,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Scanned ${initialQrNotice.sourceFormat.label}",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = qrSuccessFg
+                                )
+                            }
+                            Text(
+                                text = buildString {
+                                    append(initialQrNotice.channel.displayName)
+                                    append(" • ")
+                                    append(initialQrNotice.formattedShortcode)
+                                    if (!initialQrNotice.accountReference.isNullOrBlank()) {
+                                        append(" • Acc: ")
+                                        append(initialQrNotice.accountReference)
+                                    }
+                                },
+                                style = TabularMoneyStyle.copy(fontSize = MaterialTheme.typography.bodySmall.fontSize),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Paying for: ${lease.propertyName} • Unit ${lease.unitNumber}" +
+                                    (targetInvoice?.let { " (Invoice ${it.invoiceNumber})" } ?: ""),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            if (!isExactQrLeaseMatch) {
+                                Text(
+                                    text = "Notice details did not match your unit prefix directly — confirm shortcode and account before paying.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = warnFg
+                                )
+                            }
+                        }
+                    }
+                }
                 if (savedMethods.isNotEmpty() || onOpenPaymentMethodSelector != null) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(
@@ -2141,8 +2422,8 @@ fun TenantPaymentSubmissionDialog(
                                 method,
                                 false,
                                 selectedSavedMethod?.id,
-                                selectedSavedMethod?.channelTypeEnum(),
-                                selectedSavedMethod?.primaryShortcodeOrIdentifier(),
+                                selectedSavedMethod?.channelTypeEnum() ?: initialQrNotice?.paymentChannelType,
+                                selectedSavedMethod?.primaryShortcodeOrIdentifier() ?: initialQrNotice?.shortcode,
                                 pendingScan
                             )
                         }

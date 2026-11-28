@@ -27,12 +27,14 @@ import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -54,6 +56,7 @@ import com.example.domain.finance.LeaseAutomationEngine
 import com.example.domain.finance.PaymentHistoryEntry
 import com.example.domain.finance.PaymentHistoryStatus
 import com.example.domain.finance.TenantPaymentHistorySummary
+import com.example.domain.model.PaymentReceiptPdf
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.StatusWarning
@@ -68,7 +71,9 @@ import com.example.ui.viewmodel.UiState
 fun PaymentHistoryList(
     historyState: UiState<TenantPaymentHistorySummary>,
     modifier: Modifier = Modifier,
-    contentPadding: PaddingValues = PaddingValues(16.dp)
+    contentPadding: PaddingValues = PaddingValues(16.dp),
+    paymentReceiptsByInvoiceId: Map<String, PaymentReceiptPdf> = emptyMap(),
+    onPreviewReceipt: ((PaymentHistoryEntry, PaymentReceiptPdf?) -> Unit)? = null
 ) {
     when (historyState) {
         is UiState.Loading -> {
@@ -189,9 +194,14 @@ fun PaymentHistoryList(
                     } else {
                         items(filteredEntries, key = { it.invoice.id }) { entry ->
                             val isExpanded = entry.invoice.id in expandedInvoiceIds
+                            val matchedReceipt = paymentReceiptsByInvoiceId[entry.invoice.id]
                             PaymentHistoryInvoiceCard(
                                 entry = entry,
                                 expanded = isExpanded,
+                                hasStoredReceipt = matchedReceipt != null,
+                                onPreviewReceipt = onPreviewReceipt?.let { callback ->
+                                    { callback(entry, matchedReceipt) }
+                                },
                                 onToggleExpand = {
                                     expandedInvoiceIds = if (isExpanded) {
                                         expandedInvoiceIds - entry.invoice.id
@@ -358,6 +368,8 @@ private fun AnnualRentPaidSummaryCard(
 private fun PaymentHistoryInvoiceCard(
     entry: PaymentHistoryEntry,
     expanded: Boolean,
+    hasStoredReceipt: Boolean = false,
+    onPreviewReceipt: (() -> Unit)? = null,
     onToggleExpand: () -> Unit
 ) {
     val inv = entry.invoice
@@ -523,6 +535,29 @@ private fun PaymentHistoryInvoiceCard(
                             isHighlightError = true
                         )
                     }
+                }
+            }
+
+            if (onPreviewReceipt != null) {
+                OutlinedButton(
+                    onClick = onPreviewReceipt,
+                    shape = RoundedCornerShape(999.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("payment_history_receipt_button_${inv.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Receipt,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = if (hasStoredReceipt) "Preview Official Receipt (PDF)" else "Preview Receipt (PDF)",
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }
